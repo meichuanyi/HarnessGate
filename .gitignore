@@ -2,6 +2,8 @@ node_modules/
 .zcode/
 *.log
 .DS_Store
+__pycache__/
+*.pyc
 vscode/dist/
 vscode/out-test/
 vscode/.vscode-test/
