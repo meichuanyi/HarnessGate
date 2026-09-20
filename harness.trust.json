@@ -1,0 +1,57 @@
+{
+  "//": "对 ACP 注册表导入项的人工分级：vendor=厂商官方/一线项目，known=可验证的社区项目，unknown=存疑（星数极低、来源不明或与编程 harness 无关）。blocked 里的直接不展示。",
+  "//how": "依据：GitHub 仓库星数/归属、是否厂商自维护、项目描述是否与编程 agent 相关（尽调于 2026-09-18）。",
+  "vendor": {
+    "claude-acp": "Anthropic Claude Code 的官方 ACP 适配器（由 ACP 组织/ Zed 维护）",
+    "codex-acp": "OpenAI Codex 的官方 ACP 适配器",
+    "gemini": "Google 官方 Gemini CLI",
+    "qwen-code": "阿里 Qwen 官方 CLI",
+    "cursor": "Cursor 官方",
+    "devin": "Cognition 官方",
+    "factory-droid": "Factory 官方",
+    "qoder": "阿里 Qoder 官方",
+    "codebuddy-code": "腾讯官方",
+    "minimax-code": "MiniMax 官方",
+    "grok-build": "xAI 官方",
+    "junie": "JetBrains 官方",
+    "antigravity-acp": "Google Antigravity 官方",
+    "opencode": "OpenCode（20.8 万星）",
+    "cline": "Cline（6.9 万星）",
+    "goose": "Block 官方（5.4 万星）",
+    "kilo": "Kilo Code（2.7 万星）",
+    "kimi": "Moonshot Kimi 官方 CLI（1.1 万星）",
+    "github-copilot": "GitHub 官方 language server",
+    "github-copilot-cli": "GitHub 官方 Copilot CLI",
+    "amp-acp": "Sourcegraph Amp 的社区封装（Amp 本身为一线产品）",
+    "auggie": "Augment Code 官方 CLI",
+    "poolside": "Poolside 官方",
+    "mistral-vibe": "Mistral 官方（5k 星）",
+    "antigravity": "Google 官方 AGY ACP Server"
+  },
+  "known": {
+    "deepagents": "LangChain 系（1.6k 星）",
+    "fast-agent": "3.9k 星，活跃",
+    "dirac": "1.5k 星",
+    "vtcode": "847 星",
+    "pi-acp": "686 星（Pi 的 ACP 适配）",
+    "stakpak": "1.8k 星",
+    "kimchi": "2.2k 星"
+  },
+  "blocked": {
+    "agoragentic-acp": "不是编程 harness：项目定位是「用 USDC 在 Base L2 上付费调用 agent 服务的市场」，与写代码无关，且来源不明",
+    "antigravity-acp": "同上，已由策展条目 antigravity 取代（用本机已下载的 ACP server）",
+    "glm-acp-agent": "社区个人包，需要单独的 Z.AI API key；本机无明文 key 可用，已按用户要求移除"
+  },
+  "unknown": {
+    "sigit": "47 星，来源未核实",
+    "minion-code": "40 星，来源未核实",
+    "corust-agent": "31 星，来源未核实",
+    "crow-cli": "57 星，来源未核实",
+    "harn": "23 星，来源未核实",
+    "nova": "13 星，来源未核实",
+    "autohand": "12 星，来源未核实",
+    "dimcode": "找不到公开仓库，探活未测",
+    "cortex-code": "找不到公开仓库，探活未测"
+  },
+  "//rule": "vendor=厂商官方/一线项目；known=星数≥300 或所属组织知名且探活可用；unknown=星数极低、无公开仓库或与编程无关 → 界面默认隐藏"
+}

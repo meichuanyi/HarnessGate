@@ -1,0 +1,2965 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#12151c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<script>
+(function() {
+  try {
+    var pref = localStorage.getItem("hg_view_mode");
+    var ua = navigator.userAgent || navigator.vendor || window.opera || "";
+    var isMobUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk|HarmonyOS|XiaoMi|MiuiBrowser|MicroMessenger/i.test(ua);
+    var isTouch = (navigator.maxTouchPoints > 0 || ("ontouchstart" in window)) && window.innerWidth <= 1024;
+    var isNarrow = window.innerWidth <= 860;
+    var isMob = pref === "mobile" || (pref !== "desktop" && (isMobUA || isTouch || isNarrow));
+    if (isMob) document.documentElement.classList.add("is-mobile");
+  } catch(e) {}
+})();
+</script>
+<title>HarnessGate</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0b0d12; --panel:#12151c; --panel2:#171b24; --line:#232833; --line2:#2e3542;
+    --fg:#e8ebf1; --dim:#8b93a5; --dim2:#6b7383;
+    --accent:#5b9cf8; --accent-dim:#2a4a7a;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --purple:#a371f7;
+    --radius:10px;
+    --header-h:49px;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  /* hidden 属性必须赢过内联 display:flex——JS 靠它开关控件，否则切到工作队时
+     带内联样式的「允许改文件」藏不掉（UA 样式会被内联样式覆盖） */
+  [hidden] { display:none !important; }
+  html,body { height:100%; height:100dvh; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.6 ui-sans-serif,system-ui,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column; overflow:hidden; }
+  button,input,select,textarea { font:inherit; color:var(--fg); background:#0d1016; border:1px solid var(--line2); border-radius:8px; padding:6px 10px; }
+  button { cursor:pointer; background:#1a1f2a; transition:border-color .15s, background .15s; white-space:nowrap; }
+  button:hover { border-color:var(--accent); background:#1f2634; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#06101f; border-color:var(--accent); font-weight:600; }
+  button.primary:hover { background:#79b0ff; }
+  button.ghost { background:transparent; border-color:transparent; color:var(--dim); }
+  button.ghost:hover { color:var(--fg); background:#1a1f2a; border-color:var(--line2); }
+  button.mini { padding:2px 8px; font-size:12px; border-radius:6px; }
+  a { color:var(--accent); }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#242a36; border-radius:4px; border:2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background:#333b4a; }
+
+  /* ---------- 顶栏 ---------- */
+  header { display:flex; align-items:center; gap:10px; padding:9px 14px; background:var(--panel);
+    border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; flex-wrap:wrap; min-height:var(--header-h); }
+  .brand { font-weight:700; letter-spacing:.2px; font-size:15px; display:flex; align-items:center; gap:6px; white-space:nowrap; }
+  .brand span { color:var(--accent); }
+  .menu-btn { display:none; }
+  .crumbs { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--dim); min-width:0; }
+  .crumbs b { color:var(--fg); font-weight:600; }
+  .crumbs .sep { color:var(--dim2); }
+  .crumbs a { color:var(--dim); text-decoration:none; cursor:pointer; }
+  .crumbs a:hover { color:var(--accent); }
+  .pill { font-size:11px; border:1px solid var(--line2); border-radius:999px; padding:1px 8px; color:var(--dim); white-space:nowrap; }
+  .pill.ready,.pill.done { color:var(--ok); border-color:#1f4a28; background:#0f1a12; }
+  .pill.starting,.pill.running,.pill.awaiting { color:var(--warn); border-color:#4a3c17; background:#171304; }
+  .pill.error { color:var(--err); border-color:#4a1f22; background:#190d0e; }
+  .pill.saved,.pill.idle { color:var(--dim); }
+  .spacer { flex:1; }
+  .cfgw { display:inline-flex; align-items:center; gap:5px; }
+  .cfgl { font-size:11.5px; color:var(--dim2); white-space:nowrap; }
+  select.sm { padding:4px 8px; font-size:12.5px; max-width:230px; }
+
+  /* ---------- 布局 ---------- */
+  main { display:grid; grid-template-columns:300px 1fr; flex:1; min-height:0; }
+  aside#side { border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  .sideHead { padding:10px; border-bottom:1px solid var(--line); display:flex; gap:6px; align-items:center; }
+  .sideHead input { flex:1; padding:5px 8px; font-size:13px; }
+  #tree { flex:1; overflow:auto; padding:6px; -webkit-overflow-scrolling:touch; }
+  .hNode { margin-bottom:2px; }
+  .hRow { display:flex; align-items:center; gap:7px; padding:6px 8px; border-radius:8px; cursor:pointer; }
+  .hRow:hover { background:#1a1f2a; }
+  .hRow.active { background:#1c2534; }
+  .hRow .dot { width:7px; height:7px; border-radius:50%; background:var(--dim2); flex:none; }
+  .hRow .dot.on { background:var(--ok); box-shadow:0 0 6px #3fb95066; }
+  .hRow .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; }
+  .hRow .ct { font-size:11px; color:var(--dim2); }
+  .caret { width:12px; color:var(--dim2); font-size:10px; flex:none; }
+  .sList { margin:0 0 6px 14px; padding-left:8px; border-left:1px solid var(--line); }
+  .sRow { display:flex; gap:6px; align-items:center; padding:5px 7px; border-radius:7px; cursor:pointer; font-size:12.5px; }
+  .sRow:hover { background:#1a1f2a; }
+  .sRow.active { background:#1c2534; }
+  .sRow .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); }
+  .sRow.active .t { color:var(--fg); }
+
+  section#main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .view { flex:1; overflow:auto; -webkit-overflow-scrolling:touch; }
+  .pad { padding:18px 22px; }
+
+  /* ---------- 卡片（harness 总览） ---------- */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr)); gap:12px; }
+  .card { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:13px 14px; cursor:pointer;
+    transition:border-color .15s, transform .1s, box-shadow .15s; display:flex; flex-direction:column; gap:8px; }
+  .card:hover { border-color:var(--accent-dim); transform:translateY(-1px); box-shadow:0 6px 18px #0006; }
+  .card.off { opacity:.52; }
+  .card.off:hover { border-color:var(--line2); }
+  .card .top { display:flex; align-items:center; gap:8px; }
+  .card .nm { font-weight:600; font-size:14.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .card .ver { font-size:11px; color:var(--dim2); }
+  .card .desc { font-size:12.5px; color:var(--dim); min-height:34px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .meta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; font-size:11.5px; color:var(--dim2); }
+  .badge { font-size:11px; border:1px solid var(--line2); border-radius:999px; padding:0 7px; color:var(--dim); }
+  .badge.reg { color:var(--purple); border-color:#3a2a5c; background:#171029; }
+  .badge.warn { color:var(--warn); border-color:#4a3c17; }
+
+  /* ---------- 会话列表 ---------- */
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:14px 22px 0; }
+  .toolbar .ttl { font-size:17px; font-weight:600; margin-right:6px; }
+  .newbox { display:flex; gap:8px; align-items:center; flex-wrap:wrap; background:var(--panel2); border:1px solid var(--line);
+    border-radius:var(--radius); padding:10px 12px; margin:14px 22px 0; }
+  .newbox input[type=text] { min-width:260px; }
+
+  /* ---------- 工作目录补全 ---------- */
+  .acwrap { position:relative; flex:1; display:flex; min-width:260px; }
+  .acwrap input { width:100%; }
+  .aclist { position:absolute; top:calc(100% + 5px); left:0; right:0; z-index:60; padding:4px;
+    background:var(--panel); border:1px solid var(--line2); border-radius:var(--radius);
+    box-shadow:0 14px 34px rgba(0,0,0,.5); max-height:280px; overflow:auto; }
+  .aclist .it { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:7px;
+    font-size:12.5px; cursor:pointer; }
+  .aclist .it:hover, .aclist .it.on { background:#1f2634; }
+  .aclist .it .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .aclist .it .nm b { color:var(--accent); font-weight:600; }
+  .aclist .ft { display:flex; gap:8px; align-items:center; padding:6px 8px 4px; margin-top:4px;
+    border-top:1px solid var(--line); font-size:11px; color:var(--dim2); }
+  .aclist .ft .p { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .aclist .ft.create { color:var(--warn); }
+  .aclist .ft.bad { color:var(--err); }
+  .rows { padding:12px 22px 30px; display:flex; flex-direction:column; gap:7px; }
+  .row { display:flex; align-items:center; gap:10px; background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:10px 13px; }
+  .row:hover { border-color:var(--line2); }
+  .row .main { flex:1; min-width:0; }
+  .row .t1 { font-size:13.8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .t2 { font-size:11.5px; color:var(--dim2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .acts { display:flex; gap:5px; flex-wrap:wrap; }
+  .empty { color:var(--dim2); text-align:center; padding:60px 20px; }
+  .empty .big { font-size:34px; opacity:.5; margin-bottom:10px; }
+
+  /* ---------- 圆桌（独立视图） ---------- */
+  .rtWrap { padding:18px 22px 40px; max-width:1100px; }
+  .rtHead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:4px; }
+  .rtHead .ttl { font-size:19px; font-weight:600; }
+  .steps { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:14px 0 18px; }
+  .step { display:flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px;
+    border:1px solid var(--line2); background:var(--panel2); font-size:12.5px; color:var(--dim); }
+  .step .n { width:18px; height:18px; border-radius:50%; background:var(--line2); color:var(--fg);
+    display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; }
+  .step.on { border-color:var(--accent); color:var(--fg); }
+  .step.on .n { background:var(--accent); color:#06101f; }
+  .step.done { color:var(--ok); border-color:#1f4a28; }
+  .step.done .n { background:var(--ok); color:#06101f; }
+  .rtCard { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px 18px; margin-bottom:14px; }
+  .rtCard > h3 { font-size:13px; color:var(--dim); margin:0 0 10px; font-weight:600; }
+  /* 向导/圆桌表单里的下拉：小屏不让它撑破容器（选项文字较长） */
+  .rtCard label { max-width:100%; }
+  .rtCard select { max-width:100%; }
+  .pickGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(212px,1fr)); gap:9px; }
+  .pick { display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:99px;
+    border:1px solid var(--line2); background:var(--panel); cursor:pointer; }
+  .pick:hover { border-color:var(--accent); }
+  .pick.sel { border-color:var(--accent); background:#141d2e; }
+  .pick.off { opacity:.42; cursor:not-allowed; }
+  .pick .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+  .pick .st { font-size:10.5px; color:var(--dim2); }
+  /* 第 2 步：每个成员的配置（模型等） */
+  .memberCfg { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
+  .memberCfg .row { display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:7px 0;
+    border-bottom:1px solid var(--line); }
+  .memberCfg .row:last-child { border-bottom:0; }
+  .memberCfg .nm { font-size:13px; font-weight:600; min-width:110px; }
+  .memberCfg label { font-size:11.5px; color:var(--dim2); display:flex; align-items:center; gap:5px; }
+  .memberCfg select { width:auto; max-width:min(320px,42vw); font-size:12px; padding:3px 8px; }
+  .rtTopic { width:100%; min-height:74px; }
+  .rtLog { display:flex; flex-direction:column; gap:12px; }
+  .rtTurn { border-left:2px solid var(--line2); padding:2px 0 2px 13px; }
+  .rtScore { display:inline-block; font-size:11px; color:var(--warn); border:1px solid #4a3a1f; border-radius:6px;
+    padding:0 7px; margin:0 0 5px; background:#1d1810; }
+  .rtTurn .who { font-size:12px; color:var(--dim2); margin-bottom:5px; }
+  .rtTurn .who b { color:var(--accent); font-weight:600; }
+  .rtTurn .txt { font-size:13.5px; line-height:1.62; }
+  .rtTurn .txt > :first-child { margin-top:0; }
+  .rtTurn .txt > :last-child { margin-bottom:0; }
+  .rtTurn.pending { border-left-color:var(--warn); }
+  .rtTurn.pending .txt { color:var(--dim2); font-style:italic; }
+  .rtBadge { font-size:11px; color:var(--dim2); margin-left:6px; }
+
+  /* 按轮次纵向排列：轮内分栏 */
+  .rtRound { margin-bottom:16px; }
+  .rtRound.pending { opacity:.45; }
+  .rtRound.active .rtRoundHead { border-color:var(--accent); }
+  .rtRoundHead { display:flex; align-items:center; gap:9px; padding:7px 0 9px;
+    border-bottom:1px solid var(--line); margin-bottom:10px; }
+  .rtRoundHead .rn { font-size:13.5px; font-weight:600; }
+  .rtRoundHead .rn.host { color:var(--purple); }
+  .rtCols { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(268px,1fr); gap:11px;
+    overflow-x:auto; padding-bottom:6px; align-items:start; -webkit-overflow-scrolling:touch; }
+  .rtCol { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius);
+    min-width:0; display:flex; flex-direction:column; max-height:56vh; }
+  .rtColHead { display:flex; align-items:center; gap:7px; padding:8px 12px; border-bottom:1px solid var(--line);
+    position:sticky; top:0; background:var(--panel2); border-radius:var(--radius) var(--radius) 0 0; z-index:1; }
+  .rtColHead .nm { font-size:12.5px; font-weight:600; flex:1; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .rtColHead .st { font-size:10.5px; color:var(--warn); white-space:nowrap; }
+  .rtColBody { padding:10px 12px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; -webkit-overflow-scrolling:touch; }
+  .rtColBody .rtTurn .txt { font-size:13px; }
+  .rtColBody .rtTurn .txt > :first-child { margin-top:0; }
+  .rtColBody .rtTurn .txt > :last-child { margin-bottom:0; }
+  .rtLive { border-left:2px solid var(--accent); padding-left:10px; }
+  .rtLive .who { font-size:11.5px; color:var(--accent); margin-bottom:4px; }
+  .rtLive .txt { font-size:13px; }
+  .rtLive .txt > :first-child { margin-top:0; }
+  /* 主持人区块：横跨整行 */
+  .rtHostBlock { background:var(--panel2); border:1px solid #3a2a55; border-left:3px solid var(--purple);
+    border-radius:var(--radius); padding:11px 15px; margin-bottom:16px; }
+  .rtHostBlock.liveHost { border-left-color:var(--accent); }
+  .rtHostBlock .rtRoundHead { border-bottom-color:#3a2a55; }
+  .rtHostBody .txt { font-size:13.5px; line-height:1.62; }
+  .rtHostBody .txt > :first-child { margin-top:0; }
+  .rtHostBody .txt > :last-child { margin-bottom:0; }
+  .badge.host { color:var(--purple); border-color:#3a2a55; background:#17111f; }
+  /* 分段控件 */
+  .seg { display:inline-flex; border:1px solid var(--line2); border-radius:8px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; background:transparent; padding:4px 11px; font-size:12px; color:var(--dim); }
+  .seg button + button { border-left:1px solid var(--line2); }
+  .seg button.on { background:var(--accent); color:#06101f; font-weight:600; }
+  .rtPastTopic { padding:7px 0; border-bottom:1px solid var(--line); }
+  .rtPastTopic details { margin-top:5px; }
+  .rtPastTopic summary { cursor:pointer; font-size:11.5px; color:var(--dim2); }
+  /* 工作队（crew）：任务板 */
+  .crewBoard { display:grid; grid-template-columns:repeat(4,minmax(200px,1fr)); gap:10px; margin-bottom:16px; }
+  .crewCol { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:9px 10px; min-width:0; }
+  .crewCol > .hd { font-size:12.5px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .crewCol .cnt { color:var(--dim2); font-weight:400; }
+  .crewTask { background:var(--panel); border:1px solid var(--line2); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:12.5px; }
+  .crewTask .t1 { font-weight:600; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .crewTask .t1 .tid { color:var(--accent); }
+  .crewTask .t2 { font-size:11px; color:var(--dim2); margin-bottom:4px; }
+  .crewTask .files { font-size:11px; color:var(--dim); font-family:var(--vscode-editor-font-family, monospace);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .crewTask details { margin-top:5px; }
+  .crewTask summary { cursor:pointer; font-size:11px; color:var(--dim2); }
+  .crewTask .review-ok { color:var(--ok); } .crewTask .review-bad { color:var(--warn); }
+  .crewTask.failed { border-color:#4a1f22; }
+  .crewWorkerCols { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(268px,1fr); gap:11px;
+    overflow-x:auto; align-items:start; margin-bottom:16px; }
+  .crewBar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:11px 14px; }
+  /* 对话框 */
+  .mask { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(2px); z-index:100; display:flex;
+    align-items:center; justify-content:center; padding:16px; }
+  .dialog { background:var(--panel); border:1px solid var(--line2); border-radius:var(--radius);
+    padding:18px 20px; width:min(430px,94vw); box-shadow:0 20px 50px rgba(0,0,0,.6); }
+
+  /* ---------- 对话与消息 ---------- */
+  #chatWrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; }
+  .chatHead { padding:10px 22px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; color:var(--dim); }
+  /* 发言索引 + 搜索：贴在 chatHead 下面的一条导航栏 */
+  .chatNav { display:flex; gap:6px; align-items:center; padding:6px 22px; border-bottom:1px solid var(--line); position:relative; flex-wrap:wrap; }
+  .searchWrap { position:relative; flex:1; min-width:110px; max-width:320px; display:flex; }
+  .searchWrap input { width:100%; padding:3px 9px; padding-right:26px; font-size:12px; }
+  .searchClear { position:absolute; right:5px; top:50%; transform:translateY(-50%); width:18px; height:18px;
+    border:none; background:var(--panel2); color:var(--dim); border-radius:50%; font-size:11px; line-height:1;
+    display:flex; align-items:center; justify-content:center; padding:0; cursor:pointer; }
+  .searchClear:hover { color:var(--fg); background:var(--line2); }
+  .chatNav .cnt { font-size:11.5px; color:var(--dim2); flex:none; min-width:34px; text-align:center; }
+  /* 看历史时浮现的「回到底部」箭头 */
+  .toBottom { position:absolute; right:24px; bottom:132px; width:36px; height:36px; border-radius:50%;
+    background:var(--panel); border:1px solid var(--line2); color:var(--fg); font-size:17px; z-index:50;
+    display:flex; align-items:center; justify-content:center; box-shadow:0 4px 18px rgba(0,0,0,.55); }
+  .toBottom:hover { border-color:var(--accent); color:var(--accent); }
+  .idxList { position:absolute; top:100%; right:12px; width:min(440px,92vw); max-height:290px; overflow:auto;
+    background:var(--panel); border:1px solid var(--line2); border-radius:8px; z-index:60; box-shadow:0 10px 30px rgba(0,0,0,.55); }
+  .idxItem { padding:6px 10px; border-bottom:1px solid var(--line); cursor:pointer; font-size:12px; display:flex; gap:8px; align-items:baseline; }
+  .idxItem:last-child { border-bottom:0; }
+  .idxItem:hover { background:var(--panel2); }
+  .idxItem .no { color:var(--accent); flex:none; font-weight:600; }
+  .idxItem .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* 搜索结果下拉：像 VS Code 搜索那样列出每条命中行，点击跳转 */
+  .searchDrop { position:absolute; top:100%; left:22px; width:min(520px,92vw); max-height:260px; overflow:auto;
+    background:var(--panel); border:1px solid var(--line2); border-radius:8px; z-index:60; box-shadow:0 10px 30px rgba(0,0,0,.55); }
+  .dropItem { padding:6px 10px; border-bottom:1px solid var(--line); cursor:pointer; font-size:12px;
+    display:flex; gap:8px; align-items:baseline; white-space:nowrap; }
+  .dropItem:last-child { border-bottom:0; }
+  .dropItem:hover, .dropItem.on { background:var(--panel2); }
+  .dropItem .who { flex:none; color:var(--accent); font-size:11px; }
+  .dropItem .ln { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-family:var(--vscode-editor-font-family, monospace); }
+  .dropEmpty { padding:9px 12px; font-size:12px; color:var(--dim2); }
+  .kwhl { background:var(--warn); color:#141414; border-radius:3px; padding:0 1px; }
+  .dropItem.on .kwhl { background:var(--accent); color:#06101f; }
+  /* 命中/当前项：消息框描边 + 正文关键词标黄 */
+  .msg.hit { outline:1px solid var(--warn); outline-offset:2px; }
+  .msg.cur { outline:2px solid var(--accent); outline-offset:2px; }
+  mark.kw { background:var(--warn); color:#141414; border-radius:3px; padding:0 1px; }
+  .msg.cur mark.kw { background:var(--accent); color:#06101f; }
+  #stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; }
+  .msg { margin:0 0 14px; max-width:min(900px,100%); }
+  .msg .who { font-size:11.5px; color:var(--dim2); margin-bottom:4px; letter-spacing:.02em; }
+  .bubble.md { white-space:normal; }
+  .bubble.md > :first-child { margin-top:0; }
+  .bubble.md > :last-child { margin-bottom:0; }
+  .bubble.md h1,.bubble.md h2,.bubble.md h3,.bubble.md h4 { margin:12px 0 6px; line-height:1.3; }
+  .bubble.md h1 { font-size:17.5px; } .bubble.md h2 { font-size:16px; }
+  .bubble.md h3 { font-size:15px; } .bubble.md h4 { font-size:14px; }
+  .bubble.md p { margin:7px 0; }
+  .bubble.md ul,.bubble.md ol { margin:7px 0; padding-left:22px; }
+  .bubble.md li { margin:3px 0; }
+  .bubble.md code { background:#0b0e14; border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; word-break:break-word; }
+  .bubble.md pre { position:relative; background:#0b0e14; border:1px solid var(--line); border-radius:8px;
+    padding:11px 13px; overflow:auto; margin:9px 0; max-width:100%; -webkit-overflow-scrolling:touch; }
+  .bubble.md pre code { background:none; border:none; padding:0; font-size:12.5px; line-height:1.55; white-space:pre; }
+  .bubble.md pre[data-lang]::before { content:attr(data-lang); position:absolute; top:5px; right:9px; font-size:10.5px; color:var(--dim2); }
+  .bubble.md blockquote { border-left:3px solid var(--line2); margin:7px 0; padding:3px 11px; color:var(--dim); }
+  .bubble.md hr { border:none; border-top:1px solid var(--line); margin:11px 0; }
+  .bubble.md a { color:var(--accent); word-break:break-all; }
+  .bubble.md table { border-collapse:collapse; margin:9px 0; font-size:13px; display:block; overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+  .bubble.md th,.bubble.md td { border:1px solid var(--line2); padding:5px 10px; text-align:left; }
+  .bubble.md th { background:#161b24; font-weight:600; }
+  .bubble.md strong { color:#fff; }
+  .bubble { white-space:pre-wrap; word-break:break-word; background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:10px 13px; }
+  .user { margin-left:auto; }
+  .user .who { text-align:right; }
+  .user .bubble { background:#16233a; border-color:#26405f; }
+  .thought .bubble, .think .bubble { color:var(--dim); font-style:italic; background:transparent; border-style:dashed; }
+  
+  /* ---------- 🛠️ 现代化 Tool 调用卡片样式 ---------- */
+  @keyframes toolPulse { 0%, 100% { opacity:1; } 50% { opacity:0.6; } }
+  .tool .bubble {
+    background: #0e1218;
+    border: 1px solid #1f2735;
+    border-radius: var(--radius);
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  }
+  .toolHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #131822;
+    cursor: pointer;
+    user-select: none;
+    transition: background .15s;
+    gap: 8px;
+  }
+  .toolHeader:hover {
+    background: #18202d;
+  }
+  .toolInfo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+  .toolIcon {
+    font-size: 14px;
+    flex: none;
+  }
+  .toolTitle {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #e2e8f0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .toolMeta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+  }
+  .toolBadge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .toolBadge.st-run {
+    background: #2b1d05;
+    color: #f59e0b;
+    border: 1px solid #78350f;
+    animation: toolPulse 1.8s infinite ease-in-out;
+  }
+  .toolBadge.st-done {
+    background: #062312;
+    color: #3fb950;
+    border: 1px solid #14532d;
+  }
+  .toolBadge.st-err {
+    background: #2a0b0e;
+    color: #f85149;
+    border: 1px solid #7f1d1d;
+  }
+  .toolChevron {
+    color: var(--dim2);
+    font-size: 11px;
+    width: 14px;
+    text-align: center;
+    transition: transform .15s;
+  }
+  .toolBody {
+    padding: 10px 12px;
+    border-top: 1px solid #19202c;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #0b0e14;
+  }
+  .toolBody.collapsed {
+    display: none;
+  }
+  .toolSec {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .toolSecLabel {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--dim2);
+    font-weight: 600;
+  }
+  .toolCode {
+    margin: 0;
+    background: #07090e;
+    border: 1px solid #1a2230;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #cbd5e1;
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-overflow-scrolling: touch;
+  }
+  .toolCode.toolOut {
+    color: #7ee787;
+    background: #05080c;
+  }
+
+  .err .bubble { background:#261315; border-color:#54211f; color:#ffb4b4; }
+  .perm .bubble { background:#241f10; border-color:#54441a; }
+  .perm button { margin:7px 6px 0 0; }
+  .log .bubble { color:var(--dim2); font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  footer.composer { border-top:1px solid var(--line); background:var(--panel); padding:10px 14px; display:flex; flex-direction:column; gap:8px; }
+  .composerRow { display:flex; gap:8px; align-items:flex-end; }
+  .composerRow textarea { flex:1; resize:vertical; min-height:44px; max-height:180px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chips:empty { display:none; }
+  .chip { display:flex; align-items:center; gap:5px; font-size:12px; background:#0d1016; border:1px solid var(--line2); border-radius:7px; padding:2px 6px; }
+  .chip img { width:22px; height:22px; object-fit:cover; border-radius:3px; }
+
+  /* ---------- 抽屉与遮罩 ---------- */
+  .drawer { position:fixed; top:var(--header-h); right:0; bottom:0; width:min(480px,92vw); background:var(--panel); border-left:1px solid var(--line);
+    padding:14px; overflow:auto; z-index:30; box-shadow:-12px 0 30px #0007; -webkit-overflow-scrolling:touch; }
+  .drawer h3 { font-size:12px; color:var(--dim2); margin:14px 0 6px; text-transform:uppercase; letter-spacing:.05em; }
+  .drawer .hd { display:flex; justify-content:space-between; align-items:center; }
+  .wsRow { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; font-size:12.5px; background:var(--panel2); }
+  .wsRow.conflict { border-color:#54441a; background:#1c1808; }
+  .meta2 { color:var(--dim2); font-size:11.5px; }
+  .turn { border-left:2px solid var(--line2); padding-left:9px; margin:8px 0; font-size:12.5px; }
+  .turn .who { color:var(--dim); font-size:11.5px; }
+  .turn .txt { white-space:pre-wrap; max-height:190px; overflow:auto; }
+  .turn pre { white-space:pre-wrap; font-size:11px; color:var(--dim2); background:#0d1016; padding:7px; border-radius:6px; }
+  .turn summary { color:var(--dim2); font-size:11.5px; cursor:pointer; }
+  .sideMask { display:none; }
+  .sideMask[hidden] { display:none !important; } /* fix: 移动端 display:block 会覆盖 [hidden]，导致全屏 blur 遮罩常驻 */
+
+  
+  /* ---------- Toast 提示 ---------- */
+  .toast { position:fixed; top:58px; left:50%; transform:translateX(-50%) translateY(-10px);
+    background:#171f30; color:#e2e8f0; border:1px solid #3b82f6; border-radius:999px;
+    padding:6px 16px; font-size:12.5px; font-weight:500; box-shadow:0 8px 24px rgba(0,0,0,0.6);
+    z-index:300; opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  /* =====================================================================
+     📱 移动端屏幕/UA 响应式适配 (Mobile Styles)
+     ===================================================================== */
+  @media (max-width: 860px) {
+    :root { --header-h:44px; }
+    header { padding:6px 8px; gap:6px; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; position:relative; }
+    header::-webkit-scrollbar { display:none; }
+    .menu-btn { display:inline-flex; align-items:center; justify-content:center; font-size:16px; padding:4px 8px; min-width:32px; height:32px; flex:none; }
+    .brand { font-size:14px; flex:none; }
+    .crumbs { font-size:12px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .crumbs b, .crumbs a { max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom; }
+    .pill { font-size:10px; padding:1px 6px; flex:none; }
+    .spacer { display:none; }
+    .cfgw { flex:none; }
+    header .cfgl { display:none; }
+    select.sm { max-width:110px; font-size:11px; padding:2px 4px; }
+    button.mini { padding:3px 7px; font-size:11.5px; flex:none; }
+
+    main { display:flex; flex-direction:column; position:relative; height:calc(100% - var(--header-h)); overflow:hidden; }
+
+    aside#side {
+      position:fixed; top:0; bottom:0; left:0; width:min(300px,82vw); height:100%; height:100dvh;
+      z-index:120; background:var(--panel); transform:translateX(-100%);
+      transition:transform .24s cubic-bezier(0.4,0,0.2,1); box-shadow:12px 0 35px rgba(0,0,0,0.7);
+      border-right:1px solid var(--line2);
+    }
+    aside#side.open { transform:translateX(0); }
+    .sideMask { display:block; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(2px); z-index:115; }
+
+    section#main { flex:1; width:100%; min-width:0; height:100%; }
+
+    .pad { padding:12px 10px; }
+    .grid { grid-template-columns:1fr; gap:10px; }
+    .toolbar { padding:10px 10px 0; }
+    .newbox { margin:10px 10px 0; padding:10px; flex-direction:column; align-items:stretch; }
+    .newbox input[type=text] { min-width:100%; }
+    .acwrap { min-width:100%; }
+    .rows { padding:10px 10px 30px; gap:8px; }
+    .row { flex-direction:column; align-items:flex-start; gap:8px; padding:10px 12px; }
+    .row .acts { width:100%; justify-content:flex-end; border-top:1px solid var(--line); padding-top:6px; margin-top:2px; }
+
+    .chatHead { padding:8px 10px; font-size:11.5px; gap:6px; }
+    #stream { padding:12px 8px; }
+    .msg { max-width:98%; margin-bottom:12px; }
+    .bubble { padding:9px 11px; font-size:13.5px; }
+    footer.composer { padding:8px 10px; padding-bottom:max(8px, env(safe-area-inset-bottom)); }
+    .composerRow { gap:6px; }
+    .composerRow textarea { min-height:40px; font-size:14px; padding:6px 8px; }
+    #sendBtn, #attachBtn { height:40px; padding:0 12px; display:inline-flex; align-items:center; justify-content:center; }
+
+    .rtWrap { padding:12px 10px 30px; }
+    .rtCard { padding:12px 12px; }
+    .pickGrid { grid-template-columns:1fr; }
+    .rtCols { grid-auto-columns:minmax(82vw,86vw); scroll-snap-type:x mandatory; padding-bottom:8px; }
+    .rtCol { scroll-snap-align:start; max-height:62vh; }
+    .memberCfg .row { flex-direction:column; align-items:flex-start; gap:4px; }
+    .memberCfg select { max-width:100%; width:100%; }
+
+    .drawer { top:0; left:0; right:0; bottom:0; width:100vw; max-width:100vw; height:100%; height:100dvh; border-left:none; z-index:150; padding:14px 12px; }
+  }
+
+  /* 当通过 User-Agent 或手动切换强制开启手机模式时生效 */
+  html.is-mobile { --header-h:44px; }
+  html.is-mobile header { padding:6px 8px; gap:6px; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; position:relative; }
+  html.is-mobile header::-webkit-scrollbar { display:none; }
+  html.is-mobile .menu-btn { display:inline-flex; align-items:center; justify-content:center; font-size:16px; padding:4px 8px; min-width:32px; height:32px; flex:none; }
+  html.is-mobile .brand { font-size:14px; flex:none; }
+  html.is-mobile .crumbs { font-size:12px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  html.is-mobile .crumbs b, html.is-mobile .crumbs a { max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom; }
+  html.is-mobile .pill { font-size:10px; padding:1px 6px; flex:none; }
+  html.is-mobile .spacer { display:none; }
+  html.is-mobile .cfgw { flex:none; }
+  html.is-mobile header .cfgl { display:none; }
+  html.is-mobile select.sm { max-width:110px; font-size:11px; padding:2px 4px; }
+  html.is-mobile button.mini { padding:3px 7px; font-size:11.5px; flex:none; }
+
+  html.is-mobile main { display:flex; flex-direction:column; position:relative; height:calc(100% - var(--header-h)); overflow:hidden; }
+
+  html.is-mobile aside#side {
+    position:fixed; top:0; bottom:0; left:0; width:min(300px,82vw); height:100%; height:100dvh;
+    z-index:120; background:var(--panel); transform:translateX(-100%);
+    transition:transform .24s cubic-bezier(0.4,0,0.2,1); box-shadow:12px 0 35px rgba(0,0,0,0.7);
+    border-right:1px solid var(--line2);
+  }
+  html.is-mobile aside#side.open { transform:translateX(0); }
+  html.is-mobile .sideMask { display:block; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(2px); z-index:115; }
+
+  html.is-mobile section#main { flex:1; width:100%; min-width:0; height:100%; }
+
+  html.is-mobile .pad { padding:12px 10px; }
+  html.is-mobile .grid { grid-template-columns:1fr; gap:10px; }
+  html.is-mobile .toolbar { padding:10px 10px 0; }
+  html.is-mobile .newbox { margin:10px 10px 0; padding:10px; flex-direction:column; align-items:stretch; }
+  html.is-mobile .newbox input[type=text] { min-width:100%; }
+  html.is-mobile .acwrap { min-width:100%; }
+  html.is-mobile .rows { padding:10px 10px 30px; gap:8px; }
+  html.is-mobile .row { flex-direction:column; align-items:flex-start; gap:8px; padding:10px 12px; }
+  html.is-mobile .row .acts { width:100%; justify-content:flex-end; border-top:1px solid var(--line); padding-top:6px; margin-top:2px; }
+
+  html.is-mobile .chatHead { padding:8px 10px; font-size:11.5px; gap:6px; }
+  html.is-mobile .chatNav { padding:6px 10px; }
+  html.is-mobile .searchWrap { max-width:none; }
+  html.is-mobile .toBottom { right:12px; bottom:118px; width:32px; height:32px; font-size:15px; }
+  html.is-mobile #stream { padding:12px 8px; }
+  html.is-mobile .msg { max-width:98%; margin-bottom:12px; }
+  html.is-mobile .bubble { padding:9px 11px; font-size:13.5px; }
+  html.is-mobile footer.composer { padding:8px 10px; padding-bottom:max(8px, env(safe-area-inset-bottom)); }
+  html.is-mobile .composerRow { gap:6px; }
+  html.is-mobile .composerRow textarea { min-height:40px; font-size:14px; padding:6px 8px; }
+  html.is-mobile #sendBtn, html.is-mobile #attachBtn { height:40px; padding:0 12px; display:inline-flex; align-items:center; justify-content:center; }
+
+  html.is-mobile .rtWrap { padding:12px 10px 30px; }
+  html.is-mobile .rtCard { padding:12px 12px; }
+  html.is-mobile .pickGrid { grid-template-columns:1fr; }
+  html.is-mobile .rtCols { grid-auto-columns:minmax(82vw,86vw); scroll-snap-type:x mandatory; padding-bottom:8px; }
+  html.is-mobile .rtCol { scroll-snap-align:start; max-height:62vh; }
+  html.is-mobile .memberCfg .row { flex-direction:column; align-items:flex-start; gap:4px; }
+  html.is-mobile .memberCfg select { max-width:100%; width:100%; }
+
+  html.is-mobile .drawer { top:0; left:0; right:0; bottom:0; width:100vw; max-width:100vw; height:100%; height:100dvh; border-left:none; z-index:150; padding:14px 12px; }
+
+</style>
+</head>
+<body>
+
+<header>
+  <button id="menuBtn" class="menu-btn ghost" title="打开导航">☰</button>
+  <div class="brand"><span>⚡</span>HarnessGate</div>
+  <div class="crumbs" id="crumbs"></div>
+  <div class="spacer"></div>
+  <div id="cfg" style="display:inline-flex;gap:8px;align-items:center"></div>
+  <div class="cfgw" id="modeWrap" style="display:none">
+    <span class="cfgl">模式</span>
+    <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
+  </div>
+  <button id="roomBtn" class="mini">圆桌</button>
+  <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
+  <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
+  <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
+  <span id="conn" class="pill">连接中…</span>
+</header>
+
+<div id="sideMask" class="sideMask" hidden></div>
+<div id="toast" class="toast"></div>
+
+<main>
+  <aside id="side">
+    <div class="sideHead">
+      <input type="text" id="filter" placeholder="过滤 harness / 会话…" />
+      <button class="mini ghost" id="collapseAll" title="全部折叠">▾</button>
+    </div>
+    <div id="tree"></div>
+  </aside>
+  <section id="main">
+    <div id="viewRoot" class="view"></div>
+  </section>
+</main>
+
+<div id="wsPanel" class="drawer" hidden></div>
+<input type="file" id="fileInput" multiple style="display:none" />
+
+<script>
+/* =====================================================================
+   状态与数据源
+   ===================================================================== */
+const state = {
+  view: "harnesses",      // "harnesses" | "sessions" | "chat" | "roundtable"
+  harnessId: null,
+  sessionId: null,
+  roomId: null,
+  filter: "",
+  rtStep: 1,
+  rtCwd: "",
+  rtPicked: new Set(),
+  rtMemberCfg: {},        // { [harnessId]: { [configId]: value } }
+  rtMemberVars: {},       // { [harnessId]: { [变量名]: 值 } }（如 openclaw 的 HG_OPENCLAW_AGENT）
+  rtHost: "",
+  rtHostOpening: true,
+  rtHostRound: true,
+  rtHostFinal: true,
+  rtHostStyle: "divergent",
+};
+
+let ws = null;
+let harnesses = new Map();
+let sessions = new Map();
+let rooms = [];
+let pendingFiles = [];
+let entries = [];
+let nodes = [];
+let streamingAssistant = false;
+let transcriptBase = 0;
+let showLog = false;
+let pendingRoomStart = false;
+let pendingCreate = false;   // 新建会话后等服务端回包，自动进入对话
+const collapsedHarnesses = new Set();
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[c]);
+
+/* =====================================================================
+   WebSocket
+   ===================================================================== */
+function tokenOf() {
+  /* 2026-09-19 服务端开启认证：URL ?token= 优先，存 localStorage 供后续免参访问 */
+  try {
+    const qp = new URLSearchParams(location.search).get("token");
+    if (qp) { localStorage.setItem("hg_token", qp); return qp; }
+    return localStorage.getItem("hg_token") || "";
+  } catch { return ""; }
+}
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const tk = tokenOf();
+  ws = new WebSocket(`${proto}//${location.host}/ws${tk ? `?token=${encodeURIComponent(tk)}` : ""}`);
+  ws.onopen = () => {
+    $("conn").textContent = "已连接";
+    $("conn").className = "pill ready";
+  };
+  ws.onclose = (ev) => {
+    if (ev && ev.code === 4401) {
+      /* 2026-09-19: 认证失败不要疯巴重连，放慢等 localStorage 里的 token */
+      $("conn").textContent = "认证失败";
+      $("conn").className = "pill error";
+      setTimeout(connect, 5000);
+      return;
+    }
+    $("conn").textContent = "已断开";
+    $("conn").className = "pill error";
+    setTimeout(connect, 1500);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      handleServer(msg);
+    } catch (e) {
+      console.error("ws 消息解析失败", e, ev.data);
+    }
+  };
+}
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+    return true;
+  }
+  return false;
+}
+connect();
+
+
+/* =====================================================================
+   设备识别与显示模式 (User-Agent & View Mode)
+   ===================================================================== */
+function isMobileUA() {
+  const ua = navigator.userAgent || navigator.vendor || window.opera || "";
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk|HarmonyOS|XiaoMi|MiuiBrowser|MicroMessenger|Mobile Safari|Mobile Chrome/i.test(ua);
+}
+
+function detectIsMobile() {
+  const pref = localStorage.getItem("hg_view_mode"); // "mobile" | "desktop" | "auto"
+  if (pref === "mobile") return true;
+  if (pref === "desktop") return false;
+  const mobUA = isMobileUA();
+  const isTouch = (navigator.maxTouchPoints > 0 || ("ontouchstart" in window)) && window.innerWidth <= 1024;
+  const isNarrow = window.innerWidth <= 860;
+  return mobUA || isTouch || isNarrow;
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function applyDeviceMode() {
+  const isMob = detectIsMobile();
+  if (isMob) {
+    document.documentElement.classList.add("is-mobile");
+    document.body.classList.add("is-mobile");
+  } else {
+    document.documentElement.classList.remove("is-mobile");
+    document.body.classList.remove("is-mobile");
+  }
+  const pref = localStorage.getItem("hg_view_mode") || "auto";
+  const btn = $("devModeBtn");
+  if (btn) {
+    if (pref === "mobile") {
+      btn.textContent = "📱 手机";
+      btn.title = "当前：强制手机模式（点击切换为电脑版）";
+    } else if (pref === "desktop") {
+      btn.textContent = "💻 电脑";
+      btn.title = "当前：强制电脑模式（点击切换为自动识别）";
+    } else {
+      btn.textContent = isMob ? "⚡ 手机" : "⚡ 电脑";
+      btn.title = `当前：自动识别（${isMob ? "手机模式" : "电脑模式"}，点击切换）`;
+    }
+  }
+}
+
+function cycleDeviceMode() {
+  const cur = localStorage.getItem("hg_view_mode") || "auto";
+  let next = "auto";
+  let tip = "";
+  if (cur === "auto") {
+    next = "mobile";
+    tip = "📱 已强制切换为：手机版";
+  } else if (cur === "mobile") {
+    next = "desktop";
+    tip = "💻 已强制切换为：电脑版";
+  } else {
+    next = "auto";
+    const mob = isMobileUA() || window.innerWidth <= 860;
+    tip = `⚡ 已恢复自动模式（识别为${mob ? "手机" : "电脑"}）`;
+  }
+  localStorage.setItem("hg_view_mode", next);
+  applyDeviceMode();
+  showToast(tip);
+}
+
+const devModeBtn = $("devModeBtn");
+if (devModeBtn) devModeBtn.onclick = cycleDeviceMode;
+window.addEventListener("resize", applyDeviceMode);
+applyDeviceMode();
+
+/* =====================================================================
+   移动端抽屉控制
+   ===================================================================== */
+const sideEl = $("side");
+const sideMask = $("sideMask");
+const menuBtn = $("menuBtn");
+
+function openSide() {
+  if (sideEl) sideEl.classList.add("open");
+  if (sideMask) sideMask.hidden = false;
+}
+function closeSide() {
+  if (sideEl) sideEl.classList.remove("open");
+  if (sideMask) sideMask.hidden = true;
+}
+if (menuBtn) {
+  menuBtn.onclick = () => {
+    if (sideEl && sideEl.classList.contains("open")) closeSide();
+    else openSide();
+  };
+}
+if (sideMask) {
+  sideMask.onclick = closeSide;
+}
+
+/* =====================================================================
+   服务端消息分发
+   ===================================================================== */
+function handleServer(msg) {
+  switch (msg.type) {
+    case "init":
+    case "hello": /* 2026-09-19 服务端协议改名 init→hello */
+      harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
+      sessions = new Map((msg.sessions || []).map((s) => [s.id, s]));
+      rooms = msg.rooms || [];
+      $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
+      render();
+      break;
+    case "status":
+    case "session": /* 2026-09-19 服务端协议改名 status→session */
+      if (msg.session) {
+        const isNewSession = !sessions.has(msg.session.id);
+        sessions.set(msg.session.id, msg.session);
+        renderTree();
+        if (isNewSession && pendingCreate) {
+          pendingCreate = false;
+          openSession(msg.session.id);   // 新建后自动进入对话（原行为）
+          break;
+        }
+        if (state.view === "chat" && state.sessionId === msg.session.id) {
+          updateChatHeader();
+          renderModes();
+          renderConfig();
+        }
+      }
+      break;
+    case "update":
+      if (state.view === "chat" && state.sessionId === msg.sessionId) {
+        applyUpdate(msg.update);
+      }
+      if (state.view === "roundtable") {
+        applyRoomUpdate(msg.sessionId, msg.update);
+      }
+      break;
+    case "transcript":
+      if (state.view === "chat" && state.sessionId === msg.sessionId) {
+        entries = msg.entries || [];
+        renderAll();
+      }
+      break;
+    case "turn-end":
+      if (state.view === "chat" && state.sessionId === msg.sessionId) {
+        streamingAssistant = false;
+      }
+      break;
+    case "permission":
+      if (state.view === "chat" && state.sessionId === msg.sessionId) {
+        pushEntry({
+          kind: "permission",
+          title: msg.title,
+          requestId: msg.requestId,
+          options: msg.options,
+        });
+      }
+      break;
+    case "log":
+      if (state.view === "chat" && state.sessionId === msg.sessionId && showLog) {
+        pushEntry({ kind: "log", text: msg.line });
+      }
+      break;
+    case "workspace":
+      renderWorkspace(msg.reports);
+      break;
+    case "rooms":
+      rooms = msg.rooms || [];
+      if (pendingRoomStart && rooms.length) {
+        const newest = rooms[rooms.length - 1];
+        if (newest && newest.status === "running") {
+          pendingRoomStart = false;
+          state.view = "roundtable";
+          state.roomId = newest.id;
+        }
+      }
+      if (state.view === "roundtable") renderRoundtable();
+      break;
+    case "room":
+      {
+        const idx = rooms.findIndex((r) => r.id === msg.room.id);
+        if (idx >= 0) rooms[idx] = msg.room;
+        else rooms.push(msg.room);
+        if (pendingRoomStart && msg.room.id) {
+          pendingRoomStart = false;
+          state.view = "roundtable";
+          state.roomId = msg.room.id;
+        }
+        if (state.view === "roundtable" && state.roomId === msg.room.id) {
+          renderRoundtable();
+        }
+      }
+      break;
+    case "sync-result":
+    case "history": /* 2026-09-19 服务端协议改名 sync-result→history */
+      renderSyncResult(msg.summaries || []);
+      break;
+    case "deleted": /* 2026-09-19 新增：会话删除广播 */
+      sessions.delete(msg.sessionId);
+      if (state.sessionId === msg.sessionId) { state.view = "harnesses"; state.sessionId = null; }
+      render();
+      break;
+    case "handoff_done": /* 2026-09-19 新增：接续完成后跳到新会话 */
+      if (msg.to) openSession(msg.to);
+      break;
+    case "dirs":
+      if (acList?.isConnected && msg.reqId === acList.dataset.req) { acData = msg; paintDirList(); }
+      break;
+  }
+}
+
+/* =====================================================================
+   渲染调度
+   ===================================================================== */
+function render() {
+  renderCrumbs();
+  renderTree();
+  if (state.view === "harnesses") renderHarnessGrid();
+  else if (state.view === "sessions") renderSessionList();
+  else if (state.view === "chat") renderChat();
+  else if (state.view === "roundtable") renderRoundtable();
+}
+
+function renderCrumbs() {
+  const c = $("crumbs");
+  const h = state.harnessId ? harnesses.get(state.harnessId) : null;
+  const s = state.sessionId ? sessions.get(state.sessionId) : null;
+  const room = state.roomId ? rooms.find((r) => r.id === state.roomId) : null;
+
+  let html = `<a onclick="navHome()">总览</a>`;
+  if (state.view === "roundtable") {
+    html += `<span class="sep">/</span>`;
+    if (room) {
+      html += `<a onclick="navRoomList()">圆桌</a><span class="sep">/</span><b>${esc(room.topic.slice(0, 24))}</b>`;
+    } else {
+      html += `<b>新建圆桌</b>`;
+    }
+  } else if (h) {
+    html += `<span class="sep">/</span><a onclick="navHarness('${h.id}')">${esc(h.label)}</a>`;
+    if (s) {
+      html += `<span class="sep">/</span><b>${esc(s.title || "#" + s.id)}</b>`;
+    }
+  }
+  c.innerHTML = html;
+}
+
+function navHome() {
+  state.view = "harnesses";
+  state.harnessId = null;
+  state.sessionId = null;
+  state.roomId = null;
+  closeSide();
+  render();
+}
+function navHarness(id) {
+  state.view = "sessions";
+  state.harnessId = id;
+  state.sessionId = null;
+  state.roomId = null;
+  closeSide();
+  render();
+}
+function navRoomList() {
+  state.view = "roundtable";
+  state.roomId = null;
+  state.rtStep = 1;
+  closeSide();
+  render();
+}
+
+/* =====================================================================
+   左侧树
+   ===================================================================== */
+$("filter").oninput = (e) => { state.filter = e.target.value.toLowerCase().trim(); renderTree(); };
+$("collapseAll").onclick = () => {
+  if (collapsedHarnesses.size === harnesses.size) collapsedHarnesses.clear();
+  else for (const id of harnesses.keys()) collapsedHarnesses.add(id);
+  renderTree();
+};
+
+function renderTree() {
+  const tree = $("tree");
+  const filter = state.filter;
+  let html = "";
+
+  for (const h of harnesses.values()) {
+    const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
+    const liveCount = list.filter((s) => s.live).length;
+    const matchH = !filter || h.label.toLowerCase().includes(filter) || h.id.includes(filter);
+    const matchedSessions = list.filter((s) =>
+      matchH || (s.title && s.title.toLowerCase().includes(filter)) || s.cwd.toLowerCase().includes(filter) || s.id.includes(filter)
+    );
+    if (filter && !matchH && !matchedSessions.length) continue;
+
+    const collapsed = collapsedHarnesses.has(h.id) && !filter;
+    const activeH = state.harnessId === h.id && state.view === "sessions";
+    html += `
+      <div class="hNode">
+        <div class="hRow ${activeH ? "active" : ""}" data-hid="${h.id}">
+          <span class="caret" data-toggle="${h.id}">${collapsed ? "▸" : "▾"}</span>
+          <span class="dot ${liveCount ? "on" : ""}"></span>
+          <span class="nm">${esc(h.label)}</span>
+          <span class="ct">${list.length}</span>
+        </div>
+        ${!collapsed ? `
+          <div class="sList">
+            ${matchedSessions.map((s) => {
+              const activeS = state.sessionId === s.id;
+              return `
+                <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}">
+                  <span class="pill ${s.status}" style="font-size:9.5px;padding:0 5px">${STATUS_TAG[s.status] || s.status}</span>
+                  <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
+                </div>`;
+            }).join("")}
+          </div>` : ""}
+      </div>`;
+  }
+  tree.innerHTML = html || '<div class="empty" style="padding:20px 0;font-size:12px">无匹配</div>';
+
+  tree.querySelectorAll(".hRow").forEach((el) => {
+    el.onclick = (e) => {
+      if (e.target.dataset.toggle) {
+        const id = e.target.dataset.toggle;
+        if (collapsedHarnesses.has(id)) collapsedHarnesses.delete(id);
+        else collapsedHarnesses.add(id);
+        renderTree();
+        return;
+      }
+      navHarness(el.dataset.hid);
+    };
+  });
+  tree.querySelectorAll(".sRow").forEach((el) => {
+    el.onclick = () => {
+      openSession(el.dataset.sid);
+      closeSide();
+    };
+  });
+}
+
+const STATUS_TAG = { ready: "run", starting: "init", awaiting: "auth", error: "err", saved: "save" };
+const STATUS = { ready: "运行中", starting: "启动中", awaiting: "等授权", error: "出错", saved: "已归档" };
+
+/* =====================================================================
+   总览视图（卡片）
+   ===================================================================== */
+function renderHarnessGrid() {
+  const root = $("viewRoot");
+  const list = [...harnesses.values()];
+  root.innerHTML = `
+    <div class="pad">
+      <div class="toolbar" style="padding:0 0 14px 0">
+        <span class="ttl">已接入的 Harness (${list.length})</span>
+        <span class="spacer"></span>
+        <button class="mini" id="newAny">新建任意会话</button>
+      </div>
+      <div class="grid">
+        ${list.map((h) => {
+          const ss = [...sessions.values()].filter((s) => s.harnessId === h.id);
+          const live = ss.filter((s) => s.live).length;
+          return `
+            <div class="card ${h.available ? "" : "off"}" data-h="${h.id}">
+              <div class="top">
+                <span class="nm">${esc(h.label)}</span>
+                <span class="badge ${h.registered ? "reg" : ""}">${h.registered ? "注册" : "内置"}</span>
+                ${h.available ? "" : '<span class="badge warn">不可用</span>'}
+              </div>
+              <div class="desc">${esc(h.note || "（无说明）")}</div>
+              <div class="meta">
+                <span>会话: <b>${ss.length}</b></span>
+                ${live ? `<span style="color:var(--ok)">· 活跃 ${live}</span>` : ""}
+                <span class="spacer"></span>
+                <span>${esc(h.driver)}</span>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </div>`;
+
+  root.querySelectorAll(".card").forEach((c) => {
+    c.onclick = () => navHarness(c.dataset.h);
+  });
+  const any = $("newAny");
+  if (any) any.onclick = () => {
+    const first = [...harnesses.values()].find((h) => h.available);
+    if (first) navHarness(first.id);
+  };
+}
+
+/* =====================================================================
+   会话列表视图
+   ===================================================================== */
+function renderSessionList() {
+  const root = $("viewRoot");
+  const h = harnesses.get(state.harnessId);
+  if (!h) { state.view = "harnesses"; return render(); }
+  const savedCwd = localStorage.getItem("hg_cwd_" + h.id) || root.dataset.cwd || "";
+
+  const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
+  list.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+
+  root.innerHTML = `
+    <div class="toolbar">
+      <span class="ttl">${esc(h.label)}</span>
+      <span class="badge ${h.registered ? "reg" : ""}">${h.registered ? "注册" : "内置"}</span>
+      <span class="meta2">${esc(h.cmd)} ${esc((h.args || []).join(" "))}</span>
+      <span class="spacer"></span>
+      <button class="mini" id="openDoctor">探活详情</button>
+    </div>
+
+    <div class="newbox">
+      <span style="font-weight:600;font-size:13.5px">启动新会话</span>
+      <div class="acwrap">
+        <input type="text" id="newCwd" value="${esc(savedCwd)}" placeholder="/path/to/project (输入路径支持自动补全)" />
+      </div>
+      ${(h.extraAgents || []).length ? `<select id="newAgent" class="sm" title="OpenClaw agent">
+        ${(h.extraAgents).map((a) => `<option value="${esc(a)}" ${a === (localStorage.getItem("hg_ocagent_" + h.id) || "main") ? "selected" : ""}>${esc(a)}</option>`).join("")}
+      </select>` : ""}
+      <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="newIso" style="width:auto" />git worktree 隔离</label>
+      <button class="primary" id="startBtn">启动</button>
+    </div>
+
+    <div class="rows">
+      ${list.map((s) => `
+        <div class="row" data-sid="${s.id}">
+          <span class="pill ${s.status}">${STATUS[s.status] || s.status}</span>
+          <div class="main">
+            <div class="t1"><b>${esc(s.title || "(无标题)")}</b></div>
+            <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
+          </div>
+          <div class="acts">
+            <button class="mini primary" data-act="open">进入</button>
+            ${s.live ? '<button class="mini" data-act="stop">停止</button>' : s.resumable ? '<button class="mini" data-act="resume">恢复</button>' : ""}
+            <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
+            <button class="mini ghost" data-act="del" title="删除记录">删除</button>
+          </div>
+        </div>`).join("") || '<div class="empty"><div class="big">📭</div>还没有会话，在上方输入工作目录启动一个。</div>'}
+    </div>`;
+
+  const cwdInp = $("newCwd");
+  attachDirComplete(cwdInp, { click: () => $("startBtn").click() });
+
+  $("startBtn").onclick = () => {
+    const cwd = cwdInp.value.trim();
+    if (!cwd) { alert("请先填写工作目录"); return; }
+    localStorage.setItem("hg_cwd_" + h.id, cwd);
+    const agentSel = $("newAgent");
+    if (agentSel) localStorage.setItem("hg_ocagent_" + h.id, agentSel.value);
+    pendingCreate = true;
+    const vars = agentSel ? { HG_OPENCLAW_AGENT: agentSel.value } : undefined;
+    send({ type: "create", harnessId: h.id, cwd, isolate: $("newIso")?.checked || false, vars });
+  };
+
+  root.querySelectorAll(".row").forEach((el) => {
+    const id = el.dataset.sid;
+    el.querySelectorAll("button[data-act]").forEach((b) => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const act = b.dataset.act;
+        if (act === "open") openSession(id);
+        if (act === "stop") send({ type: "close", sessionId: id });
+        if (act === "resume") send({ type: "resume", sessionId: id });
+        if (act === "handoff") send({ type: "handoff", sessionId: id });
+        if (act === "del") { if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: id }); }
+      };
+    });
+    el.onclick = () => openSession(id);
+  });
+}
+
+/* ---------- 目录自动补全 ---------- */
+let acInput = null, acList = null, acData = null, acActive = -1, acTimer = null;
+
+/** 工作目录补全（VS Code 那种）：边打边列目录；不存在的路径提示可创建；圆桌向导也复用 */
+function attachDirComplete(input, goBtn) {
+  if (!input) return;
+  const wrap = document.createElement("div");
+  wrap.className = "acwrap";
+  input.replaceWith(wrap);
+  wrap.appendChild(input);
+  const list = document.createElement("div");
+  list.className = "aclist";
+  list.hidden = true;
+  wrap.appendChild(list);
+  acInput = input; acList = list; acData = null; acActive = -1;
+  /** 回车且没有高亮候选时的动作：传元素就 click()，传对象就调它的 click() */
+  const submit = () => { if (!goBtn) return; if (typeof goBtn.click === "function") goBtn.click(); };
+
+  const ask = () => {
+    const reqId = Math.random().toString(36).slice(2);
+    list.dataset.req = reqId;
+    acActive = -1;
+    send({ type: "dirs", reqId, input: input.value.trim() });
+  };
+  input.addEventListener("input", () => { clearTimeout(acTimer); acTimer = setTimeout(ask, 110); });
+  input.addEventListener("focus", () => { clearTimeout(acTimer); acTimer = setTimeout(ask, 60); });
+  input.addEventListener("blur", () => setTimeout(() => { if (acList === list) list.hidden = true; }, 130));
+  input.addEventListener("keydown", (e) => {
+    const open = !list.hidden && acData?.entries?.length;
+    if (open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      acActive = e.key === "ArrowDown"
+        ? Math.min(acActive + 1, acData.entries.length - 1)
+        : Math.max(acActive - 1, -1);
+      acActive >= 0 && list.querySelector(`.it[data-i="${acActive}"]`)?.scrollIntoView({ block: "nearest" });
+      paintDirList();
+    } else if (open && e.key === "Tab") {
+      e.preventDefault();
+      acceptDir(acActive >= 0 ? acActive : 0);
+    } else if (e.key === "Escape") {
+      list.hidden = true;
+    } else if (e.key === "Enter") {
+      if (open && acActive >= 0) { e.preventDefault(); acceptDir(acActive); }
+      else submit();
+    }
+  });
+}
+
+function acceptDir(i) {
+  const e = acData?.entries?.[i];
+  if (!e) return;
+  acInput.value = e.path + "/";
+  acActive = -1;
+  acInput.dispatchEvent(new Event("input"));
+  acInput.focus();
+}
+
+function paintDirList() {
+  if (!acList || !acData || !acList.isConnected) return;
+  const frag = (acData.input || "").split("/").pop().toLowerCase();
+  const re = frag ? new RegExp("(" + frag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "i") : null;
+  const rows = (acData.entries || []).map((e, i) => {
+    const nm = re ? esc(e.name).replace(re, "<b>$1</b>") : esc(e.name);
+    return `<div class="it ${i === acActive ? "on" : ""}" data-i="${i}">
+      <span class="nm">${nm}</span>${e.git ? '<span class="badge">git</span>' : ""}</div>`;
+  }).join("");
+  let hint = "", cls = "";
+  if (!acData.exists) { hint = "目录不存在 · 回车将创建"; cls = "create"; }
+  else if (!acData.isDir) { hint = "这是文件，不是目录"; cls = "bad"; }
+  else if (acData.error) { hint = "读不了这个目录：" + esc(acData.error); cls = "bad"; }
+  else if (!acData.entries.length) { hint = "没有匹配的子目录"; }
+  else { hint = "已存在 · 回车在该目录新建会话"; }
+  acList.innerHTML = (rows || `<div class="it" style="color:var(--dim2)">（没有可补全的目录）</div>`)
+    + `<div class="ft ${cls}">${hint}<span class="p">${esc(acData.dir)}</span></div>`;
+  acList.querySelectorAll(".it[data-i]").forEach((el) => {
+    el.onmousedown = (ev) => { ev.preventDefault(); acceptDir(Number(el.dataset.i)); };
+  });
+  acList.hidden = false;
+}
+
+/* ---------- 对话视图 ---------- */
+function openSession(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
+  entries = []; nodes = []; streamingAssistant = false; transcriptBase = 0;
+  render();
+  send({ type: "transcript", sessionId: id });
+  if (!s.live && s.resumable) {
+    pushEntry({ kind: "log", text: "会话已归档，正在自动恢复…" });
+    send({ type: "resume", sessionId: id });
+  } else if (!s.live && !s.resumable) {
+    pushEntry({ kind: "log", text: "这个 harness 不支持恢复会话；想看历史可以往下翻，想继续聊请用「接续」。" });
+  }
+}
+
+function renderChat() {
+  const root = $("viewRoot");
+  const s = sessions.get(state.sessionId);
+  if (!s) { state.view = "harnesses"; return render(); }
+  root.innerHTML = `
+    <div id="chatWrap">
+      <div class="chatHead" id="chatHead"></div>
+      <div class="chatNav">
+        <div class="searchWrap">
+          <input type="text" id="chatSearch" placeholder="🔍 搜索对话内容（点下拉结果跳转）…" autocomplete="off" />
+          <button id="searchClear" class="searchClear" hidden title="清空搜索词">✕</button>
+        </div>
+        <div class="searchDrop" id="searchDrop" hidden></div>
+        <span class="cnt" id="searchCount"></span>
+        <button class="mini ghost" id="searchPrev" title="上一个命中">▲</button>
+        <button class="mini ghost" id="searchNext" title="下一个命中">▼</button>
+        <span style="flex:1"></span>
+        <button class="mini ghost" id="idxToggle" title="列出你在本会话的全部发言，点击定位">我的发言 (<span id="idxCount">0</span>) <span id="idxArrow">▾</span></button>
+        <div class="idxList" id="idxList" hidden></div>
+      </div>
+      <div id="stream"></div>
+      <button id="toBottom" class="toBottom" hidden title="回到底部（最新消息）">↓</button>
+      <footer class="composer">
+        <div class="chips" id="chips"></div>
+        <div class="composerRow">
+          <textarea id="input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button id="attachBtn" title="添加图片或文本附件">📎</button>
+          <button id="stopBtn" class="mini" hidden title="打断当前回合（会话保持可用）">⏹ 停止</button>
+          <button id="sendBtn" class="primary">发送</button>
+        </div>
+      </footer>
+    </div>`;
+  renderAll();
+  updateChatHeader();
+  renderModes(); renderConfig();
+
+  $("attachBtn").onclick = () => $("fileInput").click();
+  $("sendBtn").onclick = doSend;
+  $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
+  $("stopBtn").onclick = () => send({ type: "interrupt", sessionId: state.sessionId });
+  $("idxToggle").onclick = () => setIdxOpen(!idxOpen);
+  const search = $("chatSearch");
+  const drop = $("searchDrop");
+  const clearBtn = $("searchClear");
+  search.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(search.value), 200);
+    if (clearBtn) clearBtn.hidden = !search.value;
+  });
+  if (clearBtn) clearBtn.onclick = () => { search.value = ""; if (clearBtn) clearBtn.hidden = true; runSearch(""); search.focus(); };
+  search.addEventListener("focus", () => { if (search.value.trim()) renderSearchDrop(); });
+  search.addEventListener("blur", () => setTimeout(() => { if (drop) drop.hidden = true; }, 150));
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); gotoHit(e.shiftKey ? searchPos - 1 : searchPos + 1); }
+    if (e.key === "Escape") { search.value = ""; runSearch(""); if (drop) drop.hidden = true; }
+  });
+  $("searchPrev").onclick = () => gotoHit(searchPos - 1);
+  $("searchNext").onclick = () => gotoHit(searchPos + 1);
+
+  /* 回到底部箭头：滚离底部时浮现；读历史时不被流式输出拽走 */
+  const streamEl = $("stream");
+  const toBottom = $("toBottom");
+  const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+  const syncToBottom = () => { if (toBottom && streamEl) toBottom.hidden = !(streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight > 240); };
+  if (toBottom && streamEl) {
+    toBottom.onclick = () => streamEl.scrollTo({ top: streamEl.scrollHeight, behavior: "smooth" });
+    streamEl.addEventListener("scroll", syncToBottom, { passive: true });
+    syncToBottom();
+  }
+  window.__nearBottom = nearBottom;   // pushEntry/updateLast 共用
+  $("input").focus();
+}
+
+function updateChatHeader() {
+  const head = $("chatHead");
+  if (!head) return;
+  const s = sessions.get(state.sessionId);
+  if (!s) return;
+  const live = s.live;
+  head.innerHTML = `
+    <span class="pill ${s.status}">${STATUS[s.status] || s.status}</span>
+    <span>工作目录 <b style="color:var(--fg)">${esc(s.cwd)}</b></span>
+    ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
+    <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>`;
+  const ready = s.status === "ready";
+  const awaiting = s.status === "awaiting";
+  const inp = $("input"), btn = $("sendBtn");
+  if (inp) {
+    inp.disabled = !(ready || awaiting || s.status === "starting");
+    inp.placeholder = s.status === "starting"
+      ? "harness 正在启动…现在发的消息会排队，就绪后自动发出"
+      : awaiting
+        ? "agent 正在等你授权…现在发的消息会排队，授权后自动发出"
+        : ready ? "说点什么…（Enter 发送，Shift+Enter 换行）" : "会话未运行";
+  }
+  if (btn) btn.disabled = !(ready || awaiting || s.status === "starting");
+  if (s.status === "starting") head.insertAdjacentHTML("beforeend", '<span class="badge warn">启动中（可先输入，会自动排队）</span>');
+  if (awaiting) {
+    head.insertAdjacentHTML("beforeend",
+      `<span class="badge warn">⏳ 待审批：${esc(s.pendingPermission?.title || "有操作在等你想授权")}</span>` +
+      `<button class="mini" id="gotoPerm">去处理</button>`);
+    const g = $("gotoPerm");
+    if (g) g.onclick = () => {
+      const i = entries.findIndex((e) => e.kind === "permission" && !e.answered && e.requestId);
+      if (i >= 0 && nodes[i]) { nodes[i].scrollIntoView({ block: "center", behavior: "smooth" }); nodes[i].animate?.([{ filter:"brightness(1.9)" }, { filter:"none" }], 900); }
+    };
+  }
+  if (!live) {
+    head.insertAdjacentHTML("beforeend",
+      `<span class="badge warn">未运行</span><button class="mini" id="resumeNow">${s.resumable ? "恢复会话" : "不可恢复"}</button>`);
+    const r = $("resumeNow");
+    if (r && s.resumable) r.onclick = () => send({ type: "resume", sessionId: s.id });
+  } else {
+    head.insertAdjacentHTML("beforeend",
+      `<button class="mini ghost" id="stopSessBtn" title="停掉 harness 进程，保留会话记录（可再恢复）">停止会话</button>`);
+    const x = $("stopSessBtn");
+    if (x) x.onclick = () => { x.disabled = true; x.textContent = "停止中…"; send({ type: "close", sessionId: s.id }); };
+  }
+  const sb = $("stopBtn");
+  if (sb) sb.hidden = !s.inTurn;
+}
+
+/* ---------- 顶栏：模型 / 模式 ---------- */
+function renderConfig() {
+  const box = $("cfg");
+  box.innerHTML = "";
+  const s = sessions.get(state.sessionId);
+  if (!s) return;
+  const hasModes = Boolean(s.modes?.availableModes?.length);
+  const opts = (s.configOptions || []).filter((o) => o.options?.length && !(hasModes && o.category === "mode"));
+  for (const o of opts) {
+    const w = document.createElement("span"); w.className = "cfgw";
+    const l = document.createElement("span"); l.className = "cfgl"; l.textContent = o.name || o.id;
+    const sel = document.createElement("select"); sel.className = "sm";
+    sel.title = `会话配置：${o.name}（对后续操作生效）`;
+    sel.disabled = !s.live;
+    for (const v of o.options) {
+      const op = document.createElement("option"); op.value = v.value; op.textContent = v.name || v.value;
+      if (v.value === o.currentValue) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = () => send({ type: "config", sessionId: state.sessionId, configId: o.id, value: sel.value });
+    w.appendChild(l); w.appendChild(sel); box.appendChild(w);
+  }
+}
+
+function renderModes() {
+  const sel = $("mode"), wrap = $("modeWrap");
+  const s = sessions.get(state.sessionId);
+  sel.innerHTML = "";
+  if (!s?.modes?.availableModes?.length) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  sel.disabled = !s.live;
+  for (const m of s.modes.availableModes) {
+    const o = document.createElement("option"); o.value = m.id; o.textContent = m.name || m.id;
+    if (m.id === s.modes.currentModeId) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+$("mode").onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: $("mode").value }); };
+
+/* =====================================================================
+   台账渲染（Markdown 与工具卡片）
+   ===================================================================== */
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+}
+
+function mdToHtml(src) {
+  const lines = String(src ?? "").split("\n");
+  const out = [];
+  let inCode = false, lang = "", buf = [], para = [], lists = [];
+  const closePara = () => { if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; } };
+  const closeLists = () => { while (lists.length) out.push(lists.pop() === "ul" ? "</ul>" : "</ol>"); };
+  const flushCode = () => { out.push(`<pre${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`); buf = []; lang = ""; };
+  for (let i2 = 0; i2 < lines.length; i2++) {
+    const raw = lines[i2];
+    const line = raw.replace(/\s+$/, "");
+    const fence = line.match(/^\s*```\s*([\w+#.-]*)\s*$/);
+    if (fence) {
+      if (!inCode) { closePara(); closeLists(); inCode = true; lang = fence[1] || ""; buf = []; }
+      else { flushCode(); inCode = false; }
+      continue;
+    }
+    if (inCode) { buf.push(raw); continue; }
+    if (!line.trim()) { closePara(); closeLists(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) { closePara(); closeLists(); const lv = m[1].length; out.push(`<h${lv}>${inlineMd(esc(m[2]))}</h${lv}>`); continue; }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) { closePara(); closeLists(); out.push("<hr>"); continue; }
+    if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) { closePara(); if (lists[lists.length - 1] !== "ul") { closeLists(); out.push("<ul>"); lists.push("ul"); } out.push(`<li>${inlineMd(esc(m[1]))}</li>`); continue; }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { closePara(); if (lists[lists.length - 1] !== "ol") { closeLists(); out.push("<ol>"); lists.push("ol"); } out.push(`<li>${inlineMd(esc(m[1]))}</li>`); continue; }
+    if ((m = line.match(/^\s*>\s?(.*)$/))) { closePara(); closeLists(); out.push(`<blockquote>${inlineMd(esc(m[1]))}</blockquote>`); continue; }
+    if (isTableRow(line)) {
+      closePara(); closeLists();
+      const rows = [];
+      while (i2 < lines.length && isTableRow(lines[i2])) { rows.push(lines[i2]); i2++; }
+      out.push(tableHtml(rows));
+      continue;
+    }
+    para.push(inlineMd(esc(line)));
+  }
+  if (inCode) flushCode();
+  closePara(); closeLists();
+  return out.join("");
+}
+
+function isTableRow(line) {
+  return /^\s*\|.*\|\s*$/.test(line) && line.split("|").length >= 3;
+}
+function splitRow(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+function isSeparatorRow(line) {
+  return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line);
+}
+function tableHtml(rows) {
+  const cells = rows.map(splitRow);
+  const hasSep = rows.length > 1 && isSeparatorRow(rows[1]);
+  const head = cells[0] || [];
+  const body = hasSep ? cells.slice(2) : cells.slice(1);
+  let h = '<table>';
+  if (hasSep) h += "<thead><tr>" + head.map((c) => `<th>${inlineMd(esc(c))}</th>`).join("") + "</tr></thead>";
+  h += "<tbody>";
+  const bodyRows = hasSep ? body : (head.length ? body : []);
+  if (!hasSep && head.length) h += "<tr>" + head.map((c) => `<td>${inlineMd(esc(c))}</td>`).join("") + "</tr>";
+  for (const r of bodyRows) h += "<tr>" + r.map((c) => `<td>${inlineMd(esc(c))}</td>`).join("") + "</tr>";
+  return h + "</tbody></table>";
+}
+
+function entryNode(e) {
+  const el = document.createElement("div");
+  const cls = e.kind === "assistant" ? "" : e.kind;
+  el.className = "msg " + cls;
+  el.innerHTML = `<div class="who">${who(e)}</div><div class="bubble"></div>`;
+  paint(el, e);
+  return el;
+}
+
+function who(e) {
+  return { user:"you", assistant:"assistant", thought:"thinking", tool:"tool", permission:"需要授权", error:"error", log:"log" }[e.kind] || e.kind;
+}
+
+function toolIconOf(title) {
+  const t = String(title || "").toLowerCase();
+  if (/bash|sh|cmd|command|terminal|exec|run/i.test(t)) return "💻";
+  if (/read|file|write|edit|grep|fs|patch|create/i.test(t)) return "📄";
+  if (/search|web|find|query|lookup/i.test(t)) return "🔍";
+  if (/subagent|agent|delegate/i.test(t)) return "🤖";
+  if (/browser|url|http|fetch/i.test(t)) return "🌐";
+  return "🔧";
+}
+
+function paint(el, e) {
+  const b = el.querySelector(".bubble");
+  if (e.kind === "tool") {
+    const isDone = /completed|success|ok|finished|done/i.test(e.status);
+    const isErr = /error|failed|rejected|cancelled/i.test(e.status);
+    const isRunning = !isDone && !isErr;
+
+    el.classList.toggle("done", isDone);
+    el.classList.toggle("err", isErr);
+
+    const titleText = e.title && e.title !== "tool" ? e.title : "工具调用";
+    const icon = toolIconOf(titleText);
+    const statusLabel = isDone ? "✓ 已完成" : isErr ? "✕ 异常" : `⏳ 运行中${e.status && e.status !== "pending" && e.status !== "in_progress" ? ` (${e.status})` : ""}`;
+    const statusCls = isDone ? "st-done" : isErr ? "st-err" : "st-run";
+
+    const hasInput = Boolean(e.detail && e.detail.trim());
+    const hasOutput = Boolean(e.output && e.output.trim());
+    const hasContent = hasInput || hasOutput;
+
+    let html = `
+      <div class="toolHeader" ${hasContent ? 'title="点击展开/折叠详情"' : ''}>
+        <div class="toolInfo">
+          <span class="toolIcon">${icon}</span>
+          <span class="toolTitle">${esc(titleText)}</span>
+        </div>
+        <div class="toolMeta">
+          <span class="toolBadge ${statusCls}">${esc(statusLabel)}</span>
+          ${hasContent ? `<span class="toolChevron">▾</span>` : ""}
+        </div>
+      </div>`;
+
+    if (hasContent) {
+      html += `<div class="toolBody">`;
+      if (hasInput) {
+        html += `
+          <div class="toolSec">
+            <div class="toolSecLabel">输入 / 参数</div>
+            <pre class="toolCode"><code>${esc(e.detail)}</code></pre>
+          </div>`;
+      }
+      if (hasOutput) {
+        html += `
+          <div class="toolSec">
+            <div class="toolSecLabel">执行结果</div>
+            <pre class="toolCode toolOut"><code>${esc(e.output)}</code></pre>
+          </div>`;
+      }
+      html += `</div>`;
+    }
+
+    b.innerHTML = html;
+
+    if (hasContent) {
+      const header = b.querySelector(".toolHeader");
+      const body = b.querySelector(".toolBody");
+      const chevron = b.querySelector(".toolChevron");
+
+      if (e._collapsed === undefined) {
+        e._collapsed = isDone && !isErr;
+      }
+      if (e._collapsed) {
+        body.classList.add("collapsed");
+        if (chevron) chevron.textContent = "▸";
+      } else {
+        body.classList.remove("collapsed");
+        if (chevron) chevron.textContent = "▾";
+      }
+
+      header.onclick = (ev) => {
+        ev.stopPropagation();
+        e._collapsed = !e._collapsed;
+        body.classList.toggle("collapsed", e._collapsed);
+        if (chevron) chevron.textContent = e._collapsed ? "▸" : "▾";
+      };
+    }
+  } else if (e.kind === "permission") {
+    b.textContent = e.title + (e.answered ? `  → ${e.answered}` : "");
+    if (!e.answered && e.requestId) {
+      for (const o of e.options || []) {
+        const btn = document.createElement("button");
+        btn.textContent = o.name + (o.kind ? ` (${o.kind})` : "");
+        btn.onclick = () => { send({ type:"permission", sessionId: state.sessionId, requestId: e.requestId, optionId: o.optionId }); e.answered = o.name; paint(el, e); };
+        b.appendChild(btn);
+      }
+    } else if (!e.answered && !e.requestId) {
+      const hint = document.createElement("div");
+      hint.className = "st";
+      hint.textContent = "（这条授权请求来自旧版记录，已失效；给会话发一句话让它重新发起即可）";
+      b.appendChild(hint);
+    }
+  } else if (e.kind === "assistant") {
+    b.classList.add("md");
+    b.innerHTML = mdToHtml(e.text ?? "");
+  } else if (e.attachments?.length) {
+    b.textContent = e.text ?? "";
+    const t = document.createElement("div"); t.className = "meta2"; t.style.marginTop = "6px";
+    t.textContent = "📎 " + e.attachments.map((a) => a.name).join(", ");
+    b.appendChild(t);
+  } else {
+    b.textContent = e.text ?? e.message ?? "";
+  }
+}
+
+function renderAll() {
+  const stream = $("stream");
+  if (!stream) return;
+  stream.innerHTML = "";
+  nodes = [];
+  if (!entries.length) {
+    stream.innerHTML = '<div class="empty"><div class="big">💬</div>还没有对话，说点什么吧。</div>';
+    return;
+  }
+  nodes = entries.map((e) => { const n = entryNode(e); stream.appendChild(n); return n; });
+  stream.scrollTop = stream.scrollHeight;
+  transcriptBase = entries.length;
+  refreshNav();
+}
+
+function pushEntry(e) {
+  const stream = $("stream");
+  if (!stream) return;
+  if (entries.length === 0) { stream.innerHTML = ""; nodes = []; transcriptBase = 0; }
+  entries.push(e);
+  const n = entryNode(e);
+  nodes.push(n);
+  stream.appendChild(n);
+  // 自己发的消息总是滚到底；agent 的流式输出只在本来就在底部附近时才跟随（读历史不被拽走）
+  if (e.kind === "user" || !window.__nearBottom || window.__nearBottom(stream)) stream.scrollTop = stream.scrollHeight;
+  refreshNav();
+  return n;
+}
+
+function textOfUpdate(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(textOfUpdate).filter(Boolean).join("\n");
+  if (typeof v === "object") {
+    if (typeof v.text === "string") return v.text;
+    if (v.content !== undefined) return textOfUpdate(v.content);
+    try { return JSON.stringify(v, null, 2); } catch { return ""; }
+  }
+  return String(v);
+}
+
+function formatFrontToolTitle(u) {
+  let title = typeof u.title === "string" && u.title.trim() ? u.title.trim() : "";
+  const name = typeof u.name === "string" ? u.name : typeof u.toolName === "string" ? u.toolName : typeof u.kind === "string" && u.kind !== "tool" ? u.kind : "";
+  if (!title && name) title = name;
+  if (!title) title = "tool";
+
+  const raw = u.rawInput ?? u.input;
+  if (raw && typeof raw === "object") {
+    const cmd = raw.command ?? raw.cmd ?? raw.script;
+    const file = raw.path ?? raw.file_path ?? raw.filePath ?? raw.file ?? raw.target_file;
+    const query = raw.query ?? raw.pattern ?? raw.regex;
+    const url = raw.url ?? raw.uri;
+    if (typeof cmd === "string" && cmd.trim()) {
+      const short = cmd.trim().split("\n")[0]?.slice(0, 60) ?? "";
+      if (short && !title.includes(short)) title = `${name || title}: ${short}`;
+    } else if (typeof file === "string" && file.trim()) {
+      if (!title.includes(file)) title = `${name || title}: ${file}`;
+    } else if (typeof query === "string" && query.trim()) {
+      if (!title.includes(query)) title = `${name || title}: "${query.slice(0, 40)}"`;
+    } else if (typeof url === "string" && url.trim()) {
+      if (!title.includes(url)) title = `${name || title}: ${url.slice(0, 50)}`;
+    }
+  }
+  return title;
+}
+
+function updateLast() {
+  const i = entries.length - 1;
+  if (i >= 0 && nodes[i]) paint(nodes[i], entries[i]);
+  const stream = $("stream");
+  if (stream && (!window.__nearBottom || window.__nearBottom(stream))) stream.scrollTop = stream.scrollHeight;
+}
+
+/* ---------- 发言索引 + 关键字搜索（chatNav） ---------- */
+let idxOpen = false;
+let searchHits = [];
+let searchPos = -1;
+let searchTimer = null;
+
+function jumpTo(i) {
+  const n = nodes[i];
+  if (!n) return;
+  n.scrollIntoView({ block: "center", behavior: "smooth" });
+  n.animate?.([{ filter: "brightness(1.9)" }, { filter: "none" }], 900);
+}
+
+function userEntryList() {
+  return entries.map((e, i) => ({ e, i })).filter((x) => x.e.kind === "user");
+}
+
+function refreshNav() {
+  const cnt = $("idxCount");
+  if (cnt) cnt.textContent = userEntryList().length;
+  if (idxOpen) renderIdxList();
+}
+
+function renderIdxList() {
+  const list = $("idxList");
+  if (!list) return;
+  const us = userEntryList();
+  list.innerHTML =
+    us
+      .map((x, n) => {
+        const t = String(x.e.text ?? "").replace(/\s+/g, " ").trim();
+        return `<div class="idxItem" data-i="${x.i}" title="${esc(t.slice(0, 200))}">
+          <span class="no">#${n + 1}</span>
+          <span class="t">${esc(t.slice(0, 80) || "(附件/空)")}</span>
+          <span class="meta2">${new Date(x.e.ts).toLocaleTimeString()}</span>
+        </div>`;
+      })
+      .join("") || '<div class="meta2" style="padding:9px 12px">还没有你的发言</div>';
+  list.querySelectorAll(".idxItem").forEach((el) => {
+    el.onclick = () => {
+      jumpTo(Number(el.dataset.i));
+      setIdxOpen(false);
+    };
+  });
+}
+
+function setIdxOpen(open) {
+  idxOpen = open;
+  const list = $("idxList");
+  if (list) list.hidden = !open;
+  const arrow = $("idxArrow");
+  if (arrow) arrow.textContent = open ? "▴" : "▾";
+  if (open) renderIdxList();
+}
+
+function entrySearchText(e) {
+  if (e.kind === "user" || e.kind === "assistant" || e.kind === "thought") return String(e.text ?? "");
+  if (e.kind === "tool") return String(e.title ?? "");
+  if (e.kind === "permission") return String(e.title ?? "");
+  return "";
+}
+
+/* 正文关键词标黄：直接在 DOM 文本节点上包 <mark>，不干扰 markdown 渲染；
+   重渲染（流式更新）会冲掉标黄，下次搜索会重新标——可接受 */
+function clearKwMarks() {
+  document.querySelectorAll("mark.kw").forEach((m) => {
+    const parent = m.parentNode;
+    if (!parent) return;
+    parent.replaceChild(document.createTextNode(m.textContent ?? ""), m);
+    parent.normalize();
+  });
+}
+
+function markKeywordsIn(node, needle) {
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue?.toLowerCase().includes(needle)) targets.push(walker.currentNode);
+  }
+  for (const text of targets) {
+    let rest = text;
+    for (;;) {
+      const idx = rest.nodeValue.toLowerCase().indexOf(needle);
+      if (idx < 0) break;
+      const hitText = rest.splitText(idx);
+      const tail = hitText.splitText(needle.length);
+      const mark = document.createElement("mark");
+      mark.className = "kw";
+      mark.textContent = hitText.nodeValue;
+      hitText.parentNode?.replaceChild(mark, hitText);
+      rest = tail;
+      if (!rest.nodeValue) break;
+    }
+  }
+}
+
+/* 搜索结果面板：像 VS Code 搜索那样，把每条命中行列成下拉，点击跳到那条消息 */
+let searchResults = [];   // [{ i: entries 下标, line: 命中行文本 }]
+
+function speakerOf(e) {
+  if (e.kind === "user") return "你";
+  if (e.kind === "thought") return "思考";
+  if (e.kind === "tool") return "工具";
+  if (e.kind === "permission") return "授权";
+  return sessions.get(state.sessionId)?.harnessLabel ?? "AI";
+}
+
+/** 从一段文本里抠出命中行；超长行截成「…前文 + 命中 + 后文…」 */
+function matchLines(text, needle, maxLines = 4) {
+  const out = [];
+  for (const line of String(text).split("\n")) {
+    if (out.length >= maxLines) break;
+    const idx = line.toLowerCase().indexOf(needle);
+    if (idx < 0) continue;
+    const from = Math.max(0, idx - 18);
+    const to = Math.min(line.length, idx + needle.length + 30);
+    out.push((from > 0 ? "…" : "") + line.slice(from, to) + (to < line.length ? "…" : ""));
+  }
+  return out;
+}
+
+function escWithKw(s, needle) {
+  const parts = [];
+  let rest = s;
+  for (;;) {
+    const idx = rest.toLowerCase().indexOf(needle);
+    if (idx < 0) { parts.push(esc(rest)); break; }
+    parts.push(esc(rest.slice(0, idx)), `<span class="kwhl">${esc(rest.slice(idx, idx + needle.length))}</span>`);
+    rest = rest.slice(idx + needle.length);
+  }
+  return parts.join("");
+}
+
+function renderSearchDrop() {
+  const box = $("searchDrop");
+  const input = $("chatSearch");
+  if (!box || !input) return;
+  const q = input.value.trim().toLowerCase();
+  if (!q) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!searchResults.length) {
+    box.innerHTML = '<div class="dropEmpty">无匹配</div>';
+    box.hidden = false;
+    return;
+  }
+  box.innerHTML = searchResults
+    .slice(0, 60)
+    .map((r, n) => `<div class="dropItem${r.i === searchHits[searchPos] ? " on" : ""}" data-i="${r.i}" data-n="${n}">
+      <span class="who">${esc(speakerOf(entries[r.i]))}</span>
+      <span class="ln">${escWithKw(r.line, q)}</span>
+    </div>`)
+    .join("") + (searchResults.length > 60 ? '<div class="dropEmpty">… 仅显示前 60 条命中行</div>' : "");
+  box.querySelectorAll(".dropItem").forEach((el) => {
+    el.onmousedown = (ev) => {   // mousedown 抢在 blur 之前
+      ev.preventDefault();
+      gotoEntry(Number(el.dataset.i));
+    };
+  });
+  const on = box.querySelector(".dropItem.on");
+  if (on) on.scrollIntoView({ block: "nearest" });
+  box.hidden = false;
+}
+
+function gotoEntry(i) {
+  const pos = searchHits.indexOf(i);
+  if (pos >= 0) gotoHit(pos);
+  else { nodes[i]?.classList.add("cur"); jumpTo(i); }
+}
+
+function runSearch(q) {
+  document.querySelectorAll(".msg.hit, .msg.cur").forEach((el) => el.classList.remove("hit", "cur"));
+  clearKwMarks();
+  searchHits = [];
+  searchResults = [];
+  searchPos = -1;
+  const cnt = $("searchCount");
+  const needle = q.trim().toLowerCase();
+  if (!needle) { if (cnt) cnt.textContent = ""; renderSearchDrop(); return; }
+  entries.forEach((e, i) => {
+    const text = entrySearchText(e);
+    if (!text.toLowerCase().includes(needle)) return;
+    searchHits.push(i);
+    nodes[i]?.classList.add("hit");
+    markKeywordsIn(nodes[i], needle);
+    for (const line of matchLines(text, needle)) searchResults.push({ i, line });
+  });
+  if (!cnt) return;
+  if (!searchHits.length) { cnt.textContent = "无匹配"; renderSearchDrop(); return; }
+  cnt.textContent = `${searchHits.length} 处`;
+  renderSearchDrop();   // 只列结果，不跳转——跳转由点结果 / Enter / ▲▼ 触发
+}
+
+function gotoHit(k) {
+  if (!searchHits.length) return;
+  searchPos = ((k % searchHits.length) + searchHits.length) % searchHits.length;
+  document.querySelectorAll(".msg.cur").forEach((el) => el.classList.remove("cur"));
+  const i = searchHits[searchPos];
+  nodes[i]?.classList.add("cur");
+  jumpTo(i);
+  const cnt = $("searchCount");
+  if (cnt) cnt.textContent = `${searchPos + 1}/${searchHits.length}`;
+  renderSearchDrop();   // 同步下拉里的当前项
+}
+
+function applyUpdate(u) {
+  if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") {
+    const last = entries[entries.length - 1];
+    if (last?.kind === "assistant" && streamingAssistant) { last.text += u.content.text; updateLast(); }
+    else { streamingAssistant = true; pushEntry({ kind:"assistant", text: u.content.text }); }
+  } else if (u.sessionUpdate === "agent_thought_chunk" && u.content?.type === "text") {
+    const last = entries[entries.length - 1];
+    if (last?.kind === "thought") { last.text += u.content.text; updateLast(); }
+    else pushEntry({ kind:"thought", text: u.content.text });
+  } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+    streamingAssistant = false;
+    const id = String(u.toolCallId ?? u.id ?? "");
+    const title = formatFrontToolTitle(u);
+    const rawInp = u.rawInput ?? u.input;
+    const rawOut = u.rawOutput ?? u.output ?? u.content;
+    const inpStr = rawInp ? textOfUpdate(rawInp) : "";
+    const outStr = rawOut ? textOfUpdate(rawOut) : "";
+
+    const found = entries.find((e) => e.kind === "tool" && (e.toolCallId === id || (!id && e === entries[entries.length - 1])));
+    if (found) {
+      if (u.status) found.status = String(u.status);
+      if (title && title !== "tool") found.title = title;
+      if (inpStr && inpStr !== "{}") found.detail = inpStr;
+      if (outStr) {
+        if (!found.output) found.output = outStr;
+        else if (!found.output.endsWith(outStr)) found.output = (found.output + "\n" + outStr).slice(-4000);
+      }
+      const i = entries.indexOf(found);
+      if (nodes[i]) paint(nodes[i], found);
+    } else {
+      pushEntry({
+        kind: "tool",
+        toolCallId: id,
+        title,
+        status: String(u.status ?? "in_progress"),
+        detail: inpStr && inpStr !== "{}" ? inpStr : undefined,
+        output: outStr || undefined,
+      });
+    }
+  } else if (u.sessionUpdate === "hg_noop_turn") {
+    const el = pushEntry({ kind: "error", message: u.message });
+    if (el) {
+      const btn = document.createElement("button");
+      btn.className = "mini primary";
+      btn.style.marginTop = "9px";
+      btn.textContent = "在新会话里接续";
+      btn.onclick = () => send({ type: "handoff", sessionId: state.sessionId });
+      el.querySelector(".bubble").appendChild(document.createElement("br"));
+      el.querySelector(".bubble").appendChild(btn);
+    }
+  } else if (u.sessionUpdate === "hg_queued") {
+    pushEntry({ kind:"log", text:`⏳ 会话启动中，这条消息已排队（第 ${u.queueLength ?? "?"} 条），就绪后自动发送` });
+  } else if (u.sessionUpdate === "hg_error") {
+    const isProvider = /provider|upstream|rate limit|quota|APIError/i.test(String(u.message || ""));
+    const el = pushEntry({ kind:"error", message: u.message + (isProvider ? "\n\n（看起来是模型供应商侧的故障：可以在顶栏 Model 换个模型重试，或稍后再发一次）" : "") });
+    if (isProvider && el) {
+      const btn = document.createElement("button");
+      btn.className = "mini"; btn.style.marginTop = "8px"; btn.textContent = "换个模型重试";
+      btn.onclick = () => { const s2 = $("cfg"); const sel = s2 && s2.querySelector("select"); if (sel) { const opts = [...sel.options].map(o => o.value).filter(v => v !== sel.value); if (opts.length) { sel.value = opts[0]; sel.onchange(); pushEntry({kind:"log", text:"已切到模型 " + opts[0] + "，重新发送即可"}); return; } } pushEntry({ kind:"log", text:"请在顶栏 Model 下拉里换个模型" }); };
+      el.querySelector(".bubble").appendChild(document.createElement("br"));
+      el.querySelector(".bubble").appendChild(btn);
+    }
+  } else if (showLog) {
+    pushEntry({ kind:"log", text: `[${u.sessionUpdate}] ${JSON.stringify(u).slice(0, 300)}` });
+  }
+}
+
+/* =====================================================================
+   发送 / 附件
+   ===================================================================== */
+const MAX_ATTACH = 5 * 1024 * 1024;
+function renderChips() {
+  const box = $("chips");
+  if (!box) return;
+  box.innerHTML = "";
+  pendingFiles.forEach((f, i) => {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.innerHTML = (f.mimeType.startsWith("image/") ? `<img src="data:${f.mimeType};base64,${f.data}" alt="">` : "") + `<span>${esc(f.name)}</span>`;
+    const x = document.createElement("button"); x.textContent = "✕"; x.className = "ghost"; x.style.border = "none"; x.style.padding = "0 2px";
+    x.onclick = () => { pendingFiles.splice(i, 1); renderChips(); };
+    el.appendChild(x); box.appendChild(el);
+  });
+}
+$("fileInput").onchange = async (ev) => {
+  for (const file of ev.target.files || []) {
+    if (file.size > MAX_ATTACH) { alert(`${file.name} 超过 5MB，暂不支持`); continue; }
+    const ok = file.type.startsWith("image/") || file.type.startsWith("text/") || file.type === "application/json";
+    if (!ok) { alert(`${file.name}: 目前只支持图片与文本附件`); continue; }
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = ""; for (const b of buf) bin += String.fromCharCode(b);
+    pendingFiles.push({ name: file.name, mimeType: file.type || "application/octet-stream", data: btoa(bin) });
+  }
+  ev.target.value = "";
+  renderChips();
+};
+
+function doSend() {
+  const inp = $("input");
+  const text = (inp?.value || "").trim();
+  if (!text && !pendingFiles.length) return;
+  const s = sessions.get(state.sessionId);
+  if (!s) return;
+  if (!s.live) { alert("会话未在运行：先点顶部的「恢复会话」"); return; }
+  inp.value = "";
+  streamingAssistant = false;
+  const atts = pendingFiles.slice();
+  if (!s.title) { s.title = text.slice(0, 40); renderTree(); }
+  pushEntry({ kind:"user", text, attachments: atts.map((a) => ({ name:a.name, mimeType:a.mimeType })) });
+  if (!send({ type:"prompt", sessionId: state.sessionId, text, attachments: atts })) {
+    pushEntry({ kind:"error", message:"连接已断开，这条消息没有发出去（正在自动重连，稍后重发即可）" });
+  }
+  pendingFiles = []; renderChips();
+}
+
+/* =====================================================================
+   工作区抽屉
+   ===================================================================== */
+let wsTimer = null;
+$("wsBtn").onclick = () => {
+  const p = $("wsPanel");
+  p.hidden = !p.hidden;
+  if (!p.hidden) { p.innerHTML = '<div class="empty">加载中…</div>'; send({ type: "workspace" }); wsTimer = setInterval(() => send({ type: "workspace" }), 4000); }
+  else if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
+};
+function renderWorkspace(reports) {
+  const p = $("wsPanel");
+  if (p.hidden) return;
+  if (!reports?.length) { p.innerHTML = `<div class="hd"><b>工作区</b><button class="mini ghost" onclick="document.getElementById('wsPanel').hidden=true">关闭</button></div><div class="empty">还没有活跃工作区</div>`; return; }
+  let html = `<div class="hd"><b>工作区</b><button class="mini ghost" onclick="document.getElementById('wsPanel').hidden=true">关闭</button></div>`;
+  for (const r of reports) {
+    html += `<h3>${esc(r.cwd)}</h3><div class="meta2" style="margin-bottom:8px">${esc(r.note)}</div>`;
+    html += `<h3>会话（${r.sessions.length}）</h3>`;
+    for (const s of r.sessions) {
+      html += `<div class="wsRow"><div>${esc(s.harnessLabel)} <span class="badge">${s.mode === "worktree" ? "worktree " + esc(s.branch || "") : "共享目录"}</span>${s.inTurn ? '<span class="badge warn">正在干活</span>' : ""}</div>
+        <div class="meta2">#${s.id} · ${esc(s.cwd)}${s.changedFiles?.length ? ` · 改动 ${s.changedFiles.length} 个` : ""}</div>
+        ${s.diffStat ? `<pre style="white-space:pre-wrap;font-size:11px;color:var(--dim2);margin:6px 0 0">${esc(s.diffStat)}</pre>` : ""}</div>`;
+    }
+    html += `<h3>文件（${r.files.length}${r.conflicts ? `，冲突 ${r.conflicts}` : ""}）</h3>`;
+    for (const f of r.files.slice(0, 80)) {
+      const who = [...new Set(f.touches.map((t) => t.harnessId))].join(" + ");
+      html += `<div class="wsRow ${f.conflict ? "conflict" : ""}">
+        <div>${f.conflict ? "⚠️ " : ""}${esc(f.rel)} <span class="badge">${f.touches.length} 次</span> <span class="badge ${f.conflict ? "warn" : ""}">${esc(who)}</span></div>
+        <div class="meta2">最后改动 ${new Date(f.lastTs).toLocaleTimeString()} · 归因 ${esc(f.touches[f.touches.length - 1]?.confidence || "?")}</div></div>`;
+    }
+  }
+  p.innerHTML = html;
+}
+
+/* =====================================================================
+   圆桌（独立视图）
+   ===================================================================== */
+$("roomBtn").onclick = () => {
+  $("wsPanel").hidden = true;
+  state.view = "roundtable";
+  state.harnessId = null;
+  state.sessionId = null;
+  if (!state.rtCwd) state.rtCwd = $("viewRoot").dataset.cwd || "";
+  render();
+};
+
+const ROOM_STATUS = { running: "讨论中", done: "已完成", error: "出错", stopped: "已停止", idle: "待开始" };
+const roomById = (id) => rooms.find((r) => r.id === id);
+
+function renderRoundtable() {
+  const root = $("viewRoot");
+  const room = state.roomId ? roomById(state.roomId) : null;
+  if (!room) {
+    root.innerHTML = roomWizardHtml();
+    bindRoomWizard();
+    return;
+  }
+  if (root.querySelector("#rtBlocks") && root.dataset.roomId === room.id) {
+    syncRoomBlocks(room);
+    updateRoomHead(room);
+    return;
+  }
+  root.innerHTML = roomDetailHtml(room);
+  root.dataset.roomId = room.id;
+  rtLiveBuf.clear();
+  bindRoomDetail(room);
+  syncRoomBlocks(room);
+}
+
+function updateRoomHead(room) {
+  const head = document.querySelector(".rtHead");
+  if (!head) return;
+  const pill = head.querySelector(".pill");
+  if (pill) {
+    pill.textContent = ROOM_STATUS[room.status] || room.status;
+    pill.className = `pill ${room.status === "done" ? "done" : room.status === "running" ? "running" : room.status === "error" ? "error" : "saved"}`;
+  }
+  const hasStop = !!head.querySelector("#rtStop");
+  if (room.status === "running" && !hasStop) {
+    const b = document.createElement("button");
+    b.className = "mini"; b.id = "rtStop"; b.textContent = "停止";
+    b.onclick = () => send({ type: "room-stop", roomId: room.id });
+    head.appendChild(b);
+  } else if (room.status !== "running" && hasStop) {
+    head.querySelector("#rtStop").remove();
+  }
+}
+
+function cfgList(map) {
+  return Object.entries(map ?? {}).map(([configId, value]) => ({ configId, value }));
+}
+
+function memberConfigsHtml(picked) {
+  if (!picked.length) return "";
+  const rows = picked.map((id) => {
+    const h = harnesses.get(id);
+    const cfgs = h?.configs ?? [];
+    const hostNote = state.rtHost === id ? '<span class="badge host">主持</span>' : "";
+    if (!cfgs.length) {
+      return `<div class="row"><span class="nm">${esc(h?.label || id)}</span>${hostNote}
+        <span class="meta2">这个 harness 没报告可切换的配置项${h?.state === "probed-ok" ? "" : "（还没探活，跑一次 doctor --probe --deep）"}</span></div>`;
+    }
+    const sels = cfgs.map((c) => {
+      const cur = state.rtMemberCfg[id]?.[c.id] ?? c.currentValue ?? "";
+      const opts = c.options.map((o) =>
+        `<option value="${esc(o.value)}" ${o.value === cur ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+      return `<label>${esc(c.name)}<select data-mcfg="${esc(id)}" data-cfg="${esc(c.id)}">${opts}</select></label>`;
+    }).join("");
+    const agents = h?.extraAgents ?? [];
+    const agentSel = agents.length
+      ? `<label>OpenClaw agent<select data-mvar="${esc(id)}" data-var="HG_OPENCLAW_AGENT">${agents.map((a) =>
+          `<option value="${esc(a)}" ${a === (state.rtMemberVars[id] ?? "main") ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>`
+      : "";
+    return `<div class="row"><span class="nm">${esc(h?.label || id)}</span>${hostNote}${sels}${agentSel}</div>`;
+  }).join("");
+  return `<div class="memberCfg">
+    <h3 style="margin:0 0 4px;font-size:13px;color:var(--dim)">成员配置（可选，建会话时自动应用）</h3>
+    <div class="meta2" style="margin-bottom:8px">列表来自各 harness 自己上报的目录，<b>不保证下游真的支持</b>——换完发现报「Invalid model name」就说明这个模型名你的 provider 不认，换回默认即可。</div>
+    ${rows}</div>`;
+}
+
+function roomWizardHtml() {
+  const step = state.rtStep;
+  const avail = [...harnesses.values()].filter((h) => !h.blocked);
+  // 可当成员的 = 探活通过的；以及「本机装了但深探失败」的（⚠️ 仍可选——深探只测默认模型，
+  // 换个模型可能就能用；圆桌对个别成员失败本来就有容错）。没装的（找不到可执行文件）不列。
+  const risky = avail.filter((h) => !h.available && h.binPath);
+  const pickable = [...avail.filter((h) => h.available), ...risky];
+  const usable = avail.filter((h) => h.available);   // 主持人必须可靠，仍然只用探活通过的
+  const picked = [...state.rtPicked].filter((id) => pickable.some((h) => h.id === id));
+
+  let body = "";
+  if (step === 1) {
+    body = `
+      <div class="rtCard">
+        <h3>① 选一个工作目录（所有成员共享它）</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="rtCwd" value="${esc(state.rtCwd)}" placeholder="/path/to/project" style="flex:1;min-width:240px" />
+          <button class="primary" id="rtNext1" ${state.rtCwd.trim() ? "" : "disabled"}>下一步</button>
+        </div>
+        <div class="meta2" style="margin-top:8px">支持补全：输入片段会列出子目录；目录不存在也能继续（会自动创建）。</div>
+      </div>`;
+  } else if (step === 2) {
+    body = `
+      <div class="rtCard">
+        <h3>② 选参与的 harness（至少 2 个，当前已选 ${picked.length}）</h3>
+        <div class="pickGrid" id="rtPick">
+          ${pickable.map((h) => `
+            <div class="pick ${state.rtPicked.has(h.id) ? "sel" : ""}" data-h="${esc(h.id)}">
+              <input type="checkbox" ${state.rtPicked.has(h.id) ? "checked" : ""} style="width:auto" />
+              <span class="nm" title="${esc(h.note || "")}">${esc(h.label)}${h.available ? "" : ' <span style="color:var(--warn)" title="' + esc(h.note || "") + '">⚠</span>'}</span>
+            </div>`).join("") || '<div class="meta2">没有可用的 harness（先跑一次探活：npm run doctor -- --probe --deep）</div>'}
+        </div>
+        ${risky.length ? `<div class="meta2" style="margin-top:6px">⚠ = 探活失败/未深探过，但仍可尝试（深探只测默认模型，换个模型可能就能用；失败成员会被记为无输出，不拖累其他人）</div>` : ""}
+        ${memberConfigsHtml(picked)}
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+          <label class="cfgl">主持人（可选，负责开场拆题 / 轮间小结 / 最终汇总）</label>
+          <select id="rtHost" style="margin-left:8px;width:auto">
+            <option value="">不设主持人</option>
+            ${usable.map((h) => `<option value="${esc(h.id)}" ${state.rtHost === h.id ? "selected" : ""}>${esc(h.label)}${state.rtPicked.has(h.id) ? "（成员兼主持）" : ""}</option>`).join("")}
+          </select>
+          ${state.rtHost ? `<div style="margin-top:9px;display:flex;gap:14px;flex-wrap:wrap;font-size:12px">
+            <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostOpening" style="width:auto" ${state.rtHostOpening ? "checked" : ""} />开场拆题</label>
+            <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostRound" style="width:auto" ${state.rtHostRound ? "checked" : ""} />轮间小结</label>
+            <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostFinal" style="width:auto" ${state.rtHostFinal ? "checked" : ""} />最终汇总</label>
+            <label class="cfgl">风格 <select id="rtHostStyle" style="width:auto">
+              <option value="divergent" ${state.rtHostStyle === "divergent" ? "selected" : ""}>发散优先（头脑风暴）</option>
+              <option value="convergent" ${state.rtHostStyle === "convergent" ? "selected" : ""}>推动收敛</option>
+            </select></label>
+          </div>` : ""}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="mini" id="rtBack2">上一步</button>
+          <button class="primary" id="rtNext2" ${picked.length >= 2 ? "" : "disabled"}>下一步</button>
+        </div>
+      </div>`;
+  } else {
+    body = `
+      <div class="rtCard">
+        <h3>③ 写下议题，开始讨论</h3>
+        <textarea class="rtTopic" id="rtTopic" placeholder="例如：为嵌入式设备设计极简键值存储——请给出 API 设计与并发/持久化的取舍"></textarea>
+        <div style="display:flex;gap:12px;align-items:center;margin-top:11px;flex-wrap:wrap;font-size:12px">
+          <label class="cfgl" id="rtRoundsWrap">最多轮数 <select id="rtRounds" style="width:auto">
+            ${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n}</option>`).join("")}
+            <option value="0">无上限 ∞</option>
+          </select></label>
+          <label class="cfgl" id="rtConvergeWrap" style="display:flex;align-items:center;gap:4px" title="每轮小结时由主持人判定是否收敛；至少 2 轮后才可能提前结束"><input type="checkbox" id="rtConverge" style="width:auto" checked />共识即停</label>
+          <label class="cfgl" id="rtTournamentWrap" style="display:flex;align-items:center;gap:4px" title="主持人逐轮给发言打分：高分摘录更全、本人收到私密点评、最终按累计分加权汇总"><input type="checkbox" id="rtTournament" style="width:auto" />评分锦标赛</label>
+          <label class="cfgl">模式 <select id="rtKind" style="width:auto">
+            <option value="discuss">圆桌讨论（只讨论不动手）</option>
+            <option value="crew">工作队（协同干活：拆任务→worktree 并行→评审→合并，需 git 仓库）</option>
+          </select></label>
+          <label class="cfgl" id="rtModeWrap">发言方式 <select id="rtMode" style="width:auto">
+            <option value="parallel">并行（同时发言，各自独立思考）</option>
+            <option value="sequential">串行（依次发言，能接话）</option>
+          </select></label>
+          <label class="cfgl" id="rtCrewWrap" hidden>合并 <select id="rtMergeMode" style="width:auto">
+            <option value="manual">人工确认合并（推荐）</option>
+            <option value="auto">自动合并</option>
+          </select></label>
+          <label class="cfgl" id="rtWriteWrap" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtWrite" style="width:auto" />允许改文件</label>
+          <span class="spacer" style="flex:1"></span>
+          <button class="mini" id="rtBack3">上一步</button>
+          <button class="primary" id="rtGo">开始圆桌</button>
+        </div>
+        <div class="meta2" style="margin-top:10px">
+          成员：${picked.map((id) => esc(harnesses.get(id)?.label || id)).join("、")} · 目录 ${esc(state.rtCwd)}
+          ${state.rtHost ? ` · 主持人：${esc(harnesses.get(state.rtHost)?.label || state.rtHost)}` : " · 无主持人"}
+          ${Object.keys(state.rtMemberCfg).length ? ` · 已配 ${Object.keys(state.rtMemberCfg).length} 个成员的模型/参数` : ""}
+          <span id="rtRoundsHint"></span>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">圆桌会议</span>
+        <span class="meta2">多个 harness 就同一议题轮流发言，主持人把彼此的观点互相投喂</span></div>
+      <div class="steps">
+        ${[[1, "选目录"], [2, "选 harness"], [3, "写议题"]].map(([n, label]) =>
+          `<div class="step ${step === n ? "on" : step > n ? "done" : ""}"><span class="n">${step > n ? "✓" : n}</span>${label}</div>`
+        ).join('<span class="meta2">›</span>')}
+      </div>
+      ${body}
+      ${roomHistoryHtml()}
+    </div>`;
+}
+
+function roomHistoryHtml() {
+  if (!rooms.length) return "";
+  return `<div class="rtCard">
+    <h3>历史圆桌（${rooms.length}）</h3>
+    ${rooms.map((r) => `
+      <div class="wsRow" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+        <span class="pill ${r.status === "done" ? "done" : r.status === "running" ? "running" : r.status === "error" ? "error" : "saved"}">${ROOM_STATUS[r.status] || r.status}</span>
+        <div style="flex:1;min-width:180px">
+          <div class="t1" style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.topic)}</div>
+          <div class="meta2">#${r.id} · ${(r.members || []).length} 位成员 · ${(r.turns || []).length} 次发言${r.cwd ? " · " + esc(r.cwd) : ""}</div>
+        </div>
+        <button class="mini primary" data-open="${r.id}">打开</button>
+        <button class="mini ghost" data-del="${r.id}">删除</button>
+      </div>`).join("")}
+  </div>`;
+}
+
+function bindRoomWizard() {
+  const next = (n) => { state.rtStep = n; renderRoundtable(); };
+  if (state.rtStep === 1) {
+    const input = $("rtCwd");
+    attachDirComplete(input, { click: () => next(2) });
+    input.addEventListener("input", () => {
+      state.rtCwd = input.value;
+      const btn = $("rtNext1");
+      if (btn) btn.disabled = !input.value.trim();
+    });
+    $("rtNext1").onclick = () => { state.rtCwd = input.value.trim(); next(2); };
+  } else if (state.rtStep === 2) {
+    $("rtBack2").onclick = () => next(1);
+    $("rtNext2").onclick = () => next(3);
+    $("rtPick").querySelectorAll(".pick").forEach((el) => {
+      el.onclick = () => {
+        const id = el.dataset.h;
+        if (state.rtPicked.has(id)) state.rtPicked.delete(id); else state.rtPicked.add(id);
+        if (state.rtHost === id && !state.rtPicked.has(id)) state.rtHost = "";
+        renderRoundtable();
+      };
+    });
+    $("viewRoot").querySelectorAll("select[data-mcfg]").forEach((sel) => {
+      sel.onchange = () => {
+        const hid = sel.dataset.mcfg, cid = sel.dataset.cfg;
+        state.rtMemberCfg[hid] = { ...(state.rtMemberCfg[hid] ?? {}), [cid]: sel.value };
+      };
+    });
+    $("viewRoot").querySelectorAll("select[data-mvar]").forEach((sel) => {
+      sel.onchange = () => {
+        const hid = sel.dataset.mvar;
+        state.rtMemberVars[hid] = { ...(state.rtMemberVars[hid] ?? {}), [sel.dataset.var]: sel.value };
+      };
+    });
+    $("rtHost").onchange = (e) => { state.rtHost = e.target.value; renderRoundtable(); };
+    if ($("rtHostOpening")) $("rtHostOpening").onchange = (e) => { state.rtHostOpening = e.target.checked; };
+    if ($("rtHostRound")) $("rtHostRound").onchange = (e) => { state.rtHostRound = e.target.checked; };
+    if ($("rtHostFinal")) $("rtHostFinal").onchange = (e) => { state.rtHostFinal = e.target.checked; };
+    if ($("rtHostStyle")) $("rtHostStyle").onchange = (e) => { state.rtHostStyle = e.target.value; };
+  } else {
+    $("rtBack3").onclick = () => next(2);
+    const updRoundsHint = () => {
+      const el = $("rtRoundsHint");
+      if (!el) return;
+      if ($("rtKind").value === "crew") { el.textContent = ""; return; }
+      const n = Number($("rtRounds").value);
+      const conv = $("rtConverge").checked;
+      const tour = $("rtTournament").checked;
+      const hostNote = n === 0 && !state.rtHost ? "（无上限时会自动由第一位成员兼任主持人）" : "";
+      const tourNote = tour ? " · 评分锦标赛" : "";
+      el.textContent = n === 0
+        ? ` · 轮数无上限${conv ? " · 共识即停（至少 2 轮）" : " · 只能手动停止"}${hostNote}${tourNote}`
+        : ` · 最多 ${n} 轮${conv ? " · 共识即停（至少 2 轮）" : ""}${tourNote}`;
+    };
+    $("rtKind").onchange = () => {
+      const crew = $("rtKind").value === "crew";
+      $("rtModeWrap").hidden = crew;
+      $("rtCrewWrap").hidden = !crew;
+      $("rtWriteWrap").hidden = crew;   // 工作队本来就要改文件（在各自 worktree 里）
+      $("rtRoundsWrap").hidden = crew;  // 工作队按任务终态结束，轮数不参与
+      $("rtConvergeWrap").hidden = crew;
+      $("rtTournamentWrap").hidden = crew;
+      if (crew && !state.rtHost) {
+        state.rtHost = [...state.rtPicked][0] ?? "";
+        const sel = $("rtHost"); if (sel) sel.value = state.rtHost;
+      }
+      updRoundsHint();
+    };
+    $("rtRounds").onchange = updRoundsHint;
+    $("rtConverge").onchange = updRoundsHint;
+    $("rtTournament").onchange = updRoundsHint;
+    updRoundsHint();
+    $("rtGo").onclick = () => {
+      const topic = $("rtTopic").value.trim();
+      if (!topic) { alert("先写议题"); return; }
+      const ids = [...state.rtPicked].filter((id) => { const h = harnesses.get(id); return h && (h.available || h.binPath); });
+      if (ids.length < 2) { alert("至少选两个 harness"); return; }
+      const isCrew = $("rtKind").value === "crew";
+      const rounds = Number($("rtRounds").value);   // 0 = 无上限
+      // 无上限必须有主持人做收敛判定：没选就自动让第一位**探活通过**的成员兼任（risky 成员不当工头）
+      const hostId = state.rtHost || (isCrew || rounds === 0 ? (ids.find((id) => harnesses.get(id)?.available) ?? ids[0]) : "");
+      send({
+        type: "room-start",
+        cwd: state.rtCwd.trim(),
+        harnessIds: ids,
+        topic,
+        rounds,
+        mode: $("rtMode")?.value || "parallel",
+        converge: isCrew ? undefined : $("rtConverge").checked,
+        tournament: isCrew ? undefined : $("rtTournament").checked,
+        writeAllowed: isCrew ? true : $("rtWrite").checked,
+        crew: isCrew ? { maxAttempts: 2, mergeMode: $("rtMergeMode")?.value || "manual" } : undefined,
+        host: hostId
+          ? {
+              harnessId: hostId,
+              opening: state.rtHostOpening,
+              roundSummary: isCrew ? false : state.rtHostRound,
+              finalSummary: true,
+              style: isCrew ? "convergent" : state.rtHostStyle,
+              configs: cfgList(state.rtMemberCfg[hostId]),
+              vars: state.rtMemberVars[hostId],
+            }
+          : undefined,
+        memberConfigs: Object.fromEntries(
+          ids.map((id) => [id, cfgList(state.rtMemberCfg[id])]).filter(([, v]) => v.length),
+        ),
+        memberVars: Object.fromEntries(
+          ids.map((id) => [id, state.rtMemberVars[id] ?? {}]).filter(([, v]) => Object.keys(v).length),
+        ),
+      });
+      pendingRoomStart = true;
+      $("rtGo").disabled = true;
+      $("rtGo").textContent = "正在建会话…";
+    };
+  }
+  const wrap = $("viewRoot");
+  wrap.querySelectorAll("button[data-open]").forEach((b) => {
+    b.onclick = () => { state.roomId = b.dataset.open; renderRoundtable(); };
+  });
+  wrap.querySelectorAll("button[data-del]").forEach((b) => {
+    b.onclick = () => askRoomDelete(b.dataset.del);
+  });
+}
+
+/* ---------- 讨论区：发言流 + 继续追问 ---------- */
+function roomDetailHtml(room) {
+  if (room.crew) return crewDetailHtml(room);
+  const topics = roomTopics(room);
+  const last = topics[topics.length - 1];
+  const busy = room.status === "running";
+
+  return `
+    <div class="rtWrap">
+      <div class="rtHead">
+        <button class="mini" id="rtBack">← 圆桌列表</button>
+        <span class="ttl">${esc(room.topic)}</span>
+        <span class="pill ${room.status === "done" ? "done" : room.status === "running" ? "running" : room.status === "error" ? "error" : "saved"}">${ROOM_STATUS[room.status] || room.status}</span>
+        <span style="flex:1"></span>
+        ${busy ? '<button class="mini" id="rtStop">停止</button>' : ""}
+      </div>
+      <div class="meta2" style="margin:6px 0 12px">
+        #${room.id} · ${esc(room.cwd || "—")}
+        ${room.host ? ` · 主持人：${esc(room.host.harnessLabel)}（${room.host.style === "divergent" ? "发散优先" : "推动收敛"}）` : " · 无主持人"}
+        · ${room.writeAllowed ? "允许改文件" : "只讨论不改文件"}
+        · ${last.rounds === 0 ? "轮数无上限" : `最多 ${last.rounds} 轮`}${last.converge === false ? "" : " · 共识即停"}${last.tournament ? " · 评分锦标赛" : ""}${last.convergedRound ? `（第 ${last.convergedRound} 轮收敛 ✓）` : ""}
+        ${room.error ? ` · <span style="color:var(--err)">${esc(room.error)}</span>` : ""}
+      </div>
+
+      ${busy ? `
+      <div class="rtCard" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 14px">
+        <span class="cfgl">下一轮发言方式</span>
+        <div class="seg" id="rtModeSeg">
+          <button data-m="parallel" class="${(last.mode ?? "parallel") === "parallel" ? "on" : ""}">并行</button>
+          <button data-m="sequential" class="${last.mode === "sequential" ? "on" : ""}">串行</button>
+        </div>
+        <span class="meta2">切换从下一轮生效；并行时同轮所有人拿到相同的输入，适合横向对比</span>
+      </div>` : ""}
+
+      <div id="rtBlocks">${topicBlocksHtml(room, last)}</div>
+
+      ${topics.length > 1 ? `<div class="rtCard"><h3>此前的议题（${topics.length - 1}）</h3>
+        ${topics.slice(0, -1).map((t, i) => `<div class="rtPastTopic"><b>议题 ${i + 1}：${esc(t.topic)}</b>
+          <span class="rtBadge">${t.turns.length} 次发言 · ${ROOM_STATUS[t.status] || t.status}</span>
+          <details><summary>展开</summary>${topicBlocksHtml(room, t)}</details></div>`).join("")}
+      </div>` : ""}
+
+      <div class="rtCard">
+        <h3>继续追问（同一批成员，接着聊下一个议题）</h3>
+        <textarea class="rtTopic" id="rtTopic2" placeholder="新的议题…（成员会带着前面讨论的上下文继续）" ${busy ? "disabled" : ""}></textarea>
+        <div style="display:flex;gap:12px;align-items:center;margin-top:11px;flex-wrap:wrap;font-size:12px">
+          <label class="cfgl">最多轮数 <select id="rtRounds2" style="width:auto" ${busy ? "disabled" : ""}>
+            ${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n}</option>`).join("")}
+            <option value="0">无上限 ∞</option>
+          </select></label>
+          <label class="cfgl" style="display:flex;align-items:center;gap:4px" title="主持人判定收敛后提前结束；至少 2 轮"><input type="checkbox" id="rtConverge2" style="width:auto" ${room.converge === false ? "" : "checked"} ${busy ? "disabled" : ""} />共识即停</label>
+          <label class="cfgl" style="display:flex;align-items:center;gap:4px" title="主持人逐轮打分，高分摘录更全，最终按累计分加权"><input type="checkbox" id="rtTournament2" style="width:auto" ${room.tournament ? "checked" : ""} ${busy ? "disabled" : ""} />评分锦标赛</label>
+          <label class="cfgl">方式 <select id="rtMode2" ${busy ? "disabled" : ""} style="width:auto">
+            <option value="parallel">并行</option><option value="sequential">串行</option></select></label>
+          <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtWrite2" style="width:auto" ${room.writeAllowed ? "checked" : ""} ${busy ? "disabled" : ""} />允许改文件</label>
+          <span style="flex:1"></span>
+          <button class="primary" id="rtAsk" ${busy ? "disabled" : ""}>开始讨论</button>
+        </div>
+        ${busy ? '<div class="meta2" style="margin-top:8px">当前议题还在讨论中，结束后才能开新议题。</div>' : ""}
+      </div>
+    </div>`;
+}
+
+function roomMembers(room) {
+  return room.memberInfo?.length
+    ? room.memberInfo
+    : (room.members || []).map((id) => {
+        const s = sessions.get(id);
+        return { sessionId: id, harnessId: s?.harnessId, harnessLabel: s?.harnessLabel || id };
+      });
+}
+
+function roomTopics(room) {
+  return room.topics?.length
+    ? room.topics
+    : [{ id: "t0", topic: room.topic, rounds: room.rounds, mode: room.mode, status: room.status, turns: room.turns || [], createdAt: room.createdAt }];
+}
+
+function topicBlocksHtml(room, topic) {
+  const members = roomMembers(room);
+  const hostId = room.host?.sessionId;
+  const turns = topic.turns || [];
+  const opening = turns.find((t) => t.hostRole === "opening");
+  const final = turns.find((t) => t.hostRole === "final");
+  const started = topic.status === "running" ? (topic.currentRound ?? 0) : (topic.rounds || 0);
+  // 无上限（rounds=0）：轮次块按实际发生的轮数动态出现，不预定
+  const unlimited = !topic.rounds;
+  const total = unlimited
+    ? Math.max(topic.currentRound ?? 0, turns.reduce((m, t) => Math.max(m, t.round), 0), topic.convergedRound ?? 0)
+    : topic.rounds;
+  const blocks = [];
+
+  if (opening) blocks.push(hostBlockHtml(room, opening, "①"));
+
+  for (let r = 1; r <= total; r++) {
+    const isPending = topic.status === "running" && r > started;
+    const isActive = topic.status === "running" && r === started;
+    const roundTurns = turns.filter((t) => t.kind !== "host" && t.round === r);
+    const mode = topic.mode ?? "parallel";
+    blocks.push(`
+      <section class="rtRound ${isActive ? "active" : ""} ${isPending ? "pending" : ""}" data-round="${r}">
+        <div class="rtRoundHead">
+          <span class="rn">第 ${r} 轮</span>
+          <span class="badge">${mode === "parallel" ? "并行" : "串行"}</span>
+          ${topic.convergedRound === r ? '<span class="badge" style="color:var(--ok);border-color:#1f4a28">✓ 收敛</span>' : ""}
+          ${isActive ? '<span class="meta2">进行中…</span>' : isPending ? '<span class="meta2">等待中</span>' : `<span class="meta2">${roundTurns.length} 条发言</span>`}
+        </div>
+        <div class="rtCols" data-cols="${r}">
+          ${members.map((m) => {
+            const my = roundTurns.filter((t) => t.sessionId === m.sessionId);
+            return `
+              <div class="rtCol" data-col="${r}:${esc(m.sessionId)}">
+                <div class="rtColHead">
+                  <span class="nm" title="${esc(m.harnessId || "")}">${esc(m.harnessLabel)}</span>
+                  ${m.sessionId === hostId ? '<span class="badge host">主持</span>' : ""}
+                  <span class="st" data-st="${r}:${esc(m.sessionId)}"></span>
+                </div>
+                <div class="rtColBody" data-body="${r}:${esc(m.sessionId)}">
+                  ${my.map((t) => rtTurnHtml(t)).join("") || (isPending ? '<div class="meta2" style="padding:8px">等前面几轮结束</div>' : '<div class="meta2" style="padding:8px">还没有发言</div>')}
+                  <div class="rtLive" data-live="${r}:${esc(m.sessionId)}" hidden></div>
+                </div>
+              </div>`;
+          }).join("")}
+        </div>
+      </section>`);
+
+    const summary = turns.find((t) => t.hostRole === "round-summary" && t.round === r);
+    if (summary && (unlimited || r < topic.rounds)) {
+      blocks.push(hostBlockHtml(room, summary, `第 ${r} 轮小结${topic.convergedRound === r ? "（判定收敛，提前结束）" : ""}`));
+    }
+  }
+
+  if (final) blocks.push(hostBlockHtml(room, final, "最终总结"));
+  return blocks.join("");
+}
+
+function hostBlockHtml(room, t, label) {
+  return `
+    <section class="rtHostBlock">
+      <div class="rtRoundHead"><span class="rn host">${esc(label)}</span>
+        <span class="badge host">${esc(room.host?.harnessLabel || t.harnessLabel)}</span>
+        <span class="meta2">${new Date(t.ts).toLocaleTimeString()}</span>
+        <button class="mini ghost" data-prompt="${esc(t.ts)}" style="padding:1px 6px;font-size:11px">看 prompt</button>
+      </div>
+      <div class="rtHostBody">
+        <div class="txt md">${mdToHtml(t.reply || "(无输出)")}</div>
+        <pre data-promptFor="${esc(t.ts)}" hidden style="white-space:pre-wrap;font-size:11.5px;color:var(--dim2);margin:7px 0 0">${esc(t.prompt)}</pre>
+      </div>
+    </section>`;
+}
+
+function rtTurnHtml(x) {
+  return `
+    <div class="rtTurn" data-turn="${esc(x.sessionId)}-${x.round}-${esc(x.ts)}">
+      ${x.score != null ? `<div class="rtScore" title="${esc(x.scoreNote || "")}">★ ${x.score}/10${x.scoreNote ? ` · ${esc(clipNote(x.scoreNote))}` : ""}</div>` : ""}
+      <div class="txt md">${mdToHtml(x.reply || "(无输出)")}</div>
+    </div>`;
+}
+
+function clipNote(s) { return s.length > 60 ? s.slice(0, 60) + "…" : s; }
+
+const rtLiveBuf = new Map();
+
+function rtActiveRound(room) {
+  const topics = roomTopics(room);
+  const last = topics[topics.length - 1];
+  if (last.status !== "running") return null;
+  return last.currentRound ?? null;
+}
+
+function applyRoomUpdate(sessionId, u) {
+  if (!sessionId || state.view !== "roundtable" || !state.roomId) return;
+  const room = roomById(state.roomId);
+  if (!room) return;
+  if (!roomMembers(room).some((m) => m.sessionId === sessionId)) return;
+
+  if (room.crew) {
+    // 工作队：流式按 sessionId 直达 worker 栏
+    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && u.content.text) {
+      const buf = (rtLiveBuf.get(sessionId) ?? "") + u.content.text;
+      rtLiveBuf.set(sessionId, buf);
+      const box = document.querySelector(`.rtLive[data-live="${sessionId}"]`);
+      if (box) {
+        box.hidden = false;
+        box.innerHTML = `<div class="who">干活中…</div><div class="txt md">${mdToHtml(buf)}</div>`;
+      }
+      setCrewStatus(sessionId, "干活中");
+      return;
+    }
+    if (u.sessionUpdate === "agent_thought_chunk") { setCrewStatus(sessionId, "思考中…"); return; }
+    if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+      setCrewStatus(sessionId, `工具: ${String(u.title ?? "").slice(0, 22)}`);
+      return;
+    }
+    return;
+  }
+
+  const round = rtActiveRound(room);
+  const hostId = room.host?.sessionId;
+
+  if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && u.content.text) {
+    const key = `${round ?? 0}:${sessionId}`;
+    const buf = (rtLiveBuf.get(key) ?? "") + u.content.text;
+    rtLiveBuf.set(key, buf);
+    const box = document.querySelector(`.rtLive[data-live="${key}"]`);
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = `<div class="who">生成中…</div><div class="txt md">${mdToHtml(buf)}</div>`;
+    } else if (round === 0 || sessionId === hostId) {
+      let ph = document.querySelector(".rtHostBlock.liveHost");
+      if (!ph) {
+        ph = document.createElement("section");
+        ph.className = "rtHostBlock liveHost";
+        ph.innerHTML = `<div class="rtRoundHead"><span class="rn host">主持人</span>
+          <span class="badge host">${esc(room.host?.harnessLabel || "")}</span><span class="meta2">生成中…</span></div>
+          <div class="rtHostBody"><div class="txt md"></div></div>`;
+        const blocks = document.querySelector("#rtBlocks");
+        if (blocks) blocks.appendChild(ph);
+      }
+      const body = ph.querySelector(".txt");
+      if (body) body.innerHTML = mdToHtml(buf);
+    }
+    setColStatus(round ?? 0, sessionId, "生成中");
+    return;
+  }
+  if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+    const title = String(u.title ?? u.toolCallId ?? "工具");
+    setColStatus(round ?? 0, sessionId, `工具: ${title.slice(0, 22)}`);
+    return;
+  }
+  if (u.sessionUpdate === "agent_thought_chunk") {
+    setColStatus(round ?? 0, sessionId, "思考中…");
+    return;
+  }
+}
+
+function setColStatus(round, sessionId, text) {
+  const el = document.querySelector(`.st[data-st="${round}:${sessionId}"]`);
+  if (el) el.textContent = text;
+}
+
+function syncRoomBlocks(room) {
+  const container = document.querySelector("#rtBlocks");
+  if (!container) return;
+  if (room.crew) { syncCrewBlocks(room); return; }
+  const topics = roomTopics(room);
+  const last = topics[topics.length - 1];
+  const busy = room.status === "running";
+  const active = rtActiveRound(room);
+
+  container.innerHTML = topicBlocksHtml(room, last);
+
+  for (const key of [...rtLiveBuf.keys()]) {
+    const r = Number(key.split(":")[0]);
+    if (!busy || (active !== null && r < active) || (active === null && r > 0)) rtLiveBuf.delete(key);
+  }
+  if (!busy) rtLiveBuf.clear();
+
+  for (const [key, buf] of rtLiveBuf) {
+    const box = container.querySelector(`.rtLive[data-live="${key}"]`);
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = `<div class="who">生成中…</div><div class="txt md">${mdToHtml(buf)}</div>`;
+    }
+  }
+  if (busy && active !== null) {
+    for (const m of roomMembers(room)) {
+      const done = last.turns.some((t) => t.kind !== "host" && t.round === active && t.sessionId === m.sessionId);
+      setColStatus(active, m.sessionId, done ? "已完成" : "等待中…");
+    }
+  }
+  bindRoomPromptToggles();
+}
+
+/* =====================================================================
+   工作队（crew）视图：任务板 + worker 分栏 + 合并
+   ===================================================================== */
+const CREW_COL = [
+  ["todo", "待办", (t) => t.status === "pending" || t.status === "blocked"],
+  ["working", "进行中", (t) => t.status === "working"],
+  ["review", "待评审", (t) => t.status === "review"],
+  ["done", "完成 / 失败", (t) => t.status === "done" || t.status === "failed"],
+];
+const crewLabel = (id) => sessions.get(id)?.harnessLabel ?? id;
+
+function crewDetailHtml(room) {
+  const c = room.crew;
+  const phaseTxt = { working: room.status === "running" ? "进行中" : "未开始", "ready-merge": "待合并", merged: "已合并", conflict: "合并冲突" }[c.phase] || c.phase;
+
+  return `
+    <div class="rtWrap">
+      <div class="rtHead">
+        <button class="mini" id="rtBack">← 圆桌列表</button>
+        <span class="ttl">${esc(room.topic)}</span>
+        <span class="pill ${room.status === "done" ? "done" : room.status === "running" ? "running" : room.status === "error" ? "error" : "saved"}">${ROOM_STATUS[room.status] || room.status}</span>
+        <span class="meta2">${phaseTxt}</span>
+        ${c.phase === "ready-merge" ? '<button class="primary mini" id="crewMerge">合并到主目录</button>' : ""}
+        ${room.status === "running" ? '<button class="mini" id="rtStop">停止</button>' : ""}
+      </div>
+      <div class="meta2" style="margin:6px 0 12px">
+        #${room.id} · ${esc(room.cwd || "—")} · 工头：${esc(room.host?.harnessLabel || "—")}
+        · 成员：${(c.workers || []).map((w) => esc(w.harnessLabel)).join("、")}
+        · 打回上限 ${c.maxAttempts} 次 · ${c.mergeMode === "auto" ? "自动合并" : "人工确认合并"}
+        ${room.error ? ` · <span style="color:var(--err)">${esc(room.error)}</span>` : ""}
+      </div>
+
+      ${c.tasks.length ? `
+      <div class="crewBoard">
+        ${CREW_COL.map(([key, label, pred]) => {
+          const list = c.tasks.filter(pred);
+          return `<div class="crewCol"><div class="hd">${label} <span class="cnt">${list.length}</span></div>
+            ${list.map((t) => crewTaskCard(t)).join("") || '<div class="meta2">—</div>'}
+          </div>`;
+        }).join("")}
+      </div>` : `<div class="rtCard"><div class="meta2">工头正在拆解任务…</div></div>`}
+
+      ${(c.tasks || []).some((t) => t.review) ? `
+      <div class="rtCard"><h3>评审记录</h3>
+        ${c.tasks.filter((t) => t.review).map((t) => `
+          <div class="wsRow" style="padding:6px 0">
+            <span class="badge ${t.review.verdict === "approve" ? "" : "host"}">${t.review.verdict === "approve" ? "通过" : "打回"}${t.review.score != null ? ` ${t.review.score}/10` : ""}</span>
+            <b>${esc(t.id)}</b> ${esc(t.title)}
+            <span class="meta2">${esc(t.review.reviewer)}：${esc(t.review.comments).slice(0, 120)}</span>
+          </div>`).join("")}
+      </div>` : ""}
+
+      ${c.mergeLines?.length || c.phase === "ready-merge" ? `
+      <div class="rtCard"><h3>合并</h3>
+        ${(c.mergeLines || []).map((l) => `<div class="meta2">${esc(l)}</div>`).join("") || '<div class="meta2">任务完成后点顶部「合并到主目录」</div>'}
+        ${(c.conflicts || []).length ? c.conflicts.map((x) => `<div style="color:var(--err);font-size:12px;margin-top:6px">${esc(x.branch)} 冲突：<pre style="white-space:pre-wrap;font-size:11px">${esc(x.output)}</pre></div>`).join("") : ""}
+      </div>` : ""}
+
+      ${room.turns.filter((t) => t.kind === "host").map((t) => `
+      <section class="rtHostBlock">
+        <div class="rtRoundHead"><span class="rn host">${t.hostRole === "opening" ? "工头拆解" : "收尾报告"}</span>
+          <span class="badge host">${esc(t.harnessLabel)}</span><span class="meta2">${new Date(t.ts).toLocaleTimeString()}</span></div>
+        <div class="rtHostBody"><div class="txt md">${mdToHtml(t.reply || "(无输出)")}</div></div>
+      </section>`).join("")}
+
+      <div class="rtCard"><h3>成员实时输出</h3>
+        <div class="crewWorkerCols">
+          ${(c.workers || []).map((w) => `
+            <div class="rtCol" data-col="${esc(w.sessionId)}">
+              <div class="rtColHead">
+                <span class="nm">${esc(w.harnessLabel)}</span>
+                <span class="st" data-cst="${esc(w.sessionId)}"></span>
+              </div>
+              <div class="rtColBody">
+                <div class="meta2" style="padding:2px 0">分支 <code>${esc(w.branch)}</code></div>
+                <div class="rtLive" data-live="${esc(w.sessionId)}" hidden></div>
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function crewTaskCard(t) {
+  const st = { pending: "待办", blocked: "被阻塞", working: "进行中", review: "待评审", done: "完成", failed: "失败" }[t.status] || t.status;
+  return `<div class="crewTask ${t.status === "failed" ? "failed" : ""}">
+    <div class="t1"><span class="tid">${esc(t.id)}</span> ${esc(t.title)}</div>
+    <div class="t2">${st}${t.assignee ? " · " + esc(crewLabel(t.assignee)) : ""}${t.attempts ? " · 打回 " + t.attempts + " 次" : ""}</div>
+    ${t.files?.length ? `<div class="files" title="${esc(t.files.join(" | "))}">📄 ${esc(t.files.join(", "))}</div>` : ""}
+    ${t.summary ? `<details><summary>改动摘要</summary><div style="margin-top:4px">${mdToHtml(t.summary)}</div></details>` : ""}
+    ${t.review ? `<details><summary class="${t.review.verdict === "approve" ? "review-ok" : "review-bad"}">评审：${t.review.verdict === "approve" ? "通过" : "打回"}${t.review.score != null ? ` · ${t.review.score}/10` : ""}</summary>
+      <div style="margin-top:4px;color:var(--dim2)">${esc(t.review.comments)}</div>
+      ${t.review.rubric?.length ? `<div style="margin-top:5px;font-size:11px">${t.review.rubric.map((r) =>
+        `<div style="${r.pass ? "" : "color:var(--warn)"}">${r.pass ? "✓" : "✗"} ${esc(r.item)}${r.note ? `（${esc(r.note)}）` : ""}</div>`).join("")}</div>` : ""}</details>` : ""}
+    ${t.error ? `<div style="color:var(--err);font-size:11px;margin-top:4px">${esc(t.error)}</div>` : ""}
+  </div>`;
+}
+
+function setCrewStatus(sessionId, text) {
+  document.querySelectorAll(`.st[data-cst="${sessionId}"]`).forEach((el) => (el.textContent = text));
+}
+
+function syncCrewBlocks(room) {
+  const c = room.crew;
+  if (!c) return;
+  const root = $("viewRoot");
+  const keep = new Map();
+  root.querySelectorAll(".rtLive[data-live]").forEach((b) => { if (!b.hidden) keep.set(b.dataset.live, b.innerHTML); });
+  root.innerHTML = roomDetailHtml(room);
+  root.dataset.roomId = room.id;
+  bindRoomDetail(room);
+  for (const [sid, html] of keep) {
+    const box = root.querySelector(`.rtLive[data-live="${sid}"]`);
+    if (box) { box.hidden = false; box.innerHTML = html; }
+  }
+  if (room.status !== "running") for (const sid of keep.keys()) setCrewStatus(sid, "");
+}
+
+function askRoomDelete(roomId) {
+  const room = roomById(roomId);
+  const n = (room?.members?.length ?? 0) + (room?.host ? 1 : 0);
+  const existing = document.getElementById("rtDelMask");
+  if (existing) existing.remove();
+  const mask = document.createElement("div");
+  mask.id = "rtDelMask";
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="dialog">
+      <h3 style="margin:0 0 10px;font-size:15px">删除圆桌</h3>
+      <div class="meta2" style="margin-bottom:12px">${esc(room?.topic || "")}</div>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="rtDelSessions" style="width:auto;margin-top:3px" />
+        <span>同时删除它的成员会话（最多 ${n} 个）<br>
+          <span class="meta2">不勾选则只删圆桌记录，会话留在列表里可以继续单独聊</span></span>
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="mini" id="rtDelCancel">取消</button>
+        <button class="primary" id="rtDelOk">删除</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  document.getElementById("rtDelCancel").onclick = close;
+  document.getElementById("rtDelOk").onclick = () => {
+    send({ type: "room-delete", roomId, deleteSessions: document.getElementById("rtDelSessions").checked });
+    close();
+  };
+}
+
+function bindRoomDetail(room) {
+  $("rtBack").onclick = () => { state.roomId = null; delete $("viewRoot").dataset.roomId; renderRoundtable(); };
+  if ($("rtStop")) $("rtStop").onclick = () => send({ type: "room-stop", roomId: room.id });
+  if ($("crewMerge")) {
+    $("crewMerge").onclick = () => {
+      $("crewMerge").disabled = true;
+      $("crewMerge").textContent = "合并中…";
+      send({ type: "crew-merge", roomId: room.id });
+    };
+  }
+  $("rtAsk")?.addEventListener("click", () => {
+    const topic = $("rtTopic2").value.trim();
+    if (!topic) { alert("先写议题"); return; }
+    send({
+      type: "room-topic",
+      roomId: room.id,
+      topic,
+      rounds: Number($("rtRounds2").value),
+      mode: $("rtMode2")?.value || "parallel",
+      converge: $("rtConverge2").checked,
+      tournament: $("rtTournament2").checked,
+      writeAllowed: $("rtWrite2").checked,
+    });
+  });
+
+  const seg = $("rtModeSeg");
+  if (seg) {
+    seg.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => {
+        send({ type: "room-mode", roomId: room.id, mode: b.dataset.m });
+        seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      };
+    });
+  }
+  bindRoomPromptToggles();
+}
+
+function bindRoomPromptToggles() {
+  document.querySelectorAll("button[data-prompt]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const ts = b.dataset.prompt;
+      const pre = document.querySelector(`pre[data-promptFor="${ts}"]`);
+      if (pre) pre.hidden = !pre.hidden;
+    };
+  });
+}
+
+/* =====================================================================
+   历史同步对话框
+   ===================================================================== */
+$("syncBtn").onclick = () => {
+  const existing = $("syncMask");
+  if (existing) existing.remove();
+  const mask = document.createElement("div");
+  mask.id = "syncMask";
+  mask.className = "mask";
+  mask.innerHTML = `
+    <div class="dialog">
+      <h3 style="margin:0 0 10px;font-size:15px">从本机历史导入</h3>
+      <div class="meta2" style="margin-bottom:12px">扫描本机已安装的各 harness 历史存储并合并进列表。</div>
+      <div style="display:flex;gap:12px;flex-direction:column;font-size:13px">
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="syncForce" style="width:auto" />强制全量重扫（默认只扫新增）</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="syncTmp" style="width:auto" />包含 /tmp 与临时分支会话</label>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="mini" id="syncCancel">取消</button>
+        <button class="primary" id="syncGo">开始同步</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  $("syncCancel").onclick = close;
+  $("syncGo").onclick = () => {
+    send({
+      type: "sync-history",
+      force: $("syncForce").checked,
+      includeTmp: $("syncTmp").checked,
+    });
+    $("syncGo").disabled = true;
+    $("syncGo").textContent = "扫描中…";
+  };
+};
+
+function renderSyncResult(sums) {
+  const mask = $("syncMask");
+  if (!mask) return;
+  const dlg = mask.querySelector(".dialog");
+  if (!dlg) return;
+  let html = `<h3 style="margin:0 0 10px;font-size:15px">同步完成</h3>`;
+  for (const s of sums) {
+    html += `<div class="wsRow"><b>${esc(s.label)}</b>: 发现 ${s.found}，导入 ${s.imported}，更新 ${s.updated}，跳过 ${s.skipped}</div>`;
+  }
+  html += `<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="primary" onclick="document.getElementById('syncMask').remove()">确定</button></div>`;
+  dlg.innerHTML = html;
+}
+</script>
+</body>
+</html>

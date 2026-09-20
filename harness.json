@@ -1,0 +1,91 @@
+{
+  "//": "HarnessGate harness 注册表。加一个 harness = 加一条记录，不用改代码。",
+  "//env": "每个 harness 可用 env 覆盖/追加环境变量；cwd 由会话决定。值里可用 ${HG_SESSION_ID} 占位符（spawn 时替换为 HarnessGate 会话 id；探活时替换为 probe），用于需要「每会话一个上游会话键」的 harness。",
+  "defaults": {
+    "cwd": "/root/projects"
+  },
+  "harnesses": [
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "cmd": "opencode",
+      "args": [
+        "acp"
+      ],
+      "proxy": "http://127.0.0.1:7890",
+      "note": "原生 ACP，本机已装 1.18.13。模型推理网关 models.opencode.ai 直连不响应，必须走本机 sing-box 代理"
+    },
+    {
+      "id": "zcode",
+      "label": "ZCode (GLM)",
+      "cmd": "/usr/local/bin/zcode-acp-zcode",
+      "args": [],
+      "note": "ZCode headless 经 ACP 适配器；包装脚本负责 provider 环境变量"
+    },
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "cmd": "hermes",
+      "args": [
+        "acp"
+      ],
+      "note": "原生 ACP"
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "cmd": "claude-agent-acp",
+      "args": [],
+      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "cmd": "codex-acp",
+      "args": [],
+      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）"
+    },
+    {
+      "id": "qoder",
+      "label": "Qoder CLI",
+      "cmd": "qodercli",
+      "args": [
+        "--acp"
+      ],
+      "experimental": true,
+      "note": "--acp 未在 help 中文档化，待验证"
+    },
+    {
+      "id": "antigravity",
+      "label": "Antigravity (Google)",
+      "cmd": "/root/.harnessgate/agents/antigravity-acp/extracted/agy_acp_server.par",
+      "args": [
+        "--uid=root"
+      ],
+      "proxy": "http://127.0.0.1:7899",
+      "note": "Google 官方 AGY ACP Server。--uid=root；走美国出口代理（香港/日本/大陆都被 Google 地区限制挡）",
+      "authMethod": "oauth-personal"
+    },
+    {
+      "id": "openclaw",
+      "label": "OpenClaw",
+      "cmd": "/usr/local/bin/openclaw-acp-gateway",
+      "args": [],
+      "env": {
+        "OPENCLAW_SESSION_KEY": "agent:${HG_OPENCLAW_AGENT:-main}:hg-${HG_SESSION_ID}"
+      },
+      "note": "经 ACP 桥接 OpenClaw 网关；每个会话独立 session key（agent:…:hg-<id>）。可选 OpenClaw agent（每个 agent 的模型在 OpenClaw 的 agents.entries.<名字>.model 里配置）",
+      "extraAgents": [
+        "main",
+        "architect",
+        "devops",
+        "quant",
+        "knowledge-mentor",
+        "interviewer",
+        "content-writer",
+        "agent-ops",
+        "steward"
+      ]
+    }
+  ]
+}

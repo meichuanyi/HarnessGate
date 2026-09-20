@@ -1,0 +1,9 @@
+src/**
+out-test/**
+node_modules/**
+.vscode-test/**
+esbuild*.mjs
+tsconfig.json
+*.vsix
+.vscode/**
+**/*.map

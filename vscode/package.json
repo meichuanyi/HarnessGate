@@ -1,0 +1,181 @@
+{
+  "name": "harnessgate",
+  "displayName": "HarnessGate",
+  "description": "在你的服务器上远程驱动多个编码 agent（harness）：连 HarnessGate 服务，agent 与文件都在服务器上",
+  "version": "0.1.0",
+  "publisher": "harnessgate",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Chat"
+  ],
+  "keywords": [
+    "agent",
+    "acp",
+    "opencode",
+    "claude-code",
+    "codex",
+    "remote"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "harnessgate",
+          "title": "HarnessGate",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "harnessgate": [
+        {
+          "id": "harnessgate.harnesses",
+          "name": "Harness 与会话"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "harnessgate.connect",
+        "title": "HarnessGate: 连接 / 重连服务",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "harnessgate.refresh",
+        "title": "HarnessGate: 刷新",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "harnessgate.newSession",
+        "title": "HarnessGate: 新建会话…",
+        "icon": "$(add)"
+      },
+      {
+        "command": "harnessgate.openInBrowser",
+        "title": "HarnessGate: 在浏览器打开（圆桌/工作队/工作区）",
+        "icon": "$(browser)"
+      },
+      {
+        "command": "harnessgate.syncHistory",
+        "title": "HarnessGate: 同步历史会话",
+        "icon": "$(history)"
+      },
+      {
+        "command": "harnessgate.openChat",
+        "title": "HarnessGate: 打开对话"
+      },
+      {
+        "command": "harnessgate.deleteSession",
+        "title": "HarnessGate: 删除会话",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "harnessgate.stopSession",
+        "title": "HarnessGate: 停止会话",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "harnessgate.resumeSession",
+        "title": "HarnessGate: 恢复会话",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "harnessgate.showLog",
+        "title": "HarnessGate: 显示连接日志"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "harnessgate.newSession",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@1"
+        },
+        {
+          "command": "harnessgate.openInBrowser",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@2"
+        },
+        {
+          "command": "harnessgate.syncHistory",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@3"
+        },
+        {
+          "command": "harnessgate.refresh",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "harnessgate.openChat",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "inline@1"
+        },
+        {
+          "command": "harnessgate.resumeSession",
+          "when": "view == harnessgate.harnesses && viewItem == session-saved",
+          "group": "inline@2"
+        },
+        {
+          "command": "harnessgate.stopSession",
+          "when": "view == harnessgate.harnesses && viewItem == session-live",
+          "group": "inline@2"
+        },
+        {
+          "command": "harnessgate.deleteSession",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "inline@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "HarnessGate",
+      "properties": {
+        "harnessgate.url": {
+          "type": "string",
+          "default": "ws://127.0.0.1:9830/ws",
+          "description": "HarnessGate 服务的 WebSocket 地址（形如 ws://主机:9830/ws）"
+        },
+        "harnessgate.token": {
+          "type": "string",
+          "default": "",
+          "description": "访问 token（服务端开了认证时填；见服务器上的 ~/.harnessgate/token）。留空表示服务端未开认证。"
+        },
+        "harnessgate.defaultCwd": {
+          "type": "string",
+          "default": "",
+          "description": "新建会话时默认的工作目录（服务器上的路径）。留空则用服务端默认值。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node gen-renderer.mjs && node esbuild.mjs",
+    "watch": "node gen-renderer.mjs && node esbuild.mjs --watch",
+    "typecheck": "node gen-renderer.mjs && tsc --noEmit",
+    "package": "node esbuild.mjs --production && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
+    "test": "node esbuild.test.mjs && node out-test/runTest.js",
+    "build:test": "node esbuild.test.mjs",
+    "test:vsix": "node esbuild.test.mjs && node out-test/installVsix.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

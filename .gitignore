@@ -1,0 +1,9 @@
+node_modules/
+.zcode/
+*.log
+.DS_Store
+vscode/dist/
+vscode/out-test/
+vscode/.vscode-test/
+*.vsix
+vscode/src/generated/
