@@ -129,6 +129,8 @@ function cap(s: string): string {
  * 一个 HarnessSession = 一个 harness 子进程 + 一个 ACP 会话（可恢复）。
  * agent 在服务器上运行；浏览器只是观察者/驱动者，从不接触文件系统。
  */
+export type AutoApproveLevel = "off" | "readonly" | "all";
+
 export class HarnessSession {
   readonly id: string;
   readonly createdAt: string;
@@ -147,7 +149,11 @@ export class HarnessSession {
   configOptions?: ConfigOption[];
   worktree?: WorktreeInfo;
   /** 圆桌模式下由服务端自动批准权限请求（成员会话没人点按钮，否则会永久挂起） */
-  autoApprove = false;
+  autoApprove: AutoApproveLevel = "off";
+  /** 危险操作硬闸：无论档位，匹配到这些模式的权限请求都强制人工决策（弹按钮） */
+  /** 危险操作硬闸开关：默认关（全自动=真全自动，危险操作只打 ⚠ 标记）；=1 时危险操作强制人工 */
+  static readonly DANGER_HOLD = process.env.HG_DANGER_HOLD === "1";
+  static readonly DANGER_RE = /rm\s+-rf\s+[/"']|git\s+push[^&|;]*--force|git\s+reset\s+--hard|\bmkfs\b|\bdd\b[^|;]*of=/i;
   /** 建会话时就想应用的配置（模型等）：会话就绪后自动下发，失败只记日志不中断 */
   pendingConfigs: Array<{ configId: string; value: string }> = [];
   /** env 占位符的自定义取值（如 HG_OPENCLAW_AGENT），由创建方（向导/圆桌）传入 */
@@ -167,10 +173,19 @@ export class HarnessSession {
   private turnWaiter?: { from: number; resolve: (r: { text: string; stopReason: string }) => void };
   /** 一个 turn 正在跑（前端据此显示「停止」按钮；随 SessionInfo 广播） */
   private inTurnFlag = false;
+  /** 本回合开始时间（epoch ms）——前端显示「已运行 X 分钟」 */
+  private turnStartedAt?: number;
+  /** 最近一次收到 agent 事件（流式/思考/工具调用）的时间——看门狗按「静默多久」判死，不看总时长 */
+  private lastProgressAt = Date.now();
   /** 会话还没就绪时先排队，就绪后自动发出（避免用户手快丢消息） */
   private queued: { text: string; attachments: Attachment[] }[] = [];
   /** 用户手动选过的配置（模型等），持久化并在恢复时重放 */
   private chosen: Record<string, string> = {};
+  /** 房间 worker 的宽松权限：就绪后自动切到 harness 支持的最宽 mode（auto/yolo/acceptEdits/…）。
+   *  worker 都在 git 隔离的 worktree 里，从源头减少授权请求比事后批准更稳（不会挂、不留审批债） */
+  permissiveMode = false;
+  /** 当前正在干的事（圆桌/工作队设置，如「T1 完成RQ2实证分析」）——权限决策记录的任务上下文 */
+  intentTag?: string;
 
   constructor(
     private readonly spec: HarnessSpec,
@@ -194,6 +209,7 @@ export class HarnessSession {
     this.transcript = record.transcript;
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
     this.chosen = record.chosen ?? {};
+    this.autoApprove = (record.autoApprove as AutoApproveLevel) ?? "off";
     this.pendingConfigs = Object.entries(this.chosen).map(([configId, value]) => ({ configId, value }));
   }
 
@@ -233,6 +249,7 @@ export class HarnessSession {
       worktree: this.worktree,
       transcript: this.transcript,
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
+      autoApprove: this.autoApprove,
     };
   }
 
@@ -260,6 +277,12 @@ export class HarnessSession {
       ),
       worktree: this.worktree,
       inTurn: this.inTurnFlag,
+      /** 本回合开始时间（epoch ms）；inTurn=false 时无 */
+      turnStartedAt: this.inTurnFlag ? (this.turnStartedAt ?? Date.now()) : undefined,
+      /** 最近一次 agent 事件时间（epoch ms）——前端据此显示「最后活动 X 前」 */
+      lastProgressAt: this.lastProgressAt,
+      autoApprove: this.autoApprove,
+      roomId: this.roomId,
     };
   }
 
@@ -485,6 +508,7 @@ export class HarnessSession {
         }
 
         this.setStatus("ready");
+        const hadModeCfg = this.pendingConfigs.some((c) => /mode/i.test(c.configId));
         if (this.pendingConfigs.length) {
           const pending = [...this.pendingConfigs];
           this.pendingConfigs = [];
@@ -493,6 +517,27 @@ export class HarnessSession {
               await this.setConfigOption(c.configId, c.value);
             } catch (err) {
               this.log(`预置配置下发失败 ${c.configId}=${c.value}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+        // 房间 worker：自动切到可用的最宽权限模式。宽度序：yolo > dont_ask > auto > acceptEdits > edit > build
+        // （2026-09-21 实测教训：zcode 的 "auto" 仍会内部拦截工具且不发 request_permission，yolo 才是真全放行；
+        //  已是 yolo/dontAsk 时绝不能"降级"到 auto）
+        if (this.permissiveMode && this.modes?.availableModes?.length && !hadModeCfg) {
+          const low = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
+          const cur = low(this.modes?.currentModeId ?? "");
+          const WIDEST = ["yolo", "dontask"];
+          if (!WIDEST.some((w) => cur.includes(w))) {
+            const PREF = ["yolo", "dontask", "auto", "acceptedits", "edit", "build"];
+            const pick = PREF.map((p) => this.modes!.availableModes!.find((m) => low(m.id) === p)).find(Boolean)
+              ?? PREF.map((p) => this.modes!.availableModes!.find((m) => low(m.id).includes(p))).find(Boolean);
+            if (pick && pick.id !== this.modes?.currentModeId) {
+              try {
+                await this.setMode(pick.id);
+                this.log(`房间 worker 已切宽松模式: ${pick.id}（worktree 隔离 + git 兜底）`);
+              } catch (err) {
+                this.log(`切宽松模式失败（忽略，靠自动批准兜底）: ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
           }
         }
@@ -640,20 +685,38 @@ export class HarnessSession {
     }
   }
 
+  /** 设置自动决策档位（持久化；房间会话恒为 all 不允许改） */
+  setAutoApprove(level: "off" | "readonly" | "all"): void {
+    if (this.roomId) return;   // 房间会话的自动决策不可关（没有审批界面）
+    this.autoApprove = level;
+    this.audit.append({ session: this.id, harness: this.harnessId, op: "auto_approve.set", level });
+    this.hooks.onStatus(this.info());
+    this.hooks.onPersist(this.record());
+  }
+
   /** 打断当前回合：给 agent 发 session/cancel，并在本地立刻放行等待方（不等 agent 确认——
    *  有的 harness 会无视 cancel 继续吐字，那也按已打断处理，别让 UI/圆桌干等） */
-  async cancelTurn(): Promise<void> {
-    if (!this.inTurnFlag || !this.ctx || !this.acpSessionId) return;
-    this.audit.append({ session: this.id, harness: this.harnessId, op: "session.cancel" });
+  async cancelTurn(stopReason = "cancelled"): Promise<void> {
+    if (!this.inTurnFlag || !this.ctx || !this.acpSessionId) {
+      if (this.inTurnFlag) {
+        // 会话上下文已丢（进程被杀等）——仍然放行等待方
+        this.markInTurn(false);
+        this.closeAssistant(stopReason);
+        this.finishTurn(stopReason);
+        this.hooks.onTurnEnd(this.id, stopReason);
+      }
+      return;
+    }
+    this.audit.append({ session: this.id, harness: this.harnessId, op: "session.cancel", reason: stopReason });
     try {
       await this.ctx.notify(acp.methods.agent.session.cancel, { sessionId: this.acpSessionId } as never);
     } catch (err) {
       this.log(`session/cancel 发送失败（继续本地兜底）: ${err instanceof Error ? err.message : String(err)}`);
     }
     this.markInTurn(false);
-    this.closeAssistant("cancelled");
-    this.finishTurn("cancelled");
-    this.hooks.onTurnEnd(this.id, "cancelled");
+    this.closeAssistant(stopReason);
+    this.finishTurn(stopReason);
+    this.hooks.onTurnEnd(this.id, stopReason);
   }
 
   private markInTurn(inTurn: boolean): void {
@@ -662,8 +725,14 @@ export class HarnessSession {
       return;
     }
     this.inTurnFlag = inTurn;
+    if (inTurn) {
+      this.turnStartedAt = Date.now();
+      this.lastProgressAt = Date.now();   // 回合开始即视为有进展，静默时钟从这里起算
+    } else {
+      this.turnStartedAt = undefined;
+    }
     this.hub.setInTurn(this.id, inTurn);
-    this.hooks.onStatus(this.info());   // 前端靠这个显示/隐藏「停止」按钮
+    this.hooks.onStatus(this.info());   // 前端靠这个显示/隐藏「停止」按钮和运行时长
   }
 
   async promptAndWait(text: string, timeoutMs = 0): Promise<{ text: string; stopReason: string }> {
@@ -673,18 +742,25 @@ export class HarnessSession {
       resolveTurn = resolve;
       this.turnWaiter = { from, resolve };
     });
-    await this.prompt(text);
+    // 关键：不 await 底层 RPC——它可能永远不回（agent 挂死/等后台任务），
+    // 旧实现「先 await 再装定时器」导致超时永远不触发（2026-09-21 论文工作队冻结事故）
+    const p = this.prompt(text);
+    p.catch(() => {});   // prompt 内部已自理错误；这里只防未处理拒绝
     if (timeoutMs <= 0) return wait;
-    const timer = setTimeout(() => {
-      if (this.turnWaiter?.resolve === resolveTurn) this.turnWaiter = undefined;
-      this.log(`一轮超过 ${Math.round(timeoutMs / 1000)}s 未结束，按超时处理（harness 可能仍在后台产出）`);
-      resolveTurn({ text: "", stopReason: "timeout" });
-    }, timeoutMs);
-    try {
-      return await wait;
-    } finally {
-      clearTimeout(timer);
-    }
+    // 看门狗（Temporal 式）：不看总时长，只看「静默多久」——只要 agent 还在吐事件就不打断；
+    // 静默超线才判死，并走优雅 cancel（释放回合 + 放行等待方）
+    const iv = setInterval(() => {
+      const silentMs = Date.now() - this.lastProgressAt;
+      if (silentMs > timeoutMs) {
+        this.log(`静默 ${Math.round(silentMs / 60000)} 分钟超过阈值 ${Math.round(timeoutMs / 60000)} 分钟，按无进展处理`);
+        void this.cancelTurn("idle-timeout");
+      }
+    }, 5_000);
+    wait.then(
+      () => clearInterval(iv),
+      () => clearInterval(iv),
+    );
+    return wait;
   }
 
   /** 把 ACP 的 session/update 翻译成台账 + 前端事件 */
@@ -696,6 +772,7 @@ export class HarnessSession {
     }
     if (this.replaying) return;
 
+    this.lastProgressAt = Date.now();   // 任何 agent 事件都算「活着」——看门狗按静默判死，不看总时长
     this.hooks.onUpdate(this.id, u);
 
     switch (u.sessionUpdate) {
@@ -885,49 +962,126 @@ export class HarnessSession {
     return true;
   }
 
-  private pickAllowOption(options: Array<{ optionId: string; name?: string; kind?: string }>): string | undefined {
-    const score = (o: { optionId: string; name?: string; kind?: string }): number => {
-      const k = String(o.kind ?? "").toLowerCase();
-      const n = String(o.name ?? "").toLowerCase();
-      const id = String(o.optionId ?? "").toLowerCase();
-      const hay = `${k} ${n} ${id}`;
-      if (/reject|deny|deny|refuse|拒绝/.test(hay)) return -1;
-      if (/allow_always|allow-always|always/.test(hay)) return 3;
-      if (/allow_once|allow-once|allow|approve|accept|允许|批准/.test(hay)) return 2;
-      if (/yes|ok/.test(hay)) return 1;
-      return 0;
+  /** 自动决策：按选项语义打分挑最优（不只是 allow/deny——覆盖还是跳过这类选择题也按「行动导向」挑）。
+   *  返回 { optionId, name, reason }；没有任何可放行选项时返回 undefined（按 cancelled 回答，宁可不干也不瞎选）。 */
+  private decidePermission(
+    options: Array<{ optionId: string; name?: string; kind?: string }>,
+  ): { optionId: string; name: string; reason: string } | undefined {
+    const CLASSES: Array<{ re: RegExp; score: number; why: string }> = [
+      { re: /reject|deny|refuse|cancel|abort|quit|拒绝|取消|中止|放弃/, score: -1, why: "拒绝类（永不自动选）" },
+      { re: /allow_always|allow-always|always|总是|记住/, score: 6, why: "always 放行" },
+      { re: /allow_once|allow-once|allow|approve|accept|yes|ok|proceed|continue|run|exec|允许|批准|同意|继续|执行/, score: 5, why: "放行/继续类" },
+      { re: /recommend|default|suggest|推荐|默认/, score: 4, why: "官方推荐/默认项" },
+      { re: /keep|use|save|confirm|overwrite|采用|保留|确认|覆盖/, score: 3, why: "行动导向（保留/确认/覆盖）" },
+      { re: /skip|later|postpone|not now|跳过|稍后/, score: 0, why: "跳过类（非最优）" },
+    ];
+    const scoreOf = (o: { optionId: string; name?: string; kind?: string }) => {
+      const hay = `${o.kind ?? ""} ${o.name ?? ""} ${o.optionId ?? ""}`.toLowerCase();
+      for (const c of CLASSES) if (c.re.test(hay)) return c;
+      return { score: 1, why: "中性" } as { score: number; why: string };
     };
-    let best: { id: string; score: number } | undefined;
+    let best: { optionId: string; name: string; reason: string; score: number } | undefined;
     for (const o of options) {
-      const sc = score(o);
-      if (sc < 0) continue;
-      if (!best || sc > best.score) best = { id: o.optionId, score: sc };
+      const c = scoreOf(o);
+      if (c.score < 0) continue;
+      if (!best || c.score > best.score) {
+        best = { optionId: o.optionId, name: String(o.name ?? o.optionId), reason: c.why, score: c.score };
+      }
     }
-    return best?.id ?? options[0]?.optionId;
+    return best ? { optionId: best.optionId, name: best.name, reason: best.reason } : undefined;
+  }
+
+  /** 权限决策的上下文：agent 发起工具调用前最近一次「说明自己在干什么」（思考/正文，截断） */
+  private recentIntent(): string | undefined {
+    for (let i = this.transcript.length - 1; i >= Math.max(0, this.transcript.length - 12); i--) {
+      const e = this.transcript[i] as { kind?: string; text?: string };
+      if ((e.kind === "thought" || e.kind === "assistant") && e.text?.trim()) {
+        return e.text.replace(/\s+/g, " ").trim().slice(0, 300);
+      }
+    }
+    return undefined;
+  }
+
+  /** 自动决策（autoApprove!=="off" 且通过闸门时走这里）：决策 + 记账 + 应答 */
+  private autoDecide(
+    params: { toolCall?: { title?: string | null; kind?: string | null; locations?: unknown; rawInput?: unknown }; options?: Array<{ optionId: string; name?: string; kind?: string }> },
+    requestId: string,
+    intent: string | undefined,
+    extra: { permKind?: string; danger?: boolean },
+  ): Promise<acp.RequestPermissionResponse> {
+    const options = params.options ?? [];
+    const decision = this.decidePermission(options);
+    const title = String(params.toolCall?.title ?? "工具调用");
+    const locations = Array.isArray(params.toolCall?.locations)
+      ? (params.toolCall?.locations as Array<Record<string, unknown>>).map((l) => (typeof l?.path === "string" ? (l.path as string) : JSON.stringify(l))).slice(0, 6)
+      : undefined;
+    const input = params.toolCall?.rawInput != null ? JSON.stringify(params.toolCall.rawInput).slice(0, 600) : undefined;
+    const raw = JSON.stringify({ ...params, options: undefined }).slice(0, 900);
+    this.audit.append({
+      session: this.id, harness: this.harnessId, op: "permission.request", requestId, title,
+      auto: true, level: this.autoApprove, danger: extra.danger === true,
+      chosen: decision?.optionId, chosenName: decision?.name,
+      reason: decision?.reason ?? "无可放行选项（全部为拒绝类）",
+      task: this.intentTag, intent, permKind: extra.permKind, locations, input, raw,
+      options: options.map((o) => ({ id: o.optionId, name: o.name, kind: o.kind })),
+    });
+    this.log(`自动决策(${this.autoApprove})${extra.danger ? "[⚠危险]" : ""}: ${title} → ${decision?.name ?? "(无选项)"}（${decision?.reason ?? "cancelled"}）`);
+    this.push({
+      kind: "permission", ts: now(), title, requestId,
+      answered: decision?.name ?? "（无选项，已取消）", auto: true, danger: extra.danger === true,
+      level: this.autoApprove, task: this.intentTag, context: intent,
+      permKind: extra.permKind, locations, input, raw,
+      options: options.map((o) => ({ optionId: o.optionId, name: String(o.name ?? o.optionId), kind: o.kind })),
+    });
+    if (!decision) return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    return Promise.resolve({ outcome: { outcome: "selected", optionId: decision.optionId } });
   }
 
   private requestPermission(params: {
-    toolCall?: { title?: string | null };
+    toolCall?: { title?: string | null; kind?: string | null; locations?: unknown; rawInput?: unknown };
     options?: Array<{ optionId: string; name?: string; kind?: string }>;
   }): Promise<acp.RequestPermissionResponse> {
     const requestId = `perm-${++this.permSeq}`;
-    if (this.autoApprove) {
-      const options = params.options ?? [];
-      const chosen = this.pickAllowOption(options);
-      const title = String(params.toolCall?.title ?? "工具调用");
-      this.audit.append({
-        session: this.id,
-        harness: this.harnessId,
-        op: "permission.request",
-        requestId,
-        title,
-        auto: true,
-        chosen,
-        options: options.map((o) => o.optionId),
-      });
-      this.log(`圆桌自动批准: ${title} → ${chosen ?? "(无选项，直接放行)"}`);
-      if (!chosen) return Promise.resolve({ outcome: { outcome: "cancelled" } });
-      return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen } });
+    const intent = this.recentIntent();
+    // 权限请求的完整上下文：kind（工具类型）/ locations（涉及文件）/ rawInput（工具原始入参，
+    // 文字型说明和 edit 的 file_path 都在这里）——只存 title 会把信息丢掉
+    const permKind = params.toolCall?.kind ?? undefined;
+    const title0 = String(params.toolCall?.title ?? "工具调用");
+    const allText = `${title0} ${JSON.stringify(params.toolCall?.rawInput ?? "")}`;
+    const danger = HarnessSession.DANGER_RE.test(allText);
+    // 档位分流：off=人工；readonly=只读自动/其余人工；all=全自动（危险操作也决策，只打标记不拦截——
+    // 全自动还停下来问就名不副实，而且房间场景没有审批按钮会挂死）。
+    // 危险硬闸改为可选：HG_DANGER_HOLD=1 时危险操作强制人工（房间场景自动拒绝，不挂起）
+    const dangerHold = HarnessSession.DANGER_HOLD;
+    if (this.autoApprove === "all" && !(danger && dangerHold)) {
+      return this.autoDecide(params, requestId, intent, { permKind, danger });
+    }
+    if (this.autoApprove === "readonly") {
+      const readOnlyReq = permKind === "read" || /\b(read|grep|glob|ls|cat|list|find|search|view)\b/i.test(title0);
+      if (readOnlyReq && !(danger && dangerHold)) {
+        return this.autoDecide(params, requestId, intent, { permKind, danger });
+      }
+      // 半自动档下被拦下的请求走人工按钮，补记一条"拦截"便于回溯
+      this.audit.append({ session: this.id, harness: this.harnessId, op: "permission.request", requestId, title: title0, held: true, level: this.autoApprove, reason: danger && dangerHold ? "危险操作硬闸" : "非只读操作", task: this.intentTag, intent });
+    }
+    if (danger && dangerHold) {
+      this.audit.append({ session: this.id, harness: this.harnessId, op: "permission.request", requestId, title: title0, held: true, level: this.autoApprove, reason: "危险操作硬闸", task: this.intentTag, intent });
+      if (this.roomId) {
+        // 房间场景没有审批界面：自动拒绝并落时间线，绝不挂起
+        this.push({ kind: "permission", ts: now(), title: title0, requestId, answered: "（危险操作，自动拒绝）", auto: true, level: this.autoApprove, task: this.intentTag, context: intent, permKind });
+        return Promise.resolve({ outcome: { outcome: "cancelled" } });
+      }
+    }
+    const locations = Array.isArray(params.toolCall?.locations)
+      ? (params.toolCall?.locations as Array<Record<string, unknown>>)
+          .map((l) => (typeof l?.path === "string" ? (l.path as string) : JSON.stringify(l)))
+          .slice(0, 6)
+      : undefined;
+    const input = params.toolCall?.rawInput != null ? JSON.stringify(params.toolCall.rawInput).slice(0, 600) : undefined;
+    const raw = JSON.stringify({ ...params, options: undefined }).slice(0, 900);
+    // 兼容：圆桌/工作队会话（autoApprove 恒为 "all"）走统一决策路径
+    if (this.autoApprove === "all") {
+      return this.autoDecide(params, requestId, intent, { permKind });
     }
     const title = String(params.toolCall?.title ?? "工具调用");
     const options: PermissionOption[] = (params.options ?? []).map((o) => ({

@@ -19,6 +19,8 @@ export type PersistedSession = {
   worktree?: WorktreeInfo;
   /** 用户手动选过的配置（模型等），进/恢复会话时显示并自动重放 */
   chosen?: Record<string, string>;
+  /** 自动决策档位（off/readonly/all）；房间会话恒 all */
+  autoApprove?: string;
   transcript: TranscriptEntry[];
 };
 

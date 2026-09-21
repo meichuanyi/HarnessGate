@@ -57,7 +57,7 @@ export type TranscriptEntry =
   | { kind: "assistant"; text: string; ts: string }
   | { kind: "thought"; text: string; ts: string }
   | { kind: "tool"; title: string; status: string; ts: string; toolCallId?: string }
-  | { kind: "permission"; title: string; ts: string; answered?: string; requestId?: string; options?: PermissionOption[] }
+  | { kind: "permission"; title: string; ts: string; answered?: string; requestId?: string; options?: PermissionOption[]; auto?: boolean }
   | { kind: "error"; message: string; ts: string }
   | { kind: "log"; text: string; ts: string };
 

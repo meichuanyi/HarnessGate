@@ -257,6 +257,13 @@
   .crewTask.failed { border-color:#4a1f22; }
   .crewWorkerCols { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(268px,1fr); gap:11px;
     overflow-x:auto; align-items:start; margin-bottom:16px; }
+  /* 活性标签：● 已 X 分钟 · 活动 Y 前（绿=活跃脉冲，黄=静默超 2 分钟，红留给看门狗判死后） */
+  .liveTag { font-size:11px; color:var(--dim2); padding:1px 0 6px; min-height:18px; }
+  .liveTag.ok { color:var(--ok); }
+  .liveTag.ok::first-letter { animation: pulse 1.6s infinite; }
+  .liveTag.warn { color:var(--warn); }
+  .liveTag.idle { color:var(--dim2); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
   .crewBar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:11px 14px; }
   /* 对话框 */
   .mask { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(2px); z-index:100; display:flex;
@@ -655,6 +662,7 @@
 </main>
 
 <div id="wsPanel" class="drawer" hidden></div>
+<div id="crewPanel" class="drawer" hidden></div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
 <script>
@@ -707,6 +715,7 @@ function tokenOf() {
     return localStorage.getItem("hg_token") || "";
   } catch { return ""; }
 }
+window.__hgToken = tokenOf();   // 下载链接等 <a href> 用（不能走 WS 认证）
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const tk = tokenOf();
@@ -766,13 +775,13 @@ function detectIsMobile() {
 }
 
 let toastTimer = null;
-function showToast(msg) {
+function showToast(msg, ms = 2200) {
   const t = $("toast");
   if (!t) return;
   t.textContent = msg;
   t.classList.add("show");
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  toastTimer = setTimeout(() => t.classList.remove("show"), ms);
 }
 
 function applyDeviceMode() {
@@ -943,7 +952,24 @@ function handleServer(msg) {
         if (state.view === "roundtable" && state.roomId === msg.room.id) {
           renderRoundtable();
         }
+        // 合并被阻塞/出结果时主动告知——别只写在页面底部的小字里（用户点了按钮却以为没反应）
+        if (msg.room.crew && msg.room.crew.mergeLines?.length) {
+          const key = msg.room.id + ":" + msg.room.crew.mergeLines.join("|");
+          if (window.__mergeToastKey !== key) {
+            window.__mergeToastKey = key;
+            const blocked = msg.room.crew.mergeLines.some((l) => /暂停|冲突|失败/.test(l));
+            showToast((blocked ? "⚠ " : "✓ ") + msg.room.crew.mergeLines[0], blocked ? 6000 : 4000);
+          }
+        }
       }
+      break;
+    case "crew-detail":
+      if (msg.roomId === state.roomId || crewPanelRoomId === msg.roomId) {
+        renderCrewPanel(msg.roomId, { decisions: msg.decisions || [], deliverables: msg.deliverables || [] });
+      }
+      break;
+    case "session-detail":
+      if (msg.sessionId) renderSessPanel(msg.sessionId, { decisions: msg.decisions || [], changes: msg.changes || [], git: msg.git });
       break;
     case "sync-result":
     case "history": /* 2026-09-19 服务端协议改名 sync-result→history */
@@ -1091,7 +1117,7 @@ function renderTree() {
   });
 }
 
-const STATUS_TAG = { ready: "run", starting: "init", awaiting: "auth", error: "err", saved: "save" };
+const STATUS_TAG = { ready: "运行中", starting: "启动中", awaiting: "待审批", error: "出错", saved: "已存档" };
 const STATUS = { ready: "运行中", starting: "启动中", awaiting: "等授权", error: "出错", saved: "已归档" };
 
 /* =====================================================================
@@ -1335,6 +1361,7 @@ function renderChat() {
         <button class="mini ghost" id="searchNext" title="下一个命中">▼</button>
         <span style="flex:1"></span>
         <button class="mini ghost" id="idxToggle" title="列出你在本会话的全部发言，点击定位">我的发言 (<span id="idxCount">0</span>) <span id="idxArrow">▾</span></button>
+        <button class="mini ghost" id="sessDetailBtn" title="本会话的权限决策记录 + 改动过的文件（可下载）">📋 决策/改动</button>
         <div class="idxList" id="idxList" hidden></div>
       </div>
       <div id="stream"></div>
@@ -1357,6 +1384,7 @@ function renderChat() {
   $("sendBtn").onclick = doSend;
   $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
   $("stopBtn").onclick = () => send({ type: "interrupt", sessionId: state.sessionId });
+  $("sessDetailBtn").onclick = () => openSessPanel(state.sessionId);
   $("idxToggle").onclick = () => setIdxOpen(!idxOpen);
   const search = $("chatSearch");
   const drop = $("searchDrop");
@@ -1461,6 +1489,21 @@ function renderConfig() {
     sel.onchange = () => send({ type: "config", sessionId: state.sessionId, configId: o.id, value: sel.value });
     w.appendChild(l); w.appendChild(sel); box.appendChild(w);
   }
+  // 自动决策档位（房间会话恒为全自动且不可改，不显示）
+  if (!s.roomId) {
+    const w = document.createElement("span"); w.className = "cfgw";
+    const l = document.createElement("span"); l.className = "cfgl"; l.textContent = "自动决策";
+    const sel = document.createElement("select"); sel.className = "sm";
+    sel.title = "权限请求的处理方式：人工审批 / 只读自动 / 全自动（含危险操作，会打 ⚠ 标记便于回溯；服务端 HG_DANGER_HOLD=1 可强制危险操作人工）";
+    const LV = [["off", "人工审批"], ["readonly", "只读自动"], ["all", "全自动"]];
+    for (const [v, name] of LV) {
+      const op = document.createElement("option"); op.value = v; op.textContent = name;
+      if ((s.autoApprove || "off") === v) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = () => { send({ type: "set-auto-approve", sessionId: state.sessionId, level: sel.value }); showToast(`自动决策：${LV.find((x) => x[0] === sel.value)?.[1]}`, 2500); };
+    w.appendChild(l); w.appendChild(sel); box.appendChild(w);
+  }
 }
 
 function renderModes() {
@@ -1489,6 +1532,83 @@ function inlineMd(s) {
     .replace(/~~([^~]+)~~/g, "<del>$1</del>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+}
+
+/* ---------- 数学公式（KaTeX 自托管 /static/vendor/katex/）----------
+   管线：先从原文抠出数学段（$$…$$ / $…$ / \[…\] / \(…\)）换成占位符，
+   走正常 mdToHtml（占位符是私有区字符，转义/行内变换都碰不到它），
+   再把占位符替换成 .ktx 占位 span，MutationObserver 里用 KaTeX 挂载。
+   代码块/行内代码不参与提取；$…$ 需要 ^ _ \ { } = 之一才当公式（避免 "$5 和 $10" 误伤）。 */
+let katexLoading = false;
+function ensureKatex() {
+  if (window.katex || katexLoading) return;
+  katexLoading = true;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = "/static/vendor/katex/katex.min.css";
+  document.head.appendChild(link);
+  const s = document.createElement("script");
+  s.src = "/static/vendor/katex/katex.min.js";
+  s.onload = () => mountMath(document.body);
+  document.head.appendChild(s);
+}
+function mountMath(root) {
+  if (!root) return;
+  const nodes = root.querySelectorAll?.(".ktx:not([data-done])") ?? [];
+  if (!nodes.length) return;
+  if (!window.katex) { ensureKatex(); return; }
+  for (const el of nodes) {
+    el.setAttribute("data-done", "1");
+    const tex = el.dataset.tex || "";
+    try {
+      window.katex.render(tex, el, { throwOnError: false, displayMode: el.dataset.display === "1" });
+    } catch { el.textContent = tex; }
+  }
+}
+function extractMath(src) {
+  const math = [];
+  const ph = (tex, display) => { math.push({ tex, display }); return `\uE000${math.length - 1}\uE001`; };
+  const mathish = (s) => /[\\^_{}=]/.test(s) && /[A-Za-z0-9]/.test(s);
+  let text = String(src ?? "");
+  // 先保护代码段（围栏与行内代码）不参与数学提取
+  const codes = [];
+  text = text
+    .replace(/```[\s\S]*?```/g, (m) => { codes.push(m); return `\uE002${codes.length - 1}\uE003`; })
+    .replace(/`[^`\n]+`/g, (m) => { codes.push(m); return `\uE002${codes.length - 1}\uE003`; });
+  text = text
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => ph(tex.trim(), 1))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => ph(tex.trim(), 1))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => ph(tex.trim(), 0))
+    .replace(/\$([^$\n]+)\$/g, (_, tex) => (mathish(tex) ? ph(tex, 0) : _));
+  text = text.replace(/\uE002(\d+)\uE003/g, (_, i) => codes[Number(i)]);
+  return { text, math };
+}
+function restoreMathPlaceholders(html, math) {
+  return html.replace(/\uE000(\d+)\uE001/g, (_, i) => {
+    const m = math[Number(i)];
+    if (!m) return "";
+    return `<span class="ktx" data-display="${m.display}" data-tex="${esc(m.tex)}">${esc(m.tex)}</span>`;
+  });
+}
+
+const mdToHtmlCore = mdToHtml;
+mdToHtml = function (src) {
+  const { text, math } = extractMath(src);
+  const html = restoreMathPlaceholders(mdToHtmlCore(text), math);
+  scheduleMathMount();
+  return html;
+};
+
+let mathMountScheduled = false;
+function scheduleMathMount() {
+  if (mathMountScheduled) return;
+  mathMountScheduled = true;
+  requestAnimationFrame(() => {
+    mathMountScheduled = false;
+    mountMath(document.getElementById("stream"));
+    mountMath(document.getElementById("viewRoot"));
+    mountMath(document.getElementById("crewPanel"));
+  });
 }
 
 function mdToHtml(src) {
@@ -1651,7 +1771,27 @@ function paint(el, e) {
       };
     }
   } else if (e.kind === "permission") {
-    b.textContent = e.title + (e.answered ? `  → ${e.answered}` : "");
+    b.textContent = (e.danger ? "⚠️ " : "") + (e.task ? `【${e.task}】` : "") + (e.permKind ? `[${e.permKind}] ` : "") + e.title + (e.answered ? `  → ${e.answered}${e.auto ? "（自动决策）" : ""}` : "");
+    if (e.danger) b.style.color = "var(--warn)";
+    if (e.locations?.length) {
+      const f = document.createElement("div");
+      f.className = "meta2"; f.style.cssText = "font-size:11px;margin-top:2px";
+      f.textContent = `📁 ${e.locations.join("、")}`;
+      b.appendChild(f);
+    }
+    if (e.input) {
+      const d2 = document.createElement("details");
+      d2.style.cssText = "margin-top:2px";
+      d2.innerHTML = `<summary style="cursor:pointer;font-size:11px;color:var(--dim2)">工具入参</summary><pre style="white-space:pre-wrap;font-size:10.5px;color:var(--dim2);margin:3px 0">${esc(e.input)}</pre>`;
+      b.appendChild(d2);
+    }
+    if (e.context) {
+      const c = document.createElement("div");
+      c.className = "meta2";
+      c.style.cssText = "font-size:11px;margin-top:3px";
+      c.textContent = `💭 ${e.context}`;
+      b.appendChild(c);
+    }
     if (!e.answered && e.requestId) {
       for (const o of e.options || []) {
         const btn = document.createElement("button");
@@ -2137,6 +2277,8 @@ function renderRoundtable() {
   rtLiveBuf.clear();
   bindRoomDetail(room);
   syncRoomBlocks(room);
+  updateRoomHead(room);   // 全量渲染也要走一遍：停止/出错时的「继续运行」按钮在这里注入
+  tickLiveTags();         // 活性标签立即填充，不等第一个 5 秒 tick
 }
 
 function updateRoomHead(room) {
@@ -2155,6 +2297,18 @@ function updateRoomHead(room) {
     head.appendChild(b);
   } else if (room.status !== "running" && hasStop) {
     head.querySelector("#rtStop").remove();
+  }
+  // 断点续跑：停止/出错且没到终态 → 可以「继续运行」（讨论从第一个未完成轮继续，工作队保留任务板）
+  const hasRun = !!head.querySelector("#rtRun");
+  const resumable = room.status === "stopped" || room.status === "error";
+  if (resumable && !hasRun) {
+    const b = document.createElement("button");
+    b.className = "primary mini"; b.id = "rtRun"; b.textContent = "▶ 继续运行";
+    b.title = room.crew ? "保留任务板继续：被打断的任务退回待办，已完成的直接进评审/合并" : "从第一个未完成的轮继续（该轮残缺发言会重说）";
+    b.onclick = () => send({ type: "room-run", roomId: room.id });
+    head.appendChild(b);
+  } else if (!resumable && hasRun) {
+    head.querySelector("#rtRun").remove();
   }
 }
 
@@ -2614,6 +2768,7 @@ function applyRoomUpdate(sessionId, u) {
   const room = roomById(state.roomId);
   if (!room) return;
   if (!roomMembers(room).some((m) => m.sessionId === sessionId)) return;
+  noteSessionEvent(sessionId);   // 活性标签：圆桌成员的任何事件都算「活着」
 
   if (room.crew) {
     // 工作队：流式按 sessionId 直达 worker 栏
@@ -2736,6 +2891,7 @@ function crewDetailHtml(room) {
         <span class="pill ${room.status === "done" ? "done" : room.status === "running" ? "running" : room.status === "error" ? "error" : "saved"}">${ROOM_STATUS[room.status] || room.status}</span>
         <span class="meta2">${phaseTxt}</span>
         ${c.phase === "ready-merge" ? '<button class="primary mini" id="crewMerge">合并到主目录</button>' : ""}
+        <button class="mini" id="crewSide" title="自动权限决策记录 + 每个任务的交付件（提交/diff/评审）">📋 决策/交付</button>
         ${room.status === "running" ? '<button class="mini" id="rtStop">停止</button>' : ""}
       </div>
       <div class="meta2" style="margin:6px 0 12px">
@@ -2767,7 +2923,9 @@ function crewDetailHtml(room) {
 
       ${c.mergeLines?.length || c.phase === "ready-merge" ? `
       <div class="rtCard"><h3>合并</h3>
-        ${(c.mergeLines || []).map((l) => `<div class="meta2">${esc(l)}</div>`).join("") || '<div class="meta2">任务完成后点顶部「合并到主目录」</div>'}
+        ${(c.mergeLines || []).map((l) => /暂停|冲突|失败/.test(l)
+          ? `<div style="color:var(--warn);font-weight:600;margin:4px 0">⚠ ${esc(l)}</div>`
+          : `<div class="meta2">${esc(l)}</div>`).join("") || '<div class="meta2">任务完成后点顶部「合并到主目录」</div>'}
         ${(c.conflicts || []).length ? c.conflicts.map((x) => `<div style="color:var(--err);font-size:12px;margin-top:6px">${esc(x.branch)} 冲突：<pre style="white-space:pre-wrap;font-size:11px">${esc(x.output)}</pre></div>`).join("") : ""}
       </div>` : ""}
 
@@ -2786,6 +2944,7 @@ function crewDetailHtml(room) {
                 <span class="nm">${esc(w.harnessLabel)}</span>
                 <span class="st" data-cst="${esc(w.sessionId)}"></span>
               </div>
+              <div class="liveTag" data-live-st="${esc(w.sessionId)}">…</div>
               <div class="rtColBody">
                 <div class="meta2" style="padding:2px 0">分支 <code>${esc(w.branch)}</code></div>
                 <div class="rtLive" data-live="${esc(w.sessionId)}" hidden></div>
@@ -2800,7 +2959,7 @@ function crewTaskCard(t) {
   const st = { pending: "待办", blocked: "被阻塞", working: "进行中", review: "待评审", done: "完成", failed: "失败" }[t.status] || t.status;
   return `<div class="crewTask ${t.status === "failed" ? "failed" : ""}">
     <div class="t1"><span class="tid">${esc(t.id)}</span> ${esc(t.title)}</div>
-    <div class="t2">${st}${t.assignee ? " · " + esc(crewLabel(t.assignee)) : ""}${t.attempts ? " · 打回 " + t.attempts + " 次" : ""}</div>
+    <div class="t2">${st}${t.assignee ? " · " + esc(crewLabel(t.assignee)) : ""}${t.attempts ? " · 打回 " + t.attempts + " 次" : ""}${t.status === "working" ? ` · <span data-task-st="${esc(t.id)}" data-task-worker="${esc(t.assignee ?? "")}">…</span>` : ""}</div>
     ${t.files?.length ? `<div class="files" title="${esc(t.files.join(" | "))}">📄 ${esc(t.files.join(", "))}</div>` : ""}
     ${t.summary ? `<details><summary>改动摘要</summary><div style="margin-top:4px">${mdToHtml(t.summary)}</div></details>` : ""}
     ${t.review ? `<details><summary class="${t.review.verdict === "approve" ? "review-ok" : "review-bad"}">评审：${t.review.verdict === "approve" ? "通过" : "打回"}${t.review.score != null ? ` · ${t.review.score}/10` : ""}</summary>
@@ -2811,9 +2970,161 @@ function crewTaskCard(t) {
   </div>`;
 }
 
+/* ---------- 工作队右侧抽屉：决策记录 + 交付件 ---------- */
+let crewPanelRoomId = null;
+
+function openCrewPanel(roomId) {
+  crewPanelRoomId = roomId;
+  const p = $("crewPanel");
+  if (!p) return;
+  p.hidden = false;
+  p.innerHTML = '<div class="hd"><b>决策记录 / 交付件</b><button class="mini ghost" onclick="document.getElementById(\'crewPanel\').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>';
+  send({ type: "crew-detail", roomId });
+}
+
+function renderCrewPanel(roomId, data) {
+  const p = $("crewPanel");
+  if (!p || crewPanelRoomId !== roomId) return;
+  const esc2 = esc;
+  const decHtml = data.decisions.length
+    ? data.decisions.map((d) => `
+        <div class="wsRow" style="padding:5px 0;border-bottom:1px solid var(--line)">
+          <div style="font-size:12px">${d.danger ? '<span style="color:var(--warn)">⚠️</span> ' : ""}${d.permKind ? `<span class="badge">${esc2(d.permKind)}</span> ` : ""}<b>${esc2(d.harness)}</b> · ${esc2(d.title)}</div>
+          ${d.locations?.length ? `<div style="font-size:11px;color:var(--dim)">📁 ${esc2(d.locations.join("、"))}</div>` : ""}
+          ${d.input ? `<details style="margin:2px 0"><summary style="cursor:pointer;font-size:11px;color:var(--dim2)">工具入参</summary><pre style="white-space:pre-wrap;font-size:10.5px;color:var(--dim2);margin:3px 0">${esc2(d.input)}</pre></details>` : ""}
+          ${d.raw ? `<details><summary style="cursor:pointer;font-size:10.5px;color:var(--dim2)">原始请求 JSON</summary><pre style="white-space:pre-wrap;font-size:10px;color:var(--dim2);margin:3px 0">${esc2(d.raw)}</pre></details>` : ""}
+          ${d.task ? `<div style="font-size:11px;color:var(--accent)">🔧 ${esc2(d.task)}</div>` : ""}
+          ${d.intent ? `<div style="font-size:11px;color:var(--dim2);margin:2px 0">💭 ${esc2(d.intent)}</div>` : ""}
+          <div style="font-size:11.5px;color:var(--ok)">→ ${esc2(d.chosen ?? "(取消)")}${d.reason ? ` <span class="meta2">（${esc2(d.reason)}）</span>` : ""}</div>
+          <div class="meta2" style="font-size:10.5px">${new Date(d.ts).toLocaleString()}</div>
+        </div>`).join("")
+    : '<div class="meta2" style="padding:6px 0">暂无决策记录（只有房间会话的自动审批会计入）</div>';
+  const ST = { pending: "待办", working: "进行中", review: "待评审", done: "完成", failed: "失败", blocked: "被阻塞" };
+  const delHtml = data.deliverables.map((t) => `
+    <div class="wsRow" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div style="font-size:12.5px"><span class="badge ${t.status === "done" ? "done" : t.status === "failed" ? "" : "host"}">${ST[t.status] || t.status}</span>
+        <b>${esc2(t.taskId)}</b> ${esc2(t.title)}${t.assignee ? ` <span class="meta2">· ${esc2(t.assignee)}</span>` : ""}</div>
+      ${t.review ? `<div style="font-size:11.5px;margin:3px 0" class="${t.review.verdict === "approve" ? "" : ""}">评审：${esc2(t.review.reviewer)} → <b style="color:${t.review.verdict === "approve" ? "var(--ok)" : "var(--warn)"}">${t.review.verdict === "approve" ? "通过" : "打回"}</b>${t.review.score != null ? ` ${t.review.score}/10` : ""}</div>` : ""}
+      ${t.files?.length ? `<div class="meta2" style="font-size:11px">📄 ${esc2(t.files.join(", "))}</div>` : ""}
+      ${t.artifacts?.length ? `<details open><summary style="cursor:pointer;font-size:11.5px;color:var(--accent)">📦 产物（${t.artifacts.length} 个，点击下载）</summary>
+        <div style="margin:4px 0;display:flex;flex-direction:column;gap:2px">
+          ${t.artifacts.map((a) => `<a href="/download?room=${encodeURIComponent(roomId)}&task=${encodeURIComponent(t.taskId)}&path=${encodeURIComponent(a.path)}${window.__hgToken ? "&token=" + encodeURIComponent(window.__hgToken) : ""}" download style="font-size:11.5px;color:var(--accent);text-decoration:none">↓ ${esc2(a.path)} <span class="meta2">${a.size > 1048576 ? (a.size / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(a.size / 1024)) + "KB"}</span></a>`).join("")}
+          <a href="/download?room=${encodeURIComponent(roomId)}&task=${encodeURIComponent(t.taskId)}&all=1${window.__hgToken ? "&token=" + encodeURIComponent(window.__hgToken) : ""}" download style="font-size:11.5px;color:var(--ok);text-decoration:none;margin-top:2px">⬇ 打包下载全部（tar.gz）</a>
+        </div></details>` : ""}
+      ${t.summary ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--dim2)">改动摘要</summary><div style="font-size:11.5px;margin:4px 0">${mdToHtml(t.summary)}</div></details>` : ""}
+      ${t.commits?.length ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--dim2)">分支提交（${t.commits.length}）</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--dim2);margin:4px 0">${esc2(t.commits.join("\n"))}</pre></details>` : ""}
+      ${t.diff ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--dim2)">diff（${t.diff.length} 字）</summary><pre style="white-space:pre-wrap;font-size:10.5px;max-height:280px;overflow:auto;background:var(--bg);padding:6px;border-radius:6px">${esc2(t.diff)}</pre></details>` : ""}
+    </div>`).join("") || '<div class="meta2" style="padding:6px 0">还没有交付件</div>';
+  p.innerHTML = `
+    <div class="hd"><b>决策记录 / 交付件</b>
+      <span style="flex:1"></span>
+      <button class="mini ghost" onclick="openCrewPanel('${esc2(roomId)}')">刷新</button>
+      <button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button>
+    </div>
+    <h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">决策记录（${data.decisions.length}）</h3>
+    ${decHtml}
+    <h3 style="font-size:11px;color:var(--dim2);margin:14px 0 4px;text-transform:uppercase">交付件（${data.deliverables.length} 个任务）</h3>
+    ${delHtml}`;
+}
+window.openCrewPanel = openCrewPanel;
+
+/* ---------- 单会话右侧抽屉：决策记录 + 改动文件（可下载） ---------- */
+let sessPanelSid = null;
+function openSessPanel(sid) {
+  sessPanelSid = sid;
+  const p = $("crewPanel");
+  if (!p) return;
+  p.hidden = false;
+  p.innerHTML = '<div class="hd"><b>决策记录 / 改动</b><button class="mini ghost" onclick="document.getElementById(\'crewPanel\').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>';
+  send({ type: "session-detail", sessionId: sid });
+}
+window.openSessPanel = openSessPanel;
+function renderSessPanel(sid, data) {
+  const p = $("crewPanel");
+  if (!p || sessPanelSid !== sid) return;
+  const LVN = { all: "全自动", readonly: "半自动", off: "人工" };
+  const decHtml = data.decisions.length
+    ? data.decisions.map((d) => `
+        <div class="wsRow" style="padding:5px 0;border-bottom:1px solid var(--line)">
+          <div style="font-size:12px">${d.danger ? '<span style="color:var(--warn)">⚠️</span> ' : ""}${d.permKind ? `<span class="badge">${esc(d.permKind)}</span> ` : ""}${esc(d.title)}</div>
+          ${d.intent ? `<div style="font-size:11px;color:var(--dim2);margin:2px 0">💭 ${esc(d.intent)}</div>` : ""}
+          <div style="font-size:11.5px">${d.held ? '<span style="color:var(--warn)">⚠ 拦截（等人工）</span>' : d.chosen ? `→ ${esc(d.chosen)}` : "（等待审批）"}
+            <span class="meta2">· ${d.auto ? `自动（${LVN[d.level] || d.level || "全自动"}）` : "人工"}${d.reason ? ` · ${esc(d.reason)}` : ""}</span></div>
+          <div class="meta2" style="font-size:10.5px">${new Date(d.ts).toLocaleString()}</div>
+        </div>`).join("")
+    : '<div class="meta2" style="padding:6px 0">还没有权限决策记录（agent 发起需要授权的操作后会出现在这里）</div>';
+  const chgHtml = data.changes.length
+    ? data.changes.map((f) => `
+        <div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--line)">
+          <a href="/download?session=${encodeURIComponent(sid)}&path=${encodeURIComponent(f.path)}${window.__hgToken ? "&token=" + encodeURIComponent(window.__hgToken) : ""}" download style="font-size:11.5px;color:var(--accent);text-decoration:none;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">↓ ${esc(f.path)}</a>
+          <span class="meta2" style="flex:none">${f.source === "git" ? "" : "台账·"}${f.size > 1048576 ? (f.size / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(f.size / 1024)) + "KB"}</span>
+        </div>`).join("")
+    : `<div class="meta2" style="padding:6px 0">本会话没有改动记录${data.git ? "（工作树与 HEAD 一致）" : "（非 git 目录，依据 fs 台账）"}</div>`;
+  p.innerHTML = `
+    <div class="hd"><b>决策记录 / 改动</b>
+      <span style="flex:1"></span>
+      <button class="mini ghost" onclick="openSessPanel('${esc(sid)}')">刷新</button>
+      <button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button>
+    </div>
+    <h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">决策记录（${data.decisions.length}）</h3>
+    ${decHtml}
+    <h3 style="font-size:11px;color:var(--dim2);margin:14px 0 4px;text-transform:uppercase">改动（${data.changes.length}${data.git ? " · git diff vs HEAD" : " · fs 台账"}）</h3>
+    ${chgHtml}`;
+}
+
+/* ---------- 工作队右侧抽屉：决策记录 + 交付件 ---------- */
+
 function setCrewStatus(sessionId, text) {
   document.querySelectorAll(`.st[data-cst="${sessionId}"]`).forEach((el) => (el.textContent = text));
 }
+
+/* ---------- 活性标签：● 已 X 分钟 · 活动 Y 前（数据 = 服务端 SessionInfo 的 turnStartedAt/lastProgressAt + 本地事件时间戳） ---------- */
+const lastEventAt = new Map();   // sessionId → 本端最近收到 update 事件的时刻（比服务端广播更细）
+function noteSessionEvent(sessionId) { if (sessionId) lastEventAt.set(sessionId, Date.now()); }
+
+function fmtAgo(ms) {
+  if (ms < 5000) return "刚刚";
+  if (ms < 60_000) return Math.floor(ms / 1000) + " 秒前";
+  if (ms < 3_600_000) return Math.floor(ms / 60_000) + " 分钟前";
+  return Math.floor(ms / 3_600_000) + " 小时前";
+}
+function fmtDur(ms) {
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return m + " 分钟";
+  return Math.floor(m / 60) + " 小时" + (m % 60) + "分";
+}
+
+function liveTagText(sid) {
+  const s = sessions.get(sid);
+  if (!s) return { text: "", cls: "liveTag" };
+  if (!s.live) {
+    // worker 会话被房间收尾停掉（已存档）→ 明确显示完成，而不是让用户猜
+    const room = state.roomId ? roomById(state.roomId) : null;
+    if (room?.crew && room.crew.phase !== "working" && (room.crew.workers || []).some((w) => w.sessionId === sid)) {
+      return { text: "✓ 已完成", cls: "liveTag ok" };
+    }
+    return { text: "未运行", cls: "liveTag" };
+  }
+  if (!s.inTurn) return { text: "空闲", cls: "liveTag idle" };
+  const evAt = lastEventAt.get(sid) ?? s.lastProgressAt ?? Date.now();
+  const silence = Math.max(0, Date.now() - evAt);
+  const dur = Date.now() - (s.turnStartedAt ?? Date.now());
+  const cls = silence > 120_000 ? "liveTag warn" : "liveTag ok";
+  return { text: `● 已 ${fmtDur(dur)} · 活动 ${fmtAgo(silence)}`, cls };
+}
+
+function tickLiveTags() {
+  document.querySelectorAll("[data-live-st]").forEach((el) => {
+    const r = liveTagText(el.dataset.liveSt);
+    el.textContent = r.text;
+    el.className = r.cls;
+  });
+  document.querySelectorAll("[data-task-st]").forEach((el) => {
+    const r = liveTagText(el.dataset.taskWorker);
+    el.textContent = r.text ? r.text.replace("● ", "") : "";
+  });
+}
+setInterval(tickLiveTags, 5_000);
 
 function syncCrewBlocks(room) {
   const c = room.crew;
@@ -2829,6 +3140,7 @@ function syncCrewBlocks(room) {
     if (box) { box.hidden = false; box.innerHTML = html; }
   }
   if (room.status !== "running") for (const sid of keep.keys()) setCrewStatus(sid, "");
+  updateRoomHead(room);   // 停止/出错时让「继续运行」按钮出现
 }
 
 function askRoomDelete(roomId) {
@@ -2870,8 +3182,12 @@ function bindRoomDetail(room) {
     $("crewMerge").onclick = () => {
       $("crewMerge").disabled = true;
       $("crewMerge").textContent = "合并中…";
+      showToast("正在合并 worker 分支到主目录…", 4000);
       send({ type: "crew-merge", roomId: room.id });
     };
+  }
+  if ($("crewSide")) {
+    $("crewSide").onclick = () => openCrewPanel(room.id);
   }
   $("rtAsk")?.addEventListener("click", () => {
     const topic = $("rtTopic2").value.trim();

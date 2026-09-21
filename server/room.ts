@@ -11,6 +11,9 @@ import {
   commitAll,
   isClean,
   mergeBranch,
+  headOf,
+  currentBranch,
+  mergeBaseWith,
   crewBreakdownPrompt,
   crewWorkerPrompt,
   crewReviewPrompt,
@@ -81,6 +84,8 @@ export type CrewWorker = {
   harnessLabel: string;
   dir: string;     // worktree 目录
   branch: string;  // worktree 分支
+  /** worktree 创建时的提交——评审 diff 的基线；老房间没有，用时回退 merge-base */
+  base?: string;
 };
 
 export type CrewPhase = "working" | "ready-merge" | "merged" | "conflict";
@@ -152,9 +157,10 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…（�
 const normRounds = (n: number | undefined) => (n === 0 ? 0 : Math.min(Math.max(n ?? 1, 1), 8));
 /** 收敛判定的最低轮数：第 1 轮各自独立发言、还没见过别人的观点，那时的"共识"是假的 */
 const MIN_CONVERGE_ROUNDS = 2;
-/** 单次发言上限：某个 harness 卡在网络重试里时不能拖死整场（超时记为无输出，继续往下走） */
+/** 单次发言的静默上限（Temporal 式心跳看门狗）：agent 还在吐事件就不打断，静默这么久才判死。
+ *  不是总时长上限——重任务可以合法地跑很久，只要一直有进展。 */
 const TURN_TIMEOUT_MS = Number(process.env.HG_ROOM_TURN_TIMEOUT_MS ?? 300_000);
-/** 工作队的任务比讨论重（要写代码跑命令），单独放宽 */
+/** 工作队任务的静默上限（同理，只看无进展时长） */
 const CREW_TURN_TIMEOUT_MS = Number(process.env.HG_CREW_TURN_TIMEOUT_MS ?? 1_200_000);
 
 /** 从主持人轮间小结里抠收敛判定：认「收敛判定：已收敛/未收敛」标记行，兼容 JSON 的 converged 字段。
@@ -350,6 +356,12 @@ export class RoomManager {
     const room = this.rooms.get(id);
     if (!room) return;
     room.status = "stopped";
+    // 立刻打断在途的发言——否则要等当前轮所有成员自然说完才退场（分钟级），
+    // 期间的 room-run 还会被 running 防重入哨兵吞掉，看起来像「停止失灵/继续无反应」
+    for (const sid of [...room.members, ...(room.host ? [room.host.sessionId] : [])]) {
+      const s = this.hooks.getSession(sid);
+      if (s?.info().inTurn) void s.cancelTurn("room-stopped");
+    }
     this.audit.append({ op: "room.stop", room: id });
     this.emit(room);
     this.save();
@@ -734,13 +746,37 @@ export class RoomManager {
       this.audit.append({ op: "room.run", room: id, topic: topic.id, mode: topic.mode, host: room.host?.harnessLabel });
 
       try {
-      if (room.host?.opening) {
-        topic.currentRound = 0;
-        this.emit(room);
-        await this.hostSpeak(room, topic, "opening", 0, this.buildOpeningPrompt(room, topic));
-      }
+        // 断点续跑：重启/中断后「继续运行」——从第一个未完成的轮继续；该轮已有的残缺发言丢弃重说
+        let startRound = 1;
+        if (topic.turns.some((t) => t.kind === "member")) {
+          let lastComplete = 0;
+          for (;;) {
+            const next = lastComplete + 1;
+            const spoke = new Set(
+              topic.turns.filter((t) => t.kind === "member" && t.round === next).map((t) => t.sessionId),
+            );
+            if (spoke.size >= room.members.length) lastComplete = next;
+            else break;
+          }
+          startRound = lastComplete + 1;
+          const partial = topic.turns.filter((t) => t.kind === "member" && t.round > lastComplete);
+          if (partial.length) {
+            this.audit.append({ op: "room.resume.trim", room: id, topic: topic.id, round: startRound, dropped: partial.length });
+          }
+          topic.turns = topic.turns.filter((t) => !(t.kind === "member" && t.round > lastComplete));
+          room.turns = (room.topics ?? []).flatMap((t) => t.turns);   // 同对象重建，避免残留引用
+          if (startRound > 1 || topic.turns.length) {
+            this.audit.append({ op: "room.resume", room: id, topic: topic.id, fromRound: startRound });
+          }
+        }
 
-      for (let round = 1, total = topic.rounds; total === 0 || round <= total; round++) {
+        if (room.host?.opening && !topic.turns.some((t) => t.hostRole === "opening")) {
+          topic.currentRound = 0;
+          this.emit(room);
+          await this.hostSpeak(room, topic, "opening", 0, this.buildOpeningPrompt(room, topic));
+        }
+
+        for (let round = startRound, total = topic.rounds; total === 0 || round <= total; round++) {
         if (this.isStopped(room)) throw new Error("已被手动停止");
         const mode = topic.mode ?? "parallel";
         topic.currentRound = round;
@@ -846,78 +882,58 @@ export class RoomManager {
     room.error = undefined;
     this.emit(room);
     this.save();
-    this.audit.append({ op: "room.run.crew", room: id, goal: crew.goal, workers: crew.workers.length });
+    this.audit.append({ op: "room.run.crew", room: id, goal: crew.goal, workers: crew.workers.length, resumed: crew.tasks.length > 0 });
 
     try {
-      // ① 主持人拆解
-      const hostSession = await this.waitReady(host.sessionId);
-      const breakdownPrompt = crewBreakdownPrompt(
-        crew.goal,
-        crew.workers.map((w) => `${w.harnessLabel}（worktree: ${w.dir}）`),
-        host.harnessLabel,
-      );
-      await this.hostSpeak(room, null, "opening", 0, breakdownPrompt);
-      const lastHost = [...room.turns].reverse().find((t) => t.kind === "host");
-      const parsed = parseTaskBreakdown(lastHost?.reply ?? "");
-      if (!parsed.length) {
-        throw new Error("主持人没有产出可解析的任务拆解（建议换个更强的模型当工头，或重开一次）");
+      // ① 主持人拆解（断点续跑：已有任务板就跳过，保留进度——重启/中断后「继续运行」走这里）
+      if (!crew.tasks.length) {
+        const hostSession = await this.waitReady(host.sessionId);
+        const breakdownPrompt = crewBreakdownPrompt(
+          crew.goal,
+          crew.workers.map((w) => `${w.harnessLabel}（worktree: ${w.dir}）`),
+          host.harnessLabel,
+        );
+        await this.hostSpeak(room, null, "opening", 0, breakdownPrompt);
+        const lastHost = [...room.turns].reverse().find((t) => t.kind === "host");
+        const parsed = parseTaskBreakdown(lastHost?.reply ?? "");
+        if (!parsed.length) {
+          throw new Error("主持人没有产出可解析的任务拆解（建议换个更强的模型当工头，或重开一次）");
+        }
+        const ids = new Set(parsed.map((t) => t.id));
+        crew.tasks = parsed.map((t) => ({
+          ...t,
+          deps: t.deps.filter((d) => ids.has(d)),
+          status: "pending" as const,
+          attempts: 0,
+        }));
+        this.audit.append({ op: "room.crew.tasks", room: id, count: crew.tasks.length });
+      } else {
+        // 续跑：被打断的任务退回待办；失败的任务也重置（重试预算重新计）——
+        // 否则依赖它的任务永远解锁不了，整个队就死在半路（论文工作队 T1 failed → T3/T4 永远 pending）
+        for (const t of crew.tasks) {
+          if (t.status === "working") {
+            t.status = "pending";
+            this.audit.append({ op: "room.crew.resume", room: id, task: t.id });
+          } else if (t.status === "failed") {
+            t.status = "pending";
+            t.attempts = 0;
+            t.error = undefined;
+            this.audit.append({ op: "room.crew.resume.requeue-failed", room: id, task: t.id });
+          }
+        }
+        this.audit.append({ op: "room.crew.resume.board", room: id, tasks: crew.tasks.length });
       }
-      const ids = new Set(parsed.map((t) => t.id));
-      crew.tasks = parsed.map((t) => ({
-        ...t,
-        deps: t.deps.filter((d) => ids.has(d)),
-        status: "pending" as const,
-        attempts: 0,
-      }));
-      this.audit.append({ op: "room.crew.tasks", room: id, count: crew.tasks.length });
       this.emit(room);
       this.save();
 
-      // ② 派发循环：并行干活（批量回收）→ 逐个评审 → 打回或通过
-      const guard = crew.tasks.length * (crew.maxAttempts + 1) + crew.tasks.length + 4;
-      for (let iter = 0; iter < guard; iter++) {
-        if (this.isStopped(room)) throw new Error("已被手动停止");
-
-        // 给空闲 worker 认领任务（deps 全部 done 才解锁）
-        for (const w of crew.workers) {
-          const busyOn = crew.tasks.some((t) => t.status === "working" && t.assignee === w.sessionId);
-          if (busyOn) continue;
-          const next = crew.tasks.find(
-            (t) =>
-              t.status === "pending" &&
-              t.deps.every((d) => crew.tasks.find((x) => x.id === d)?.status === "done"),
-          );
-          if (next) {
-            next.status = "working";
-            next.assignee = w.sessionId;
-            this.audit.append({ op: "room.crew.assign", room: id, task: next.id, session: w.sessionId });
-          }
-        }
-        this.emit(room);
-
-        const working = crew.tasks.filter((t) => t.status === "working");
-        if (!working.length) {
-          const reviewables = crew.tasks.filter((t) => t.status === "review");
-          if (!reviewables.length) break;   // 全部进入终态
-          // 逐个评审（串行：评审员也是会话，不能并发用）
-          for (const t of reviewables) {
-            if (this.isStopped(room)) throw new Error("已被手动停止");
-            await this.crewReview(room, crew, t);
-          }
-          continue;
-        }
-
-        // 并行干活
-        const results = await Promise.allSettled(working.map((t) => this.crewWorkerRun(room, crew, t)));
-        for (const r of results) {
-          if (r.status === "rejected") {
-            const why = r.reason instanceof Error ? r.reason.message : String(r.reason);
-            this.audit.append({ op: "room.crew.worker-failed", room: id, error: why });
-          }
-        }
-        // 失败的 worker 任务退回待办（换人再试），重试超限的标记失败
-        for (const t of working) {
-          if (t.status !== "working") continue;   // 成功的已进 review
+      // ② 持续派发（work-conserving）：不按批栅栏等所有人——空闲 worker 立刻领活，
+      //    一个任务结束/进入待评审就重新分配；评审串行排队（评审员是会话，不能并发 turn）。
+      //    单个 worker 挂死只影响它自己的任务，不再冻结全场。
+      const inflight = new Map<string, Promise<void>>();
+      const sweepFallen = () => {
+        // workerRun 异常退出的任务还挂在 working：退回待办（重试超限标失败）
+        for (const t of crew.tasks) {
+          if (t.status !== "working" || inflight.has(t.id)) continue;
           t.attempts++;
           if (t.attempts >= crew.maxAttempts + 1) {
             t.status = "failed";
@@ -926,9 +942,57 @@ export class RoomManager {
             t.status = "pending";
           }
         }
+      };
+      const guard = crew.tasks.length * (crew.maxAttempts + 2) + crew.tasks.length + 16;
+      for (let iter = 0; iter < guard; iter++) {
+        if (this.isStopped(room)) throw new Error("已被手动停止");
+
+        // 给空闲 worker 认领任务（deps 全部 done 才解锁）——认领即开跑，不等批
+        for (const w of crew.workers) {
+          const busy = crew.tasks.some((t) => t.status === "working" && t.assignee === w.sessionId);
+          if (busy) continue;
+          const next = crew.tasks.find(
+            (t) =>
+              t.status === "pending" &&
+              t.deps.every((d) => crew.tasks.find((x) => x.id === d)?.status === "done"),
+          );
+          if (!next) continue;
+          next.status = "working";
+          next.assignee = w.sessionId;
+          this.audit.append({ op: "room.crew.assign", room: id, task: next.id, session: w.sessionId });
+          const p = this.crewWorkerRun(room, crew, next)
+            .catch((err) => {
+              this.audit.append({ op: "room.crew.worker-failed", room: id, task: next.id, error: err instanceof Error ? err.message : String(err) });
+            })
+            .finally(() => inflight.delete(next.id));
+          inflight.set(next.id, p);
+        }
+        sweepFallen();
         this.emit(room);
         this.save();
+
+        const working = [...inflight.keys()];
+        const reviewables = crew.tasks.filter((t) => t.status === "review");
+        if (!working.length && !reviewables.length) {
+          const unsettled = crew.tasks.filter((t) => t.status === "pending" || t.status === "blocked");
+          if (unsettled.length) {
+            // 没人在干、没有待评审、还有待办 → 依赖死锁（deps 指向失败任务等），终止并说明
+            throw new Error(`剩余 ${unsettled.length} 个任务无法解锁（依赖的任务已失败）：${unsettled.map((t) => t.id).join("、")}`);
+          }
+          break;   // 全部终态
+        }
+
+        if (reviewables.length) {
+          // 评审串行：一次一个；期间 worker 继续并行干活
+          const toReview = reviewables[0];
+          if (toReview) await this.crewReview(room, crew, toReview);
+          continue;
+        }
+        if (working.length) {
+          await Promise.race([...inflight.values()]);   // 任一 worker 完成 → 回到循环顶部重新分配
+        }
       }
+      sweepFallen();
 
       // ③ 合并
       if (crew.mergeMode === "auto") {
@@ -946,6 +1010,14 @@ export class RoomManager {
         this.emit(room);
         this.save();
       }
+      // 任务全部终态：worker 进程没用了（产物都在 git 分支上），停掉——
+      // 会话转「已存档」，用户能明确看到"跑完了"而不是一直"运行中"；继续运行会自动 revive
+      for (const w of crew.workers) {
+        const s = this.hooks.getSession(w.sessionId);
+        if (s && s.info().live) {
+          try { await s.stop(); } catch { /* 尽力而为 */ }
+        }
+      }
       room.status = "done";
     } catch (err) {
       const stopped = this.isStopped(room);
@@ -962,36 +1034,48 @@ export class RoomManager {
     const worker = crew.workers.find((w) => w.sessionId === task.assignee) ?? crew.workers[0];
     if (!worker) throw new Error(`任务 ${task.id} 没有可用的 worker`);
     const session = await this.waitReady(worker.sessionId);
+    // diff 基线：优先 worker 创建时记录的 base；老房间没有 → 用与主仓当前分支的分叉点
+    // （agent 自己 commit 过的内容也在其中——空 diff 会让零上下文评审误判"未开工"）
+    if (!worker.base) {
+      const mb = await currentBranch(room.cwd ?? ".");
+      worker.base = (mb ? await mergeBaseWith(worker.dir, mb) : null) ?? (await headOf(worker.dir)) ?? undefined;
+    }
     const reviseComments = task.attempts > 0 ? task.review?.comments : undefined;
     const prompt = crewWorkerPrompt({ goal: crew.goal, task, worktreeDir: worker.dir, reviseComments });
-    this.audit.append({ op: "room.crew.work.start", room: room.id, task: task.id, session: worker.sessionId, attempt: task.attempts });
-    const r = await session.promptAndWait(prompt, CREW_TURN_TIMEOUT_MS);
-    const diff = await stageAndDiff(worker.dir, task.files);
-    task.diff = diff;
-    task.summary = (r.text || "(无文字摘要)").slice(0, 800);
-    let sha: string | null = null;
+    session.intentTag = `${task.id} ${task.title}`;   // 权限决策记录的任务上下文
+    this.audit.append({ op: "room.crew.work.start", room: room.id, task: task.id, session: worker.sessionId, attempt: task.attempts, base: worker.base });
     try {
-      sha = await commitAll(worker.dir, `crew(${room.id}): ${task.id} ${task.title}${task.attempts ? ` (rev${task.attempts})` : ""}`);
-    } catch (err) {
-      this.audit.append({ op: "room.crew.commit-failed", room: room.id, task: task.id, error: err instanceof Error ? err.message : String(err) });
-    }
-    task.status = "review";
-    const turn: RoomTurn = {
-      round: 0,
-      sessionId: worker.sessionId,
-      harnessId: session.harnessId,
-      harnessLabel: session.harnessLabel,
-      prompt,
-      reply: (r.text || "(无输出)") + (sha ? `
+      const r = await session.promptAndWait(prompt, CREW_TURN_TIMEOUT_MS);
+      const diff = await stageAndDiff(worker.dir, task.files, worker.base);
+      task.diff = diff;
+      task.summary = (r.text || "(无文字摘要)").slice(0, 800);
+      let sha: string | null = null;
+      try {
+        sha = await commitAll(worker.dir, `crew(${room.id}): ${task.id} ${task.title}${task.attempts ? ` (rev${task.attempts})` : ""}`);
+      } catch (err) {
+        this.audit.append({ op: "room.crew.commit-failed", room: room.id, task: task.id, error: err instanceof Error ? err.message : String(err) });
+      }
+      if (!sha && diff) task.summary += "\n（改动已由 worker 自行提交或在基线 diff 中体现）";
+      task.status = "review";
+      const turn: RoomTurn = {
+        round: 0,
+        sessionId: worker.sessionId,
+        harnessId: session.harnessId,
+        harnessLabel: session.harnessLabel,
+        prompt,
+        reply: (r.text || "(无输出)") + (sha ? `
 
 （已提交 ${sha}）` : ""),
-      stopReason: r.stopReason,
-      ts: new Date().toISOString(),
-      kind: "member",
-      crewTaskId: task.id,
-    };
-    room.turns.push(turn);
-    this.audit.append({ op: "room.crew.work.end", room: room.id, task: task.id, stopReason: r.stopReason, chars: r.text.length });
+        stopReason: r.stopReason,
+        ts: new Date().toISOString(),
+        kind: "member",
+        crewTaskId: task.id,
+      };
+      room.turns.push(turn);
+      this.audit.append({ op: "room.crew.work.end", room: room.id, task: task.id, stopReason: r.stopReason, chars: r.text.length });
+    } finally {
+      session.intentTag = undefined;
+    }
     this.emit(room);
     this.save();
   }

@@ -19,7 +19,7 @@ type Entry =
   | { kind: "assistant"; text: string }
   | { kind: "thought"; text: string }
   | { kind: "tool"; title: string; status: string; toolCallId?: string; detail?: string }
-  | { kind: "permission"; title: string; answered?: string; requestId?: string; options?: PermissionOption[] }
+  | { kind: "permission"; title: string; answered?: string; requestId?: string; options?: PermissionOption[]; auto?: boolean }
   | { kind: "error"; message: string }
   | { kind: "log"; text: string };
 
@@ -600,7 +600,7 @@ function toEntry(e: TranscriptEntry): Entry {
     case "assistant": return { kind: "assistant", text: e.text };
     case "thought": return { kind: "thought", text: e.text };
     case "tool": return { kind: "tool", title: e.title, status: e.status, toolCallId: e.toolCallId };
-    case "permission": return { kind: "permission", title: e.title, answered: e.answered, requestId: e.requestId, options: e.options };
+    case "permission": return { kind: "permission", title: e.title, answered: e.answered, requestId: e.requestId, options: e.options, auto: e.auto };
     case "error": return { kind: "error", message: e.message };
     case "log": return { kind: "log", text: e.text };
   }
@@ -614,7 +614,7 @@ function htmlOf(e: Entry): string {
     case "tool": return `${esc(e.title)} <span style="opacity:.7">[${esc(e.status)}]</span>` +
       (e.detail ? `<details style="margin-top:5px"><summary>看执行细节</summary><pre>${esc(e.detail)}</pre></details>` : "");
     case "permission": {
-      if (e.answered) return `${esc(e.title)} → ${esc(e.answered)}`;
+      if (e.answered) return `${esc(e.title)} → ${esc(e.answered)}${e.auto ? "（自动决策）" : ""}`;
       const opts = (e.options ?? [])
         .map((o) => `<button data-req="${esc(e.requestId ?? "")}" data-opt="${esc(o.optionId)}">${esc(o.name)}</button>`)
         .join("");

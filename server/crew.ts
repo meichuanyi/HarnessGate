@@ -158,12 +158,52 @@ export function parseReview(text: string): ParsedReview | null {
 
 // ---------- git 操作（worktree 侧采集 + 主仓合并） ----------
 
+export async function headOf(dir: string): Promise<string | null> {
+  try { return await git(dir, ["rev-parse", "HEAD"]); } catch { return null; }
+}
+
+/** worker 分支上的提交列表（新的在前），交付件面板用 */
+export async function branchCommits(dir: string, limit = 10): Promise<string[]> {
+  try {
+    const out = await git(dir, ["log", "--oneline", `-${limit}`]);
+    return out ? out.split("\n") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 相对 base 的实际改动文件清单（含 agent 自提交的内容）——交付件下载用 */
+export async function changedFiles(dir: string, base?: string | null): Promise<string[]> {
+  try {
+    if (!base) {
+      const stat = await git(dir, ["status", "--porcelain"]);
+      return stat ? stat.split("\n").map((l) => l.slice(3).trim()).filter(Boolean) : [];
+    }
+    const out = await git(dir, ["diff", "--name-only", base]);
+    return out ? out.split("\n").filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 主仓当前分支名（合并目标）；拿不到返回 null */
+export async function currentBranch(dir: string): Promise<string | null> {
+  try { return await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]); } catch { return null; }
+}
+
+/** worktree 分支与主分支的分叉点——即使 agent 自己 commit 过，diff 这个点也能看到全部改动 */
+export async function mergeBaseWith(dir: string, ref: string): Promise<string | null> {
+  try { return await git(dir, ["merge-base", "HEAD", ref]); } catch { return null; }
+}
+
 /**
  * worktree：暂存改动 → 返回完整 diff（评审用，截断）。
  * files 非空时只暂存所有权内的路径——把「文件所有权」从提示词约定变成提交层面的强制；
  * 同时排掉 harness 自己生成的运行时垃圾（.zcode/.claude 等）。
+ * base = 分叉点提交：给了就算 diff <base>..工作树（含 agent 自己 commit 掉的内容——
+ * 2026-09-21 论文工作队事故：agent 习惯性自己 git commit，导致 diff --cached 恒为空，评审三轮误判"未开工"）。
  */
-export async function stageAndDiff(dir: string, files: string[], maxChars = 9000): Promise<string> {
+export async function stageAndDiff(dir: string, files: string[], base?: string | null, maxChars = 9000): Promise<string> {
   const noise = [":!.zcode", ":!.claude", ":!.openclaw"];
   try {
     if (files.length) {
@@ -176,19 +216,23 @@ export async function stageAndDiff(dir: string, files: string[], maxChars = 9000
     } else {
       await git(dir, ["add", "-A", "--", ...noise]);
     }
-    const diff = await git(dir, ["diff", "--cached"]);
+    const diff = base
+      ? await git(dir, ["diff", base, "--", ...files, ...noise])
+      : await git(dir, ["diff", "--cached"]);
     return diff.length > maxChars ? diff.slice(0, maxChars) + "\n…（diff 已截断）" : diff;
   } catch (err) {
     return `（取 diff 失败：${err instanceof Error ? err.message : String(err)}）`;
   }
 }
 
-/** worktree：提交全部改动；没有改动返回 null */
+/**
+ * worktree：提交暂存的改动；没有已暂存内容返回 null（agent 可能自己 commit 过——那不是错误，
+ * 改动会通过 base diff 进入评审）。真正的 git 错误才抛。
+ */
 export async function commitAll(dir: string, message: string): Promise<string | null> {
   try {
-    // 只提交 stageAndDiff 按所有权暂存的内容，不再 add -A
-    const status = await git(dir, ["status", "--porcelain"]);
-    if (!status) return null;
+    const staged = await git(dir, ["diff", "--cached", "--name-only"]);
+    if (!staged.trim()) return null;   // 没有新暂存：要么没改动，要么 agent 已自己提交
     const out = await git(dir, ["commit", "-m", message]);
     const m = /\[[\w/.-]+ ([0-9a-f]+)\]/.exec(out);
     return m?.[1] ?? "committed";
@@ -276,6 +320,7 @@ export function crewWorkerPrompt(opts: {
     "要求：",
     "- 直接动手完成，不要修改任务书之外的文件",
     "- 不要修改或弱化测试来迁就实现；不要用 mock 规避真实实现",
+    "- **不要自己执行 git commit / git merge**——提交由系统统一完成，你只管改/建文件。否则评审拿不到你的改动，会被判「未开工」",
     "- 完成后输出一段不超过 200 字的改动摘要：改了哪些文件、实现了什么、怎么验证的。不要贴大段代码",
   );
   return lines.join("\n");

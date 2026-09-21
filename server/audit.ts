@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, watch, type FSWatcher } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 /**
@@ -15,6 +15,33 @@ export class AuditLog {
       appendFileSync(this.file, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
     } catch {
       /* 台账失败不能影响主流程 */
+    }
+  }
+
+  /** 读台账尾部 n 条（不整读大文件，只取末尾 512KB），新的在前。决策回溯等 UI 用。 */
+  recent(n = 500): Array<Record<string, unknown>> {
+    try {
+      const size = statSync(this.file).size;
+      const want = Math.min(size, 512 * 1024);
+      const fd = openSync(this.file, "r");
+      try {
+        const buf = Buffer.alloc(want);
+        readSync(fd, buf, 0, want, size - want);
+        const lines = buf
+          .toString("utf8")
+          .split("\n")
+          .filter((l) => Boolean(l) && l.trim().startsWith("{"));
+        if (lines.length) lines.shift(); // 首行可能被截半，丢弃
+        const out: Array<Record<string, unknown>> = [];
+        for (let i = lines.length - 1; i >= 0 && out.length < n; i--) {
+          try { out.push(JSON.parse(lines[i] ?? "{}")); } catch { /* 坏行跳过 */ }
+        }
+        return out;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return [];
     }
   }
 }

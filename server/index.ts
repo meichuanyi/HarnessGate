@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { mkdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { homedir, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadRegistry, availability, loadTrust, loadProbe } from "./registry.ts";
@@ -11,10 +11,11 @@ import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
-import { createWorktree } from "./worktree.ts";
+import { createWorktree, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
-import { repoRoot } from "./worktree.ts";
+import { headOf, branchCommits, changedFiles, currentBranch, mergeBaseWith } from "./crew.ts";
+import { isInside } from "./audit.ts";
 import { randomUUID } from "node:crypto";
 import { HistorySync } from "./history.ts";
 import type { ClientMsg, HarnessSpec, ServerMsg, SessionInfo } from "./types.ts";
@@ -90,9 +91,15 @@ function reviveSession(id: string): boolean {
   if (!spec) return false;
   rec.status = "starting";
   const session = new HarnessSession(spec, rec, audit, makeHooks(), hub);
+  // 圆桌/工作队的会话重启后必须恢复自动批准：圆桌界面没有审批按钮，
+  // 丢了这标志的 worker 碰到授权请求会永久挂起（房间看起来"卡死"）
+  if (rec.roomId) {
+    session.autoApprove = "all";
+    if (rec.worktree) session.permissiveMode = true;   // crew worker：worktree 隔离 + git 兜底，直接放宽 mode
+  }
   live.set(session.id, session);
   broadcast({ type: "session", session: session.info() });
-  audit.append({ session: id, harness: rec.harnessId, op: "session.revive" });
+  audit.append({ session: id, harness: rec.harnessId, op: "session.revive", autoApprove: Boolean(rec.roomId) });
   void session.start("resume");
   return true;
 }
@@ -107,7 +114,7 @@ function spawnRoomSession(
 ): HarnessSession {
   const record = HarnessSession.newRecord(spec, cwd);
   const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
-  session.autoApprove = true;
+  session.autoApprove = "all";
   if (vars) session.vars = vars;
   if (configs?.length) session.pendingConfigs = configs;
   live.set(session.id, session);
@@ -205,7 +212,7 @@ function getPageContent(): string {
     return "<h1>500 - Failed to read web/index.html</h1>";
   }
 }
-const http = createServer((req, res) => {
+const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -253,6 +260,105 @@ const http = createServer((req, res) => {
       expires: "0",
     });
     res.end(getPageContent());
+    return;
+  }
+  // 交付件下载：/download?room=<id>&task=<id>&path=<相对路径>（单文件）
+  //           /download?room=<id>&task=<id>&all=1（任务全部产物打包 tar.gz）
+  if (url.pathname === "/download") {
+    if (!authorized(req)) {
+      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.end("unauthorized");
+      return;
+    }
+    // 单会话模式：/download?session=<id>&path=<相对/绝对路径>（相对 cwd 校验越权）
+    const sidDl = url.searchParams.get("session");
+    if (sidDl) {
+      const sess = live.get(sidDl) ?? store.get(sidDl);
+      if (!sess) { res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); res.end("session not found"); return; }
+      const rel2 = (url.searchParams.get("path") ?? "").replace(/^\/+/, "");
+      const full2 = resolve(sess.cwd, rel2);
+      if (!isInside(sess.cwd, full2) || !existsSync(full2) || !statSync(full2).isFile()) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("file not found");
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": `attachment; filename="${encodeURIComponent(rel2.split("/").pop() ?? "file")}"`,
+      });
+      res.end(readFileSync(full2));
+      return;
+    }
+    const roomId = url.searchParams.get("room") ?? "";
+    const taskId = url.searchParams.get("task") ?? "";
+    const room = rooms.get(roomId);
+    const task = room?.crew?.tasks.find((t) => t.id === taskId);
+    const worker = room?.crew?.workers.find((w) => w.sessionId === task?.assignee) ?? room?.crew?.workers.find((w) => w.dir && task);
+    if (!room?.crew || !task || !worker) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("task not found");
+      return;
+    }
+    try {
+      if (url.searchParams.get("all")) {
+        if (!worker.base) {
+          const mb = await currentBranch(room.cwd ?? ".");
+          worker.base = (mb ? await mergeBaseWith(worker.dir, mb) : null) ?? (await headOf(worker.dir)) ?? undefined;
+        }
+        const files = await changedFiles(worker.dir, worker.base);
+        if (!files.length) {
+          res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+          res.end("no artifacts");
+          return;
+        }
+        const { execFile } = await import("node:child_process");
+        const tar = await new Promise<Buffer>((resolve, reject) => {
+          execFile("tar", ["-czf", "-", "-C", worker.dir, "--", ...files], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 }, (err: Error | null, stdout: Buffer) => (err ? reject(err) : resolve(stdout)));
+        });
+        res.writeHead(200, {
+          "content-type": "application/gzip",
+          "content-disposition": `attachment; filename="crew-${roomId}-${taskId}.tar.gz"`,
+        });
+        res.end(tar);
+        return;
+      }
+      const rel = (url.searchParams.get("path") ?? "").replace(/^\/+/, "");
+      const full = resolve(worker.dir, rel);
+      if (!isInside(worker.dir, full) || !existsSync(full) || !statSync(full).isFile()) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("file not found");
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": `attachment; filename="${encodeURIComponent(rel.split("/").pop() ?? "artifact")}"`,
+      });
+      res.end(readFileSync(full));
+      return;
+    } catch (err) {
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      res.end(err instanceof Error ? err.message : String(err));
+      return;
+    }
+  }
+  // 静态资源（/static/... → web/ 目录，白名单扩展名；KaTeX 等自托管依赖）
+  if (url.pathname.startsWith("/static/")) {
+    const rel = url.pathname.slice("/static/".length);
+    const safe = rel.replace(/\.\./g, "");   // 防目录穿越
+    const file = join(ROOT, "web", safe);
+    const MIME: Record<string, string> = {
+      ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+      ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf",
+      ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json",
+    };
+    const ext = file.slice(file.lastIndexOf("."));
+    if (existsSync(file) && statSync(file).isFile() && MIME[ext]) {
+      res.writeHead(200, { "content-type": MIME[ext], "cache-control": "public, max-age=86400" });
+      res.end(readFileSync(file));
+      return;
+    }
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.end("not found");
     return;
   }
   res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -454,6 +560,80 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "crew-detail": {
+          const room = rooms.get(msg.roomId);
+          if (!room?.crew) {
+            ws.send(JSON.stringify({ type: "error", message: "圆桌不存在或不是工作队" } satisfies ServerMsg));
+            break;
+          }
+          const crew = room.crew;
+          const sids = new Set<string>([
+            ...(room.members ?? []),
+            ...crew.workers.map((w) => w.sessionId),
+            ...(room.host ? [room.host.sessionId] : []),
+          ]);
+          // 决策记录：台账里的权限请求（含自动决策的理由），新→旧
+          const decisions = audit
+            .recent(600)
+            .filter((e) => e.op === "permission.request" && typeof e.session === "string" && sids.has(e.session as string))
+            .slice(0, 150)
+            .map((e) => ({
+              ts: String(e.ts ?? ""),
+              harness: String(e.harness ?? ""),
+              title: String(e.title ?? ""),
+              chosen: (e.chosenName as string) ?? (typeof e.chosen === "string" ? (e.chosen as string) : undefined),
+              reason: (e.reason as string) ?? undefined,
+              task: (e.task as string) ?? undefined,
+              intent: (e.intent as string) ?? undefined,
+              permKind: (e.permKind as string) ?? undefined,
+              locations: Array.isArray(e.locations) ? (e.locations as string[]) : undefined,
+              input: (e.input as string) ?? undefined,
+              raw: (e.raw as string) ?? undefined,
+              danger: e.danger === true,
+              held: e.held === true,
+            }));
+          // 交付件：任务产物 + 分支提交 + 评审结论 + diff
+          const deliverables = [];
+          for (const t of crew.tasks) {
+            const w = crew.workers.find((x) => x.sessionId === t.assignee);
+            const commits = w ? await branchCommits(w.dir, 10) : [];
+            const artifacts: Array<{ path: string; size: number }> = [];
+            if (w) {
+              if (!w.base) {
+                const mb = await currentBranch(room.cwd ?? ".");
+                w.base = (mb ? await mergeBaseWith(w.dir, mb) : null) ?? (await headOf(w.dir)) ?? undefined;
+              }
+              for (const p of await changedFiles(w.dir, w.base)) {
+                try {
+                  const st = statSync(join(w.dir, p));
+                  if (st.isFile()) artifacts.push({ path: p, size: st.size });
+                } catch { /* 文件被删等 */ }
+              }
+            }
+            deliverables.push({
+              taskId: t.id,
+              title: t.title,
+              status: t.status,
+              assignee: w?.harnessLabel ?? (t.assignee ? (live.get(t.assignee)?.harnessLabel ?? t.assignee) : undefined),
+              files: t.files ?? [],
+              summary: t.summary,
+              review: t.review
+                ? {
+                    reviewer: t.review.reviewer,
+                    verdict: t.review.verdict,
+                    score: t.review.score,
+                    comments: t.review.comments.slice(0, 400),
+                  }
+                : undefined,
+              commits,
+              artifacts,
+              diff: t.diff,
+            });
+          }
+          ws.send(JSON.stringify({ type: "crew-detail", roomId: msg.roomId, decisions, deliverables } satisfies ServerMsg));
+          break;
+        }
+
         case "room-run":
           void rooms.run(msg.roomId);
           break;
@@ -481,7 +661,7 @@ wss.on("connection", (ws, req) => {
           }
           const members: string[] = [];
           const memberInfo: RoomMember[] = [];
-          const crewWorkers: Array<{ sessionId: string; harnessId: string; harnessLabel: string; dir: string; branch: string }> = [];
+          const crewWorkers: Array<{ sessionId: string; harnessId: string; harnessLabel: string; dir: string; branch: string; base?: string }> = [];
 
           // 工作队模式：每个成员一个独立 git worktree（并行干活不冲突），会话 cwd 就在 worktree 里
           const isCrew = Boolean(msg.crew);
@@ -509,15 +689,17 @@ wss.on("connection", (ws, req) => {
               const record = HarnessSession.newRecord(spec!, wt.dir, sid);
               record.worktree = wt;
               session = new HarnessSession(spec!, record, audit, makeHooks(), hub);
-              session.autoApprove = true;
+              session.autoApprove = "all";
+              session.permissiveMode = true;   // worker 在 git 隔离的 worktree 里：就绪后自动切最宽 mode，从源头减少授权
               const mcfg = msg.memberConfigs?.[spec!.id];
               if (mcfg?.length) session.pendingConfigs = mcfg;
               live.set(session.id, session);
               store.upsert(session.record());
-              audit.append({ session: session.id, harness: spec!.id, op: "session.create", cwd: wt.dir, via: "crew-worker", branch: wt.branch });
+              const base = await headOf(wt.dir) ?? undefined;
+              audit.append({ session: session.id, harness: spec!.id, op: "session.create", cwd: wt.dir, via: "crew-worker", branch: wt.branch, base });
               broadcast({ type: "session", session: session.info() });
               void session.start("new");
-              crewWorkers.push({ sessionId: session.id, harnessId: spec!.id, harnessLabel: spec!.label, dir: wt.dir, branch: wt.branch });
+              crewWorkers.push({ sessionId: session.id, harnessId: spec!.id, harnessLabel: spec!.label, dir: wt.dir, branch: wt.branch, base });
             } else {
               session = spawnRoomSession(spec!, cwd, "room-member", msg.memberConfigs?.[spec!.id]);
             }
@@ -802,6 +984,77 @@ wss.on("connection", (ws, req) => {
         case "interrupt": {
           const session = live.get(msg.sessionId);
           if (session) void session.cancelTurn();
+          break;
+        }
+
+        case "set-auto-approve": {
+          const session = live.get(msg.sessionId);
+          if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "session-detail": {
+          const session = live.get(msg.sessionId) ?? store.get(msg.sessionId);
+          if (!session) {
+            ws.send(JSON.stringify({ type: "error", message: "会话不存在" } satisfies ServerMsg));
+            break;
+          }
+          const cwd = session.cwd;
+          // 改动文件：git 仓库优先（工作树对 HEAD 的 diff，准确）；否则用 fs.change 台账（标注来源与置信度）
+          let gitRepo = false;
+          const changes: Array<{ path: string; size: number; source: "git" | "audit" }> = [];
+          try {
+            const top = await repoRoot(cwd);
+            if (top) {
+              gitRepo = true;
+              const out = await new Promise<string>((resolve2, reject2) => {
+                import("node:child_process").then(({ execFile }) =>
+                  execFile("git", ["-C", cwd, "diff", "--name-only", "HEAD"], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 }, (err: Error | null, stdout: string) => (err ? reject2(err) : resolve2(stdout))),
+                );
+              }).catch(() => "");
+              const changed = out ? out.split("\n").filter(Boolean) : [];
+              for (const p of changed) {
+                try {
+                  const st = statSync(join(cwd, p));
+                  if (st.isFile()) changes.push({ path: p, size: st.size, source: "git" });
+                } catch { /* 已删除的文件跳过 */ }
+              }
+            }
+          } catch { /* 非 git 或 git 不可用 */ }
+          if (!gitRepo) {
+            const seen = new Set<string>();
+            for (const e of audit.recent(1200)) {
+              if (e.op !== "fs.change" || e.session !== msg.sessionId) continue;
+              const p2 = String(e.path ?? "");
+              if (!p2 || seen.has(p2)) continue;
+              seen.add(p2);
+              try {
+                const st = statSync(p2);
+                if (st.isFile()) changes.push({ path: p2, size: st.size, source: "audit" });
+              } catch { /* 文件已不在 */ }
+            }
+          }
+          changes.sort((a, b2) => b2.path.localeCompare(a.path));
+          // 决策记录：该会话的权限请求（人工选择的也记，回溯完整）
+          const decisions = audit
+            .recent(600)
+            .filter((e) => e.op === "permission.request" && e.session === msg.sessionId)
+            .slice(0, 150)
+            .map((e) => ({
+              ts: String(e.ts ?? ""),
+              title: String(e.title ?? ""),
+              chosen: (e.chosenName as string) ?? (typeof e.chosen === "string" ? (e.chosen as string) : undefined),
+              reason: (e.reason as string) ?? undefined,
+              level: (e.level as string) ?? undefined,
+              auto: e.auto === true,
+              held: e.held === true,
+              danger: e.danger === true,
+              task: (e.task as string) ?? undefined,
+              intent: (e.intent as string) ?? undefined,
+              permKind: (e.permKind as string) ?? undefined,
+              input: (e.input as string) ?? undefined,
+            }));
+          ws.send(JSON.stringify({ type: "session-detail", sessionId: msg.sessionId, decisions, changes, git: gitRepo } satisfies ServerMsg));
           break;
         }
 

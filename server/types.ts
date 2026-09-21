@@ -53,6 +53,14 @@ export type SessionInfo = {
   worktree?: WorktreeInfo;
   /** 一个 turn 正在跑（前端据此把发送区变成「停止」） */
   inTurn?: boolean;
+  /** 本回合开始时间（epoch ms）；不在回合中时无 */
+  turnStartedAt?: number;
+  /** 最近一次 agent 事件时间（epoch ms）——「最后活动 X 前」和静默看门狗共用 */
+  lastProgressAt?: number;
+  /** 自动决策档位（off/readonly/all） */
+  autoApprove?: string;
+  /** 属于哪个圆桌/工作队（前端据此隐藏自动决策下拉） */
+  roomId?: string;
 };
 
 export type TranscriptEntry =
@@ -68,6 +76,24 @@ export type TranscriptEntry =
       answered?: string;
       requestId?: string;
       options?: PermissionOption[];
+      /** 房间会话的自动决策（回答右侧会显示「（自动）」） */
+      auto?: boolean;
+      /** 自动决策档位（all/readonly），时间线展示用 */
+      level?: string;
+      /** 危险操作（全自动档也决策，但打 ⚠ 供回溯） */
+      danger?: boolean;
+      /** 正在做的任务（工作队设置，如「T1 实证分析」） */
+      task?: string;
+      /** agent 发起工具调用前的自述（说明这是要干什么） */
+      context?: string;
+      /** 工具类型（bash/edit/read…） */
+      permKind?: string;
+      /** 涉及的文件 */
+      locations?: string[];
+      /** 工具原始入参（JSON 截断）——文字型说明在这里 */
+      input?: string;
+      /** 完整原始请求（JSON 截断），保底不丢字段 */
+      raw?: string;
     }
   | { kind: "error"; ts: string; message: string }
   | { kind: "log"; ts: string; text: string };
@@ -125,6 +151,10 @@ export type ClientMsg =
   | { type: "close"; sessionId: string }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
+  /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */
+  | { type: "set-auto-approve"; sessionId: string; level: "off" | "readonly" | "all" }
+  /** 单会话右侧面板：决策记录 + 改动/交付件 */
+  | { type: "session-detail"; sessionId: string }
   | { type: "delete"; sessionId: string }
   | { type: "handoff"; sessionId: string; keep?: number }
   | { type: "sync-history"; harnessId?: string; force?: boolean }
@@ -167,6 +197,8 @@ export type ClientMsg =
   | { type: "room-mode"; roomId: string; mode: "parallel" | "sequential" }
   | { type: "room-delete"; roomId: string; deleteSessions?: boolean }
   | { type: "crew-merge"; roomId: string }
+  /** 工作队右侧面板：自动权限决策记录 + 交付件（任务产物/分支提交/评审结论） */
+  | { type: "crew-detail"; roomId: string }
   | { type: "room-run"; roomId: string }
   | { type: "room-stop"; roomId: string }
   | { type: "list" };
@@ -203,6 +235,38 @@ export type ServerMsg =
       error?: string;
     }
   | { type: "rooms"; rooms: Room[] }
+  | {
+      type: "crew-detail";
+      roomId: string;
+      /** 自动权限决策记录（新→旧） */
+      decisions: Array<{
+        ts: string; harness: string; title: string; chosen?: string; reason?: string; task?: string; intent?: string;
+        permKind?: string; locations?: string[]; input?: string; raw?: string; danger?: boolean; held?: boolean;
+      }>;
+      /** 交付件：每个任务的产物摘要、评审结论、分支提交与 diff */
+      deliverables: Array<{
+        taskId: string;
+        title: string;
+        status: string;
+        assignee?: string;
+        files: string[];
+        summary?: string;
+        review?: { reviewer: string; verdict: string; score?: number; comments: string };
+        commits: string[];
+        /** 实际产物（相对 base 的改动文件 + 大小），可下载 */
+        artifacts: Array<{ path: string; size: number }>;
+        diff?: string;
+      }>;
+    }
+  | {
+      type: "session-detail";
+      sessionId: string;
+      /** 权限决策记录（新→旧），含人工/自动/拦截 */
+      decisions: Array<{ ts: string; title: string; chosen?: string; reason?: string; level?: string; auto?: boolean; held?: boolean; danger?: boolean; task?: string; intent?: string; permKind?: string; input?: string }>;
+      /** 本会话改动过的文件（git 仓库=对 HEAD 的 diff；否则来自 fs.change 台账，标注来源） */
+      changes: Array<{ path: string; size: number; source: "git" | "audit" }>;
+      git: boolean;
+    }
   | { type: "handoff_done"; from: string; to: string }
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
