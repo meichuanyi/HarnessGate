@@ -994,15 +994,50 @@ wss.on("connection", (ws, req) => {
         }
 
         case "session-detail": {
-          const session = live.get(msg.sessionId) ?? store.get(msg.sessionId);
-          if (!session) {
+          const sess = live.get(msg.sessionId);
+          const rec = sess ? sess.record() : store.get(msg.sessionId);
+          if (!rec) {
             ws.send(JSON.stringify({ type: "error", message: "会话不存在" } satisfies ServerMsg));
             break;
           }
-          const cwd = session.cwd;
-          // 改动文件：git 仓库优先（工作树对 HEAD 的 diff，准确）；否则用 fs.change 台账（标注来源与置信度）
+          const cwd = rec.cwd;
+          // 决策记录：优先取会话台账（transcript 里的 permission 条目，持久化、不随审计窗口滚动），
+          // 台账尾部只做补充（极老会话的早期条目）
+          const decisions: Array<{ ts: string; title: string; chosen?: string; reason?: string; level?: string; auto: boolean; held: boolean; danger: boolean; task?: string; intent?: string; permKind?: string; input?: string }> = (rec.transcript || [])
+            .filter((e) => e.kind === "permission")
+            .slice(-150)
+            .reverse()
+            .map((e) => ({
+              ts: String(e.ts ?? ""),
+              title: String(e.title ?? ""),
+              chosen: (e as { answered?: string }).answered,
+              reason: undefined,
+              level: undefined,
+              auto: Boolean((e as { auto?: boolean }).auto),
+              held: false,
+              danger: Boolean((e as { danger?: boolean }).danger),
+              task: (e as { task?: string }).task,
+              intent: (e as { context?: string }).context,
+              permKind: (e as { permKind?: string }).permKind,
+              input: (e as { input?: string }).input,
+            }));
+          if (!decisions.length) {
+            for (const e of audit.recent(600)) {
+              if (e.op !== "permission.request" || e.session !== msg.sessionId) continue;
+              decisions.push({
+                ts: String(e.ts ?? ""), title: String(e.title ?? ""),
+                chosen: (e.chosenName as string) ?? (typeof e.chosen === "string" ? (e.chosen as string) : undefined),
+                reason: (e.reason as string) ?? undefined, level: (e.level as string) ?? undefined,
+                auto: e.auto === true, held: e.held === true, danger: e.danger === true,
+                task: (e.task as string) ?? undefined, intent: (e.intent as string) ?? undefined,
+                permKind: (e.permKind as string) ?? undefined, input: (e.input as string) ?? undefined,
+              });
+            }
+          }
+          // 改动：git diff vs HEAD ∪ fs.change 台账（提交过的活不会凭空消失；来源标注）
           let gitRepo = false;
           const changes: Array<{ path: string; size: number; source: "git" | "audit" }> = [];
+          const seen = new Set<string>();
           try {
             const top = await repoRoot(cwd);
             if (top) {
@@ -1014,46 +1049,25 @@ wss.on("connection", (ws, req) => {
               }).catch(() => "");
               const changed = out ? out.split("\n").filter(Boolean) : [];
               for (const p of changed) {
+                seen.add(p);
                 try {
                   const st = statSync(join(cwd, p));
                   if (st.isFile()) changes.push({ path: p, size: st.size, source: "git" });
                 } catch { /* 已删除的文件跳过 */ }
               }
             }
-          } catch { /* 非 git 或 git 不可用 */ }
-          if (!gitRepo) {
-            const seen = new Set<string>();
-            for (const e of audit.recent(1200)) {
-              if (e.op !== "fs.change" || e.session !== msg.sessionId) continue;
-              const p2 = String(e.path ?? "");
-              if (!p2 || seen.has(p2)) continue;
-              seen.add(p2);
-              try {
-                const st = statSync(p2);
-                if (st.isFile()) changes.push({ path: p2, size: st.size, source: "audit" });
-              } catch { /* 文件已不在 */ }
-            }
+          } catch { /* 非 git */ }
+          for (const e of audit.recent(1200)) {
+            if (e.op !== "fs.change" || e.session !== msg.sessionId) continue;
+            const p2 = String(e.path ?? "");
+            if (!p2 || seen.has(p2)) continue;
+            seen.add(p2);
+            try {
+              const st = statSync(p2);
+              if (st.isFile()) changes.push({ path: p2, size: st.size, source: "audit" });
+            } catch { /* 文件已不在 */ }
           }
           changes.sort((a, b2) => b2.path.localeCompare(a.path));
-          // 决策记录：该会话的权限请求（人工选择的也记，回溯完整）
-          const decisions = audit
-            .recent(600)
-            .filter((e) => e.op === "permission.request" && e.session === msg.sessionId)
-            .slice(0, 150)
-            .map((e) => ({
-              ts: String(e.ts ?? ""),
-              title: String(e.title ?? ""),
-              chosen: (e.chosenName as string) ?? (typeof e.chosen === "string" ? (e.chosen as string) : undefined),
-              reason: (e.reason as string) ?? undefined,
-              level: (e.level as string) ?? undefined,
-              auto: e.auto === true,
-              held: e.held === true,
-              danger: e.danger === true,
-              task: (e.task as string) ?? undefined,
-              intent: (e.intent as string) ?? undefined,
-              permKind: (e.permKind as string) ?? undefined,
-              input: (e.input as string) ?? undefined,
-            }));
           ws.send(JSON.stringify({ type: "session-detail", sessionId: msg.sessionId, decisions, changes, git: gitRepo } satisfies ServerMsg));
           break;
         }
