@@ -697,26 +697,29 @@ export class HarnessSession {
   /** 打断当前回合：给 agent 发 session/cancel，并在本地立刻放行等待方（不等 agent 确认——
    *  有的 harness 会无视 cancel 继续吐字，那也按已打断处理，别让 UI/圆桌干等） */
   async cancelTurn(stopReason = "cancelled"): Promise<void> {
-    if (!this.inTurnFlag || !this.ctx || !this.acpSessionId) {
-      if (this.inTurnFlag) {
-        // 会话上下文已丢（进程被杀等）——仍然放行等待方
-        this.markInTurn(false);
-        this.closeAssistant(stopReason);
-        this.finishTurn(stopReason);
-        this.hooks.onTurnEnd(this.id, stopReason);
-      }
+    // 顺序铁律：先本地放行，再（尽力）通知 agent。
+    // 2026-09-21 antigravity 静默挂起事故：旧实现先 await notify——agent 挂死时 notify 永不返回，
+    // 本地放行永远执行不到，看门狗判对了病却卡在行刑，整场工作队冻结。
+    if (!this.inTurnFlag) return;
+    if (!this.ctx || !this.acpSessionId) {
+      this.markInTurn(false);
+      this.closeAssistant(stopReason);
+      this.finishTurn(stopReason);
+      this.hooks.onTurnEnd(this.id, stopReason);
       return;
     }
     this.audit.append({ session: this.id, harness: this.harnessId, op: "session.cancel", reason: stopReason });
-    try {
-      await this.ctx.notify(acp.methods.agent.session.cancel, { sessionId: this.acpSessionId } as never);
-    } catch (err) {
-      this.log(`session/cancel 发送失败（继续本地兜底）: ${err instanceof Error ? err.message : String(err)}`);
-    }
     this.markInTurn(false);
     this.closeAssistant(stopReason);
     this.finishTurn(stopReason);
     this.hooks.onTurnEnd(this.id, stopReason);
+    // 通知带 3 秒超时、失败不追究——agent 还活着就停下，挂死了也无所谓（等待方已放行）
+    void Promise.race([
+      this.ctx.notify(acp.methods.agent.session.cancel, { sessionId: this.acpSessionId } as never),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]).catch((err) => {
+      this.log(`session/cancel 发送失败（本地已放行，不影响）: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   private markInTurn(inTurn: boolean): void {

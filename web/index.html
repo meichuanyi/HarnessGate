@@ -1333,6 +1333,8 @@ function openSession(id) {
   if (!s) return;
   state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
   entries = []; nodes = []; streamingAssistant = false; transcriptBase = 0;
+  // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
+  for (const pid of ["crewPanel", "wsPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
   send({ type: "transcript", sessionId: id });
   if (!s.live && s.resumable) {

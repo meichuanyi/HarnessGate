@@ -996,7 +996,21 @@ export class RoomManager {
 
       // ③ 合并
       if (crew.mergeMode === "auto") {
-        if (!(await isClean(room.cwd ?? "."))) throw new Error("主目录有未提交改动，无法自动合并");
+        if (!(await isClean(room.cwd ?? "."))) {
+          // 主目录不脏不等于失败：任务全做完了，降级为"待人工合并"，别把整场标成 error
+          crew.mergeLines = ["主目录有未提交改动，自动合并已跳过——先提交/还原主目录改动，再点「合并到主目录」"];
+          crew.phase = "ready-merge";
+          this.emit(room);
+          this.save();
+          await this.hostSpeak(room, null, "final", 0, this.crewFinalPromptOf(room));
+          for (const w of crew.workers) {
+            const ws2 = this.hooks.getSession(w.sessionId);
+            if (ws2 && ws2.info().live) { try { await ws2.stop(); } catch { /* 尽力 */ } }
+          }
+          room.status = "done";
+          this.audit.append({ op: "room.crew.merge.degraded", room: id, reason: "main-dir-dirty" });
+          return;
+        }
         await this.crewDoMerge(room);
         crew.integrated = crew.conflicts.length === 0;
         crew.phase = crew.conflicts.length ? "conflict" : "merged";
