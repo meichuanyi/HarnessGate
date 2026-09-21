@@ -1361,7 +1361,8 @@ function renderChat() {
         <button class="mini ghost" id="searchNext" title="下一个命中">▼</button>
         <span style="flex:1"></span>
         <button class="mini ghost" id="idxToggle" title="列出你在本会话的全部发言，点击定位">我的发言 (<span id="idxCount">0</span>) <span id="idxArrow">▾</span></button>
-        <button class="mini ghost" id="sessDetailBtn" title="本会话的权限决策记录 + 改动过的文件（可下载）">📋 决策/改动</button>
+        <button class="mini ghost" id="sessDecBtn" title="本会话的权限决策记录（人工/自动/拦截，含工具入参与理由）">🧾 决策</button>
+        <button class="mini ghost" id="sessChgBtn" title="本会话改动过的文件（git 仓库按 diff，非 git 按 fs 台账；可下载）">📄 改动</button>
         <div class="idxList" id="idxList" hidden></div>
       </div>
       <div id="stream"></div>
@@ -1384,7 +1385,8 @@ function renderChat() {
   $("sendBtn").onclick = doSend;
   $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
   $("stopBtn").onclick = () => send({ type: "interrupt", sessionId: state.sessionId });
-  $("sessDetailBtn").onclick = () => openSessPanel(state.sessionId);
+  $("sessDecBtn").onclick = () => openSessPanel(state.sessionId, "decisions");
+  $("sessChgBtn").onclick = () => openSessPanel(state.sessionId, "changes");
   $("idxToggle").onclick = () => setIdxOpen(!idxOpen);
   const search = $("chatSearch");
   const drop = $("searchDrop");
@@ -2891,7 +2893,8 @@ function crewDetailHtml(room) {
         <span class="pill ${room.status === "done" ? "done" : room.status === "running" ? "running" : room.status === "error" ? "error" : "saved"}">${ROOM_STATUS[room.status] || room.status}</span>
         <span class="meta2">${phaseTxt}</span>
         ${c.phase === "ready-merge" ? '<button class="primary mini" id="crewMerge">合并到主目录</button>' : ""}
-        <button class="mini" id="crewSide" title="自动权限决策记录 + 每个任务的交付件（提交/diff/评审）">📋 决策/交付</button>
+        <button class="mini" id="crewDecBtn" title="自动权限决策记录（含工具入参、理由、⚠ 危险标记）">🧾 决策</button>
+        <button class="mini" id="crewDelBtn" title="每个任务的交付件：产物（可下载）/提交/评审/diff">📦 交付</button>
         ${room.status === "running" ? '<button class="mini" id="rtStop">停止</button>' : ""}
       </div>
       <div class="meta2" style="margin:6px 0 12px">
@@ -2972,13 +2975,16 @@ function crewTaskCard(t) {
 
 /* ---------- 工作队右侧抽屉：决策记录 + 交付件 ---------- */
 let crewPanelRoomId = null;
+let crewPanelMode = "decisions";
 
-function openCrewPanel(roomId) {
+function openCrewPanel(roomId, mode) {
   crewPanelRoomId = roomId;
+  crewPanelMode = mode;
   const p = $("crewPanel");
   if (!p) return;
   p.hidden = false;
-  p.innerHTML = '<div class="hd"><b>决策记录 / 交付件</b><button class="mini ghost" onclick="document.getElementById(\'crewPanel\').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>';
+  const title = mode === "decisions" ? "决策记录" : "交付件";
+  p.innerHTML = `<div class="hd"><b>${title}</b><button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>`;
   send({ type: "crew-detail", roomId });
 }
 
@@ -3015,27 +3021,29 @@ function renderCrewPanel(roomId, data) {
       ${t.commits?.length ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--dim2)">分支提交（${t.commits.length}）</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--dim2);margin:4px 0">${esc2(t.commits.join("\n"))}</pre></details>` : ""}
       ${t.diff ? `<details><summary style="cursor:pointer;font-size:11.5px;color:var(--dim2)">diff（${t.diff.length} 字）</summary><pre style="white-space:pre-wrap;font-size:10.5px;max-height:280px;overflow:auto;background:var(--bg);padding:6px;border-radius:6px">${esc2(t.diff)}</pre></details>` : ""}
     </div>`).join("") || '<div class="meta2" style="padding:6px 0">还没有交付件</div>';
+  const isDec = crewPanelMode === "decisions";
   p.innerHTML = `
-    <div class="hd"><b>决策记录 / 交付件</b>
+    <div class="hd"><b>${isDec ? "决策记录" : "交付件"}</b>
       <span style="flex:1"></span>
-      <button class="mini ghost" onclick="openCrewPanel('${esc2(roomId)}')">刷新</button>
+      <button class="mini ghost" onclick="openCrewPanel('${esc2(roomId)}','${crewPanelMode}')">刷新</button>
       <button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button>
     </div>
-    <h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">决策记录（${data.decisions.length}）</h3>
-    ${decHtml}
-    <h3 style="font-size:11px;color:var(--dim2);margin:14px 0 4px;text-transform:uppercase">交付件（${data.deliverables.length} 个任务）</h3>
-    ${delHtml}`;
+    ${isDec ? `<h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">权限决策（${data.decisions.length}）</h3>${decHtml}`
+            : `<h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">交付件（${data.deliverables.length} 个任务）</h3>${delHtml}`}`;
 }
 window.openCrewPanel = openCrewPanel;
 
 /* ---------- 单会话右侧抽屉：决策记录 + 改动文件（可下载） ---------- */
 let sessPanelSid = null;
-function openSessPanel(sid) {
+let sessPanelMode = "decisions";
+function openSessPanel(sid, mode) {
   sessPanelSid = sid;
+  sessPanelMode = mode;
   const p = $("crewPanel");
   if (!p) return;
   p.hidden = false;
-  p.innerHTML = '<div class="hd"><b>决策记录 / 改动</b><button class="mini ghost" onclick="document.getElementById(\'crewPanel\').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>';
+  const title = mode === "decisions" ? "决策记录" : "改动文件";
+  p.innerHTML = `<div class="hd"><b>${title}</b><button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>`;
   send({ type: "session-detail", sessionId: sid });
 }
 window.openSessPanel = openSessPanel;
@@ -3060,16 +3068,15 @@ function renderSessPanel(sid, data) {
           <span class="meta2" style="flex:none">${f.source === "git" ? "" : "台账·"}${f.size > 1048576 ? (f.size / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(f.size / 1024)) + "KB"}</span>
         </div>`).join("")
     : `<div class="meta2" style="padding:6px 0">本会话没有改动记录${data.git ? "（工作树与 HEAD 一致）" : "（非 git 目录，依据 fs 台账）"}</div>`;
+  const isDec = sessPanelMode === "decisions";
   p.innerHTML = `
-    <div class="hd"><b>决策记录 / 改动</b>
+    <div class="hd"><b>${isDec ? "决策记录" : "改动文件"}</b>
       <span style="flex:1"></span>
-      <button class="mini ghost" onclick="openSessPanel('${esc(sid)}')">刷新</button>
+      <button class="mini ghost" onclick="openSessPanel('${esc(sid)}','${sessPanelMode}')">刷新</button>
       <button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button>
     </div>
-    <h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">决策记录（${data.decisions.length}）</h3>
-    ${decHtml}
-    <h3 style="font-size:11px;color:var(--dim2);margin:14px 0 4px;text-transform:uppercase">改动（${data.changes.length}${data.git ? " · git diff vs HEAD" : " · fs 台账"}）</h3>
-    ${chgHtml}`;
+    ${isDec ? `<h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">权限决策（${data.decisions.length}）</h3>${decHtml}`
+            : `<h3 style="font-size:11px;color:var(--dim2);margin:12px 0 4px;text-transform:uppercase">改动（${data.changes.length}${data.git ? " · git diff vs HEAD" : " · fs 台账"}）</h3>${chgHtml}`}`;
 }
 
 /* ---------- 工作队右侧抽屉：决策记录 + 交付件 ---------- */
@@ -3186,9 +3193,8 @@ function bindRoomDetail(room) {
       send({ type: "crew-merge", roomId: room.id });
     };
   }
-  if ($("crewSide")) {
-    $("crewSide").onclick = () => openCrewPanel(room.id);
-  }
+  if ($("crewDecBtn")) $("crewDecBtn").onclick = () => openCrewPanel(room.id, "decisions");
+  if ($("crewDelBtn")) $("crewDelBtn").onclick = () => openCrewPanel(room.id, "deliverables");
   $("rtAsk")?.addEventListener("click", () => {
     const topic = $("rtTopic2").value.trim();
     if (!topic) { alert("先写议题"); return; }
