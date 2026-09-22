@@ -21,6 +21,8 @@ export type PersistedSession = {
   chosen?: Record<string, string>;
   /** 自动决策档位（off/readonly/all）；房间会话恒 all */
   autoApprove?: string;
+  /** 本会话碰过的文件（hub 实时回填，上限 500） */
+  changedFiles?: Array<{ path: string; ts: string }>;
   transcript: TranscriptEntry[];
 };
 

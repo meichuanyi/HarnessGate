@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "doctor": "node scripts/doctor.mjs",
     "import-registry": "node scripts/import-registry.mjs",
-    "sync-history": "tsx scripts/sync-history.ts"
+    "sync-history": "tsx scripts/sync-history.ts",
+    "backfill-changes": "node scripts/backfill-changes.mjs"
   },
   "license": "ISC",
   "dependencies": {

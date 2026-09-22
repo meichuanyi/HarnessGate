@@ -173,12 +173,16 @@ export class HarnessSession {
   private turnWaiter?: { from: number; resolve: (r: { text: string; stopReason: string }) => void };
   /** 一个 turn 正在跑（前端据此显示「停止」按钮；随 SessionInfo 广播） */
   private inTurnFlag = false;
+  /** 连续 prompt 失败计数；达到阈值触发自愈（底层对话已损坏：全新重建 + 注入进度摘要） */
+  private failStreak = 0;
+  private healLock = false;
+  private healContext?: string;
   /** 本回合开始时间（epoch ms）——前端显示「已运行 X 分钟」 */
   private turnStartedAt?: number;
   /** 最近一次收到 agent 事件（流式/思考/工具调用）的时间——看门狗按「静默多久」判死，不看总时长 */
   private lastProgressAt = Date.now();
   /** 会话还没就绪时先排队，就绪后自动发出（避免用户手快丢消息） */
-  private queued: { text: string; attachments: Attachment[] }[] = [];
+  private queued: { text: string; attachments: Attachment[]; userPushed?: boolean }[] = [];
   /** 用户手动选过的配置（模型等），持久化并在恢复时重放 */
   private chosen: Record<string, string> = {};
   /** 房间 worker 的宽松权限：就绪后自动切到 harness 支持的最宽 mode（auto/yolo/acceptEdits/…）。
@@ -209,6 +213,7 @@ export class HarnessSession {
     this.transcript = record.transcript;
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
     this.chosen = record.chosen ?? {};
+    for (const c of record.changedFiles ?? []) this.changedPaths.set(c.path, c.ts);
     this.autoApprove = (record.autoApprove as AutoApproveLevel) ?? "off";
     this.pendingConfigs = Object.entries(this.chosen).map(([configId, value]) => ({ configId, value }));
   }
@@ -368,7 +373,7 @@ export class HarnessSession {
     });
     child.on("exit", (code, signal) => {
       this.log(`harness 进程退出 code=${code ?? "null"} signal=${signal ?? "null"}`);
-      if (!this.stopRequested) this.setStatus("error", `harness 进程退出 (${code ?? signal})`);
+      if (!this.stopRequested && !this.healLock) this.setStatus("error", `harness 进程退出 (${code ?? signal})`);
       // 进程没了必须释放工作区席位：否则递归 watcher 永不关闭（inotify 泄漏会把系统配额吃光），
       // 死会话还会继续接文件改动的归因。resume 会重新 register，这里不会误伤。
       this.hub.setInTurn(this.id, false);
@@ -575,7 +580,7 @@ export class HarnessSession {
         this.hooks.onTurnEnd(this.id, "error");
         return;
       }
-      this.queued.push({ text, attachments });
+      this.queued.push({ text, attachments, userPushed: true });   // 台账已在此处记录用户消息，实际发送时不再重复推
       if (!this.title) {
         this.title = text.slice(0, 40);
         this.hooks.onStatus(this.info());
@@ -597,11 +602,61 @@ export class HarnessSession {
     while (this.queued.length) {
       const item = this.queued.shift()!;
       this.log(`发送排队消息：${item.text.slice(0, 40)}`);
-      await this.sendNow(item.text, item.attachments);
+      await this.sendNow(item.text, item.attachments, item.userPushed === true);
     }
   }
 
-  private async sendNow(text: string, attachments: Attachment[] = []): Promise<void> {
+  /**
+   * 连续失败自愈：底层对话已损坏（如 claude 对未知模型别名强校验、fork 出坏副本、上游流挂死）时，
+   * 不再反复撞墙——杀掉旧 harness 进程，放弃 resume/fork 老状态，全新重建会话，
+   * 并把最近台账摊平成进度摘要注入下一条消息（与「接续」同款思路，但全自动）。
+   */
+  private async selfHeal(reason: string): Promise<boolean> {
+    this.healLock = true;
+    try {
+      this.log(`⚠️ 连续失败触发自愈（${reason}）：放弃损坏的底层对话，全新重建会话`);
+      const digest = this.transcript.slice(-20).map((e) => {
+        const body = (e.kind === "error" ? e.message : e.kind === "tool" ? e.title : "text" in e ? e.text : "") || "";
+        return `- [${e.kind}] ${body.replace(/\s+/g, " ").slice(0, 180)}`;
+      }).join("\n");
+      this.healContext = digest || "（无历史记录）";
+      // 杀旧进程（healLock 期间 exit 处理器不会误标 error）
+      this.stopRequested = true;
+      try { this.child?.kill("SIGKILL"); } catch { /* 已死 */ }
+      this.ctx = undefined;
+      this.acpSessionId = undefined;
+      this.replaying = false;
+      this.pendingConfigs = [];   // 出错的预置配置不再对新会话下发
+      this.origin = "new";        // 关键：走全新会话路径，绝不再 resume/fork 损坏状态
+      this.setStatus("starting");
+      await new Promise((r) => setTimeout(r, 150));   // 让旧进程的 exit 事件先落地
+      this.stopRequested = false;
+      void this.start("new");
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && this.status === "starting") {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const ok = this.status === "ready";
+      this.log(ok ? "自愈完成：全新会话已就绪，摘要将随下一条消息注入" : "自愈失败：重建后会话未就绪");
+      if (ok) {
+        this.push({ kind: "log", ts: now(), text: `⚠️ 检测到底层会话连续故障（${reason}），已自动重建会话；最近进度摘要将随下一条消息注入` });
+        this.hooks.onStatus(this.info());
+        this.hooks.onPersist(this.record());
+      }
+      return ok;
+    } finally {
+      this.healLock = false;
+    }
+  }
+
+  private async sendNow(text: string, attachments: Attachment[] = [], skipUserPush = false): Promise<void> {
+    // 自愈后的首次发送：把重建前的进度摘要拼在请求前面，接续中断的工作
+    if (this.healContext) {
+      const bg = this.healContext;
+      this.healContext = undefined;
+      this.log("已注入自愈进度摘要");
+      text = `【接续背景】上一个底层会话因连续故障被自动重建。以下是你此前工作的最近进度摘录：\n${bg}\n\n请基于以上背景继续。当前请求：${text}`;
+    }
     if (this.stopRequested || (this.status !== "ready" && this.status !== "starting")) {
       this.hooks.onUpdate(this.id, {
         sessionUpdate: "hg_error",
@@ -620,14 +675,17 @@ export class HarnessSession {
     this.assistantOpen = false;
     this.replaying = false;
     this.markInTurn(true);
-    this.push({
-      kind: "user",
-      ts: now(),
-      text,
-      attachments: attachments.length
-        ? attachments.map((a) => ({ name: a.name, mimeType: a.mimeType }))
-        : undefined,
-    });
+    // skipUserPush：排队分支已在入队时记录过用户消息，实际发送时不再重复推（否则台账里同一条发言出现两次）
+    if (!skipUserPush) {
+      this.push({
+        kind: "user",
+        ts: now(),
+        text,
+        attachments: attachments.length
+          ? attachments.map((a) => ({ name: a.name, mimeType: a.mimeType }))
+          : undefined,
+      });
+    }
     if (!this.title) {
       this.title = text.slice(0, 40);
       this.hooks.onStatus(this.info());
@@ -673,11 +731,22 @@ export class HarnessSession {
       this.markInTurn(false);
       this.closeAssistant(res.stopReason);
       this.finishTurn(res.stopReason);
+      this.failStreak = 0;   // 正常收尾：连续失败计数清零
       this.hooks.onTurnEnd(this.id, res.stopReason);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log(`prompt 失败: ${message}`);
       this.markInTurn(false);
+      this.failStreak++;
+      // 容错自愈：同一会话连续失败 ≥2 次 = 底层对话已损坏（模型侧故障），重建而不是反复撞墙
+      if (this.failStreak >= 2 && !this.healLock && !this.stopRequested) {
+        this.failStreak = 0;
+        const healed = await this.selfHeal(message);
+        if (healed) {
+          await this.sendNow(text, attachments);   // 摘要已注入，重试原始请求
+          return;
+        }
+      }
       this.push({ kind: "error", ts: now(), message });
       this.hooks.onUpdate(this.id, { sessionUpdate: "hg_error", message });
       this.finishTurn("error");
@@ -720,6 +789,20 @@ export class HarnessSession {
     ]).catch((err) => {
       this.log(`session/cancel 发送失败（本地已放行，不影响）: ${err instanceof Error ? err.message : String(err)}`);
     });
+  }
+
+  /** hub 回填：本会话碰过这个文件（同文件反复改只更新时间；上限 500 条防膨胀） */
+  recordChange(path: string): void {
+    if (!path) return;
+    this.changedPaths.set(path, new Date().toISOString());
+    if (this.changedPaths.size > 500) {
+      const oldest = [...this.changedPaths.entries()].sort((a, b) => a[1].localeCompare(b[1]))[0];
+      if (oldest) this.changedPaths.delete(oldest[0]);
+    }
+  }
+
+  changedList(): Array<{ path: string; ts: string }> {
+    return [...this.changedPaths.entries()].map(([path, ts]) => ({ path, ts }));
   }
 
   private markInTurn(inTurn: boolean): void {
@@ -828,6 +911,7 @@ export class HarnessSession {
   }
 
   private finishTurn(stopReason: string): void {
+    this.hooks.onPersist(this.record());   // 回合收尾把 changedFiles 一并落盘
     const w = this.turnWaiter;
     this.turnWaiter = undefined;
     if (this.queued.length) void this.flushQueue();
@@ -994,6 +1078,8 @@ export class HarnessSession {
     return best ? { optionId: best.optionId, name: best.name, reason: best.reason } : undefined;
   }
 
+  /** 本会话碰过的文件（hub 实时回填，持久化）——改动面板的数据源，不随审计窗口滚动 */
+  private changedPaths = new Map<string, string>();
   /** 权限决策的上下文：agent 发起工具调用前最近一次「说明自己在干什么」（思考/正文，截断） */
   private recentIntent(): string | undefined {
     for (let i = this.transcript.length - 1; i >= Math.max(0, this.transcript.length - 12); i--) {

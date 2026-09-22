@@ -71,6 +71,8 @@ type Space = {
 /** 每个工作区一个 watcher；按"谁正在跑 turn"把改动归因到具体会话。 */
 export class WorkspaceHub {
   private spaces = new Map<string, Space>();
+  /** 每次文件改动归因后回调（sessionId, path）——session 借此持久化自己的改动清单 */
+  onTouch?: (sessionId: string, path: string) => void;
 
   constructor(private readonly audit: AuditLog, private readonly maxFiles = 3000) {}
 
@@ -153,6 +155,7 @@ export class WorkspaceHub {
         path,
         confidence,
       });
+      this.onTouch?.(m.sessionId, path);
     }
 
     let entry = space.files.get(path);

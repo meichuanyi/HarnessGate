@@ -22,6 +22,25 @@ export async function repoRoot(dir: string): Promise<string | null> {
 }
 
 /**
+ * 工作队前置准备：目录不是 git 仓库就自动初始化（git init + 首个空提交）。
+ * 拆 worktree、按提交算 diff 都需要 HEAD，这些准备工作属于"管理者"的活，不该让人手工做。
+ */
+export async function ensureCrewRepo(dir: string): Promise<void> {
+  if (await repoRoot(dir)) return;
+  await git(dir, ["init"]);
+  await run(
+    "git",
+    [
+      "-C", dir,
+      "-c", "user.email=harnessgate@local",
+      "-c", "user.name=HarnessGate",
+      "commit", "--allow-empty", "-m", "chore: 初始提交（工作队自动初始化）",
+    ],
+    { timeout: 30_000 },
+  );
+}
+
+/**
  * 为一个会话创建隔离工作区（git worktree + 独立分支）。
  * 主工作区完全不受影响；改动落在 worktree 目录里，分支名可在 UI 看到，方便 merge。
  * 返回 null 表示这个工作区无法隔离（不是 git 仓库 / 仓库还没有任何提交）。

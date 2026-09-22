@@ -11,7 +11,7 @@ import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
-import { createWorktree, repoRoot } from "./worktree.ts";
+import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
 import { headOf, branchCommits, changedFiles, currentBranch, mergeBaseWith } from "./crew.ts";
@@ -65,6 +65,7 @@ const audit = new AuditLog(join(DATA_DIR, "fs-audit.log"));
 const store = new SessionStore(join(DATA_DIR, "sessions.json"));
 const hub = new WorkspaceHub(audit);
 const history = new HistorySync(store, join(DATA_DIR, "history-index.json"), undefined, (line) => console.log(`[history] ${line}`));
+hub.onTouch = (sid, path) => live.get(sid)?.recordChange(path);
 const rooms = new RoomManager(join(DATA_DIR, "rooms.json"), audit, {
   onRoom: (room) => broadcast({ type: "room", room }),
   getSession: (id) => live.get(id),
@@ -275,7 +276,8 @@ const http = createServer(async (req, res) => {
     if (sidDl) {
       const sess = live.get(sidDl) ?? store.get(sidDl);
       if (!sess) { res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); res.end("session not found"); return; }
-      const rel2 = (url.searchParams.get("path") ?? "").replace(/^\/+/, "");
+      // path 支持相对/绝对；绝对路径交给 resolve 直接用，isInside 仍限定在工作区内
+      const rel2 = url.searchParams.get("path") ?? "";
       const full2 = resolve(sess.cwd, rel2);
       if (!isInside(sess.cwd, full2) || !existsSync(full2) || !statSync(full2).isFile()) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -663,18 +665,23 @@ wss.on("connection", (ws, req) => {
           const memberInfo: RoomMember[] = [];
           const crewWorkers: Array<{ sessionId: string; harnessId: string; harnessLabel: string; dir: string; branch: string; base?: string }> = [];
 
+          // 主持人/工头是两种模式下都必要的指挥角色，必选（前端默认选中，这里兜底）
+          if (!msg.host?.harnessId && !msg.host?.sessionId) {
+            ws.send(JSON.stringify({ type: "error", message: "请指定主持人/工头——两种模式下它都是必要的指挥角色" } satisfies ServerMsg));
+            return;
+          }
+
           // 工作队模式：每个成员一个独立 git worktree（并行干活不冲突），会话 cwd 就在 worktree 里
           const isCrew = Boolean(msg.crew);
           if (isCrew) {
-            const repo = await repoRoot(cwd);
-            if (!repo) {
-              ws.send(JSON.stringify({ type: "error", message: "工作队模式需要工作目录是一个 git 仓库（有提交）" } satisfies ServerMsg));
+            // 目录没准备好就代劳：不是 git 仓库 → 自动 git init + 首次提交（拆 worktree/算 diff 都需要 HEAD）
+            try {
+              await ensureCrewRepo(cwd);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              ws.send(JSON.stringify({ type: "error", message: `git 仓库自动初始化失败（${cwd}）: ${message}` } satisfies ServerMsg));
               return;
             }
-          } else if (msg.rounds === 0 && !(msg.host?.harnessId || msg.host?.sessionId)) {
-            // 无上限轮数必须有主持人做收敛判定，否则只能手动停止（前端会自动补选，这里兜底 API 调用）
-            ws.send(JSON.stringify({ type: "error", message: "轮数无上限需要主持人做收敛判定——选一个主持人，或改用有限轮数" } satisfies ServerMsg));
-            return;
           }
 
           for (const spec of specs) {

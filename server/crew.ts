@@ -105,10 +105,14 @@ export function parseVerdict(text: string): { verdict: "approve" | "revise"; com
       /* 下一个 */
     }
   }
-  // 兜底：看关键词
+  // 兜底：看关键词（顺序敏感：先否定后肯定——"未通过"比"通过"更该赢）
   const lower = text.toLowerCase();
-  if (/\bapprove\b|通过|同意|没问题/.test(lower)) return { verdict: "approve", comments: text.slice(0, 400) };
-  if (/revise|打回|需要修改|问题/.test(lower)) return { verdict: "revise", comments: text.slice(0, 400) };
+  if (/revise|打回|需要修改|存在问题|有问题|未通过|不通过|有缺陷|\bbug\b|\bfail/.test(lower)) {
+    return { verdict: "revise", comments: text.slice(0, 400) };
+  }
+  if (/\bapprove\b|\blgtm\b|looks good|通过|同意|没问题|符合要求|满足要求|可以合并|实现正确|验收通过/.test(lower)) {
+    return { verdict: "approve", comments: text.slice(0, 400) };
+  }
   return null;
 }
 

@@ -1108,10 +1108,19 @@ export class RoomManager {
       coderLabel: coder?.harnessLabel ?? String(task.assignee),
     });
     this.audit.append({ op: "room.crew.review.start", room: room.id, task: task.id, reviewer: reviewerSessionId });
-    const r = await reviewerSession.promptAndWait(prompt, CREW_TURN_TIMEOUT_MS);
-    const parsed = parseReview(r.text);
+    const CREW_REASK = "你上一条回复没有按要求给出评审结论。请立即只输出一个 JSON 对象（可放在 ```json 围栏里），不要再解释、不要调用工具：{\"verdict\":\"approve\" 或 \"revise\", \"score\":0-10, \"comments\":\"理由\", \"rubric\":[{\"item\":\"验收点\",\"pass\":true|false}]}";
+    let r = await reviewerSession.promptAndWait(prompt, CREW_TURN_TIMEOUT_MS);
+    let parsed = parseReview(r.text);
+    // 有些 harness（实测 zcode）会把评审当任务"开工致辞"然后结束回合——先追讨结论，别急着烧任务重试次数
+    let reasks = 0;
+    while (!parsed && reasks < 2) {
+      reasks++;
+      this.audit.append({ op: "room.crew.review.reask", room: room.id, task: task.id, n: reasks });
+      r = await reviewerSession.promptAndWait(CREW_REASK, CREW_TURN_TIMEOUT_MS);
+      parsed = parseReview(r.text);
+    }
     // 连 verdict 都解析不出 → 按打回处理：垃圾评审不能放行改动（宁可重试/失败，不能假通过）
-    const v = parsed ?? { verdict: "revise" as const, comments: "（评审输出无法解析，按不通过处理）" };
+    const v = parsed ?? { verdict: "revise" as const, comments: `（评审输出无法解析，已追问 ${reasks} 次仍无格式化结论，按不通过处理）` };
     let verdict = v.verdict;
     if (verdict === "approve" && v.score != null && v.score < CREW_APPROVE_SCORE) {
       verdict = "revise";
