@@ -86,6 +86,13 @@
         "agent-ops",
         "steward"
       ]
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek Harness",
+      "cmd": "/usr/local/bin/deepseek-acp-wrapper",
+      "args": [],
+      "note": "经 dsh-acp 桥接 DeepSeek Harness（dsh）。API key 放 /root/.harnessgate/deepseek-api-key（600，一行；web Models 页配置的 key 各 profile 不互通，所以走这个文件）"
     }
   ]
 }

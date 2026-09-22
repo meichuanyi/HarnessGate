@@ -9,3 +9,4 @@ vscode/out-test/
 vscode/.vscode-test/
 *.vsix
 vscode/src/generated/
+.sessions/

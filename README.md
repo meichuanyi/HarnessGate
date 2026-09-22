@@ -79,6 +79,7 @@ ACP agent 干活时会请求授权。HarnessGate 提供三档：
 - 文件读写、终端、权限全部在服务器执行落地，浏览器/插件不接触任何文件。
 - 所有敏感动作进 JSONL 台账（`~/.harnessgate/fs-audit.log`）：会话操作、权限请求（含自动决策的理由与标记）、文件改动（按"谁正在跑 turn"归因，标 exact/ambiguous/idle 置信度）、agent 日志。
 - 默认关闭 token 认证（单人自用取舍）——**任何能访问端口的人都能以服务器权限驱动 agent**。对外暴露请开 `HG_AUTH=on` 或挂认证反代。
+- 开认证后的网页体验：**登录门**——首次打开弹全屏卡片输 token（`~/.harnessgate/token`），输错有提示可重试，验证通过自动进入；**token 记在本设备（localStorage），之后免填**。也支持一键链接 `http://<host>/?token=<token>`（打开即登录，token 存住后自动从地址栏抹掉，不留历史）。注意「验证通过」以收到 hello 为准——服务端先完成 WS 握手再拒绝未授权连接（4401），不能拿 onopen 当成功。
 
 ## 配置
 
