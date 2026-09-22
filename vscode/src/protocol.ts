@@ -33,6 +33,9 @@ export type SessionInfo = {
   worktree?: { dir: string; branch: string; baseCwd: string };
   /** 一个 turn 正在跑（面板据此显示「打断」按钮） */
   inTurn?: boolean;
+  /** 权限自动决策档位（与网页版对齐；房间会话恒为 all 不可改） */
+  autoApprove?: "off" | "readonly" | "all";
+  roomId?: string;
 };
 
 export type HarnessAvailability = {
@@ -71,10 +74,80 @@ export type DirListing = {
   error?: string;
 };
 
+/* ---------- 圆桌（room）：与服务端 server/room.ts 对齐的子集 ---------- */
+
+export type RoomTurn = {
+  round: number;
+  sessionId: string;
+  harnessId: string;
+  harnessLabel: string;
+  prompt: string;
+  reply: string;
+  stopReason: string;
+  ts: string;
+  /** 主持人发言（开场/轮间小结/最终汇总）横跨整行 */
+  kind?: "member" | "host" | "review";
+  hostRole?: "opening" | "round-summary" | "final";
+  crewTaskId?: string;
+  score?: number;
+  scoreNote?: string;
+};
+
+export type RoomTopic = {
+  id: string;
+  topic: string;
+  rounds: number;
+  mode: "parallel" | "sequential";
+  converge?: boolean;
+  tournament?: boolean;
+  convergedRound?: number;
+  status: "idle" | "running" | "done" | "error" | "stopped";
+  turns: RoomTurn[];
+  /** 正在进行的轮次（0 = 主持人开场阶段） */
+  currentRound?: number;
+  createdAt: string;
+  error?: string;
+};
+
+export type RoomMember = { sessionId: string; harnessId: string; harnessLabel: string };
+
+export type CrewTaskLite = {
+  id: string;
+  title: string;
+  status: string;
+  assignee?: string;
+  files?: string[];
+  summary?: string;
+  review?: { reviewer: string; verdict: string; score?: number; comments: string };
+};
+
+export type Room = {
+  id: string;
+  topic: string;
+  members: string[];
+  memberInfo?: RoomMember[];
+  host?: { sessionId: string; harnessId: string; harnessLabel?: string } & Record<string, unknown>;
+  cwd?: string;
+  rounds: number;
+  mode: "parallel" | "sequential";
+  converge?: boolean;
+  tournament?: boolean;
+  writeAllowed: boolean;
+  status: "idle" | "running" | "done" | "error" | "stopped";
+  turns: RoomTurn[];
+  topics?: RoomTopic[];
+  /** 工作队模式：任务板（简化视图，完整面板在网页版） */
+  crew?: { phase: string; tasks: CrewTaskLite[]; mergeLines?: string[]; conflicts?: Array<{ branch: string }> } & Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
+};
+
 export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
+  | { type: "set-auto-approve"; sessionId: string; level: "off" | "readonly" | "all" }
   | { type: "config"; sessionId: string; configId: string; value: string }
   | { type: "prompt"; sessionId: string; text: string }
   | { type: "permission"; sessionId: string; requestId: string; optionId: string }
@@ -86,6 +159,22 @@ export type ClientMsg =
   | { type: "sync-history"; harnessId?: string; force?: boolean }
   | { type: "transcript"; sessionId: string }
   | { type: "dirs"; reqId: string; input: string; base?: string }
+  | {
+      type: "room-start";
+      cwd: string;
+      harnessIds: string[];
+      topic: string;
+      rounds: number;
+      mode?: "parallel" | "sequential";
+      writeAllowed?: boolean;
+      host?: { harnessId?: string; opening?: boolean; roundSummary?: boolean; finalSummary?: boolean };
+      memberConfigs?: Record<string, Array<{ configId: string; value: string }>>;
+    }
+  | { type: "room-topic"; roomId: string; topic: string; rounds: number; mode?: "parallel" | "sequential" }
+  | { type: "room-mode"; roomId: string; mode: "parallel" | "sequential" }
+  | { type: "room-delete"; roomId: string; deleteSessions?: boolean }
+  | { type: "room-run"; roomId: string }
+  | { type: "room-stop"; roomId: string }
   | { type: "list" };
 
 export type ServerMsg =
@@ -94,6 +183,7 @@ export type ServerMsg =
       harnesses: HarnessAvailability[];
       sessions: SessionInfo[];
       defaultCwd: string;
+      rooms?: Room[];
       providers?: Array<{ id: string; label: string }>;
     }
   | { type: "session"; session: SessionInfo }
@@ -101,6 +191,8 @@ export type ServerMsg =
   | { type: "turn_end"; sessionId: string; stopReason: string }
   | { type: "permission"; sessionId: string; requestId: string; title: string; options: PermissionOption[] }
   | { type: "transcript"; sessionId: string; entries: TranscriptEntry[] }
+  | { type: "rooms"; rooms: Room[] }
+  | { type: "room"; room: Room }
   | { type: "dirs" } & DirListing
   | { type: "history"; providers: Array<{ id: string; label: string }>; summaries?: Array<{ label: string; imported: number; updated: number; skipped: number }> }
   | { type: "log"; sessionId: string; line: string }

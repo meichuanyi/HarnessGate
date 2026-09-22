@@ -60,7 +60,7 @@ export async function run(): Promise<void> {
   }
 
   // ③ 历史会话：挑一个归档会话，通过协议拿 transcript，确认有内容
-  const ext = vscode.extensions.getExtension("harnessgate.harnessgate");
+  const ext = vscode.extensions.getExtension("meichuan.harnessgate");
   const api = (await ext!.activate()) as unknown as {
     store: { sessions: Map<string, { id: string; status: string; live: boolean; title?: string }> };
     client: {

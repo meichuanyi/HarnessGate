@@ -3,7 +3,7 @@ import type { HarnessGateApi } from "../../extension.ts";
 
 /** 打包产物（dist/extension.js）加载后能否连上服务 */
 export async function run(): Promise<void> {
-  const ext = vscode.extensions.getExtension("harnessgate.harnessgate");
+  const ext = vscode.extensions.getExtension("meichuan.harnessgate");
   if (!ext) throw new Error("插件未被加载");
   const api = (await ext.activate()) as HarnessGateApi;
   if (!api?.store) throw new Error("activate 没有导出 API");

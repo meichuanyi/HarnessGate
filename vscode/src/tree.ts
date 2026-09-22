@@ -16,7 +16,12 @@ export class SessionNode {
 
 export class InfoNode {
   readonly kind = "info";
-  constructor(readonly label: string, readonly icon?: string) {}
+  constructor(
+    readonly label: string,
+    readonly icon?: string,
+    /** 点击节点执行的命令（如配置服务器地址） */
+    readonly command?: string,
+  ) {}
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -32,6 +37,10 @@ const STATUS_LABEL: Record<string, string> = {
 export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
+  private allCollapsed = false;
+  /** VS Code 按节点 id 记住展开状态：同样的 id 刷新时 collapsibleState 会被忽略。
+      折叠/展开按钮点击时换一代 id，强制 VS Code 重建节点并应用新状态。 */
+  private gen = 0;
 
   constructor(
     private readonly store: Store,
@@ -44,11 +53,27 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     this.emitter.fire();
   }
 
+  /** 一键折叠 / 展开所有 harness（树标题栏按钮） */
+  collapseAll(): void {
+    this.allCollapsed = true;
+    this.gen++;
+    this.emitter.fire();
+  }
+
+  expandAll(): void {
+    this.allCollapsed = false;
+    this.gen++;
+    this.emitter.fire();
+  }
+
   getTreeItem(node: TreeNode): vscode.TreeItem {
     if (node.kind === "harness") {
       const h = node.harness;
-      const item = new vscode.TreeItem(h.label, vscode.TreeItemCollapsibleState.Expanded);
-      item.id = `h:${h.id}`;
+      const item = new vscode.TreeItem(
+        h.label,
+        this.allCollapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded,
+      );
+      item.id = `h:${h.id}#${this.gen}`;
       item.contextValue = "harness";
       item.description = h.available ? undefined : "未就绪";
       item.tooltip = new vscode.MarkdownString(
@@ -75,7 +100,7 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     if (node.kind === "session") {
       const s = node.session;
       const item = new vscode.TreeItem(s.title || `(空会话 #${s.id})`, vscode.TreeItemCollapsibleState.None);
-      item.id = `s:${s.id}`;
+      item.id = `s:${s.id}#${this.gen}`;
       item.contextValue = s.live ? "session-live" : s.resumable ? "session-saved" : "session";
       item.description = `${STATUS_LABEL[s.status] ?? s.status} · ${s.cwd}`;
       item.tooltip = new vscode.MarkdownString(
@@ -102,13 +127,18 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
     item.contextValue = "info";
     if (node.icon) item.iconPath = new vscode.ThemeIcon(node.icon);
+    if (node.command) item.command = { command: node.command, title: node.label };
     return item;
   }
 
   getChildren(node?: TreeNode): TreeNode[] {
     if (!node) {
       if (this.state() !== "connected") {
-        return [new InfoNode("未连接服务（点标题栏的插头图标重连）", "plug")];
+        // 未连接时给出路：远程用户第一件事就是改服务地址
+        return [
+          new InfoNode("未连接服务 · 配置服务器地址…", "settings-gear", "harnessgate.configServer"),
+          new InfoNode("重新连接", "plug", "harnessgate.connect"),
+        ];
       }
       const list = this.store.harnesses
         .filter((h) => !h.blocked)

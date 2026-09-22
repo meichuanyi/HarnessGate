@@ -1,9 +1,9 @@
 {
   "name": "harnessgate",
   "displayName": "HarnessGate",
-  "description": "在你的服务器上远程驱动多个编码 agent（harness）：连 HarnessGate 服务，agent 与文件都在服务器上",
-  "version": "0.1.0",
-  "publisher": "harnessgate",
+  "description": "HarnessGate 的 VS Code 客户端（瘦客户端，本机无需装任何 agent CLI）。需要先在服务器上安装并运行后端 HarnessGate：git clone 后 npm install && npm start（监听 9830），插件里填 ws://<服务器IP>:9830/ws 即可远程驱动 OpenCode/Claude Code/Codex/ZCode 等多个编码 agent",
+  "version": "0.3.8",
+  "publisher": "meichuan",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
@@ -48,9 +48,24 @@
         "icon": "$(plug)"
       },
       {
+        "command": "harnessgate.configServer",
+        "title": "HarnessGate: 配置服务器地址…",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "harnessgate.refresh",
         "title": "HarnessGate: 刷新",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "harnessgate.collapseAll",
+        "title": "HarnessGate: 折叠全部 harness",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "harnessgate.expandAll",
+        "title": "HarnessGate: 展开全部 harness",
+        "icon": "$(expand-all)"
       },
       {
         "command": "harnessgate.newSession",
@@ -58,8 +73,13 @@
         "icon": "$(add)"
       },
       {
+        "command": "harnessgate.rooms",
+        "title": "HarnessGate: 圆桌会议",
+        "icon": "$(organization)"
+      },
+      {
         "command": "harnessgate.openInBrowser",
-        "title": "HarnessGate: 在浏览器打开（圆桌/工作队/工作区）",
+        "title": "HarnessGate: 在浏览器打开（工作区等完整版）",
         "icon": "$(browser)"
       },
       {
@@ -99,7 +119,7 @@
           "group": "navigation@1"
         },
         {
-          "command": "harnessgate.openInBrowser",
+          "command": "harnessgate.rooms",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@2"
         },
@@ -112,6 +132,21 @@
           "command": "harnessgate.refresh",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@4"
+        },
+        {
+          "command": "harnessgate.configServer",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@5"
+        },
+        {
+          "command": "harnessgate.collapseAll",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@6"
+        },
+        {
+          "command": "harnessgate.expandAll",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@7"
         }
       ],
       "view/item/context": [
@@ -143,7 +178,7 @@
         "harnessgate.url": {
           "type": "string",
           "default": "ws://127.0.0.1:9830/ws",
-          "description": "HarnessGate 服务的 WebSocket 地址（形如 ws://主机:9830/ws）"
+          "description": "HarnessGate 服务的 WebSocket 地址。服务在远程机器时改成 ws://<服务器IP>:9830/ws（如 ws://192.168.1.100:9830/ws）；公网建议套 wss 或走 Tailscale。也可以用命令「HarnessGate: 配置服务器地址…」一步步填"
         },
         "harnessgate.token": {
           "type": "string",
@@ -177,5 +212,9 @@
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meichuanyi/HarnessGate.git"
   }
 }

@@ -3,7 +3,9 @@ import { GateClient } from "./client.ts";
 import { Store } from "./store.ts";
 import { HarnessTreeProvider } from "./tree.ts";
 import { ChatPanel } from "./chat.ts";
-import type { HarnessAvailability, SessionInfo } from "./protocol.ts";
+import { RoomPanel } from "./room-panel.ts";
+import { promptCwd } from "./cwd-input.ts";
+import type { HarnessAvailability, Room, SessionInfo } from "./protocol.ts";
 
 let output: vscode.OutputChannel;
 let client: GateClient;
@@ -16,6 +18,10 @@ export type HarnessGateApi = {
   state: () => string;
   openChat: (sessionId: string) => void;
   createSession: (harnessId: string, cwd: string) => Promise<SessionInfo | undefined>;
+  /** 对话面板的渲染回执（大会话加载回归用）；面板没开过或 webview 还没渲染完则 undefined */
+  chatRenderInfo: (sessionId: string) => { count: number; start: number; total: number; ms: number } | undefined;
+  /** 圆桌面板的渲染回执 */
+  roomsRenderInfo: () => { rooms: number; ms: number } | undefined;
 };
 
 export function activate(context: vscode.ExtensionContext): HarnessGateApi {
@@ -30,6 +36,8 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
   const tree = new HarnessTreeProvider(store, () => client.getState());
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("harnessgate.harnesses", tree),
+    vscode.commands.registerCommand("harnessgate.collapseAll", () => tree.collapseAll()),
+    vscode.commands.registerCommand("harnessgate.expandAll", () => tree.expandAll()),
     vscode.commands.registerCommand("harnessgate.connect", () => {
       client.connect();
       output.show(true);
@@ -48,15 +56,46 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     }),
     vscode.commands.registerCommand("harnessgate.newSession", () => newSession()),
     vscode.commands.registerCommand("harnessgate.openInBrowser", async () => {
-      // 圆桌/工作队/工作区面板只在网页版有；把 ws://host:port/ws 换成 http://host:port 直接打开
+      // 工作区面板等网页版独有功能；圆桌已有原生面板（harnessgate.rooms）
       const cfg = vscode.workspace.getConfiguration("harnessgate");
       const wsUrl = String(cfg.get("url") ?? "ws://127.0.0.1:9830/ws");
       const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://").replace(/\/ws\/?$/, "").replace(/\/$/, "");
       const withToken = String(cfg.get("token") ?? "");
       void vscode.env.openExternal(vscode.Uri.parse(withToken ? `${httpUrl}/?token=${encodeURIComponent(withToken)}` : httpUrl));
     }),
-    vscode.commands.registerCommand("harnessgate.openChat", (sessionId?: string) => {
-      if (sessionId) ChatPanel.show(sessionId, client, store, (l) => output.appendLine(l));
+    vscode.commands.registerCommand("harnessgate.configServer", async () => {
+      const cfg = vscode.workspace.getConfiguration("harnessgate");
+      const url = await vscode.window.showInputBox({
+        title: "HarnessGate 服务地址",
+        value: cfg.get<string>("url") ?? "ws://127.0.0.1:9830/ws",
+        prompt: "HarnessGate 跑在哪台机器就填哪台：ws://IP:9830/ws。本机转发/局域网/公网（建议 wss 或 Tailscale）都是这个格式",
+        placeHolder: "ws://192.168.1.100:9830/ws",
+        validateInput: (v) => (/^wss?:\/\/\S+/.test(v.trim()) ? undefined : "需要 ws:// 或 wss:// 开头，例如 ws://192.168.1.100:9830/ws"),
+        ignoreFocusOut: true,
+      });
+      if (url === undefined) return;
+      const token = await vscode.window.showInputBox({
+        title: "访问 token（可选）",
+        value: cfg.get<string>("token") ?? "",
+        prompt: "服务端开了认证（HG_AUTH=on）时必填，内容见服务器上的 ~/.harnessgate/token；没开认证直接回车",
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (token === undefined) return;
+      await cfg.update("url", url.trim(), vscode.ConfigurationTarget.Global);
+      await cfg.update("token", token.trim(), vscode.ConfigurationTarget.Global);
+      void vscode.window.setStatusBarMessage(`HarnessGate: 已保存 ${url.trim()}`, 4000);
+      // 配置没变化时 onDidChangeConfiguration 不会触发，手动兜底重连
+      client.connect();
+    }),
+    vscode.commands.registerCommand("harnessgate.rooms", () => {
+      RoomPanel.show(client, store, (l) => output.appendLine(l));
+    }),
+    vscode.commands.registerCommand("harnessgate.openChat", (arg?: string | { session?: SessionInfo; id?: string }) => {
+      // 树行点击传的是 id 字符串；内联按钮/右键菜单（view/item/context）传的是树节点对象——两种都要接
+      const id = typeof arg === "string" ? arg : (arg?.session?.id ?? arg?.id);
+      if (id) ChatPanel.show(String(id), client, store, (l) => output.appendLine(l));
+      else void vscode.window.showWarningMessage("请从侧栏的会话上打开对话");
     }),
     vscode.commands.registerCommand("harnessgate.resumeSession", (node?: { session?: SessionInfo; id?: string }) => {
       const id = node?.session?.id ?? node?.id;
@@ -79,16 +118,33 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     }),
   );
 
+  let errNotified = false;   // 重试循环里别反复弹窗，一个会话最多提示一次（连上后复位）
   client.on("state", (s: string) => {
     tree.refresh();
     if (s === "error") {
       const err = client.getLastError() ?? "未知错误";
       output.appendLine(`连接失败: ${err}`);
+      if (!errNotified) {
+        errNotified = true;
+        void vscode.window
+          .showWarningMessage(`HarnessGate 连不上：${err}`, "配置服务器地址", "重试连接")
+          .then((pick) => {
+            if (pick === "配置服务器地址") void vscode.commands.executeCommand("harnessgate.configServer");
+            else if (pick === "重试连接") client.connect();
+          });
+      }
     }
+    if (s === "connected") errNotified = false;
   });
-  client.on("hello", (msg: { harnesses: HarnessAvailability[]; sessions: SessionInfo[]; defaultCwd: string }) => {
-    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "");
-    output.appendLine(`已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话`);
+  client.on("hello", (msg: { harnesses: HarnessAvailability[]; sessions: SessionInfo[]; defaultCwd: string; rooms?: Room[] }) => {
+    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms);
+    output.appendLine(`已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话，${msg.rooms?.length ?? 0} 个圆桌`);
+  });
+  client.on("rooms", (msg: { rooms?: Room[] }) => {
+    if (msg.rooms) store.setRooms(msg.rooms);
+  });
+  client.on("room", (msg: { room?: Room }) => {
+    if (msg.room) store.upsertRoom(msg.room);
   });
   client.on("session", (msg: { session: SessionInfo }) => {
     if (msg.session) store.upsertSession(msg.session);
@@ -117,6 +173,8 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     client,
     state: () => client.getState(),
     openChat: (sessionId: string) => ChatPanel.show(sessionId, client, store, (l) => output.appendLine(l)),
+    chatRenderInfo: (sessionId: string) => ChatPanel.renderInfoOf(sessionId),
+    roomsRenderInfo: () => RoomPanel.lastRenderInfo,
     createSession: async (harnessId: string, cwd: string) => {
       if (!client.send({ type: "create", harnessId, cwd })) return undefined;
       return waitForNewSession(harnessId, 30_000);
@@ -151,7 +209,7 @@ async function newSession(): Promise<void> {
   if (!picked) return;
 
   const saved = vscode.workspace.getConfiguration("harnessgate").get<string>("defaultCwd") || "";
-  const cwd = await promptCwd(saved || store.defaultCwd);
+  const cwd = await promptCwd(client, saved || store.defaultCwd);
   if (cwd === undefined) return;
 
   if (!client.send({ type: "create", harnessId: picked.id, cwd })) {
@@ -164,40 +222,7 @@ async function newSession(): Promise<void> {
   else void vscode.window.showWarningMessage("会话创建超时，看看侧栏的会话列表");
 }
 
-/** 工作目录输入：服务器上的路径，支持边打边列目录（复用服务端的 dirs 补全） */
-async function promptCwd(initial: string): Promise<string | undefined> {
-  const input = vscode.window.createInputBox();
-  input.title = "工作目录（服务器上的路径）";
-  input.placeholder = "/path/on/server";
-  input.value = initial;
-  input.prompt = "输入片段会列出子目录；不存在的目录会在创建时自动建立";
-  let reqId = "";
-  const req = () => {
-    reqId = Math.random().toString(36).slice(2);
-    client.send({ type: "dirs", reqId, input: input.value.trim() });
-  };
-  const onDirs = (msg: { reqId: string; dir: string; exists: boolean; isDir: boolean; entries: Array<{ name: string; path: string; git: boolean }>; error?: string }) => {
-    if (msg.reqId !== reqId) return;
-    if (msg.error) input.prompt = `读不了这个目录：${msg.error}`;
-    else if (!msg.exists) input.prompt = "目录不存在 · 回车将创建";
-    else if (!msg.isDir) input.prompt = "这是文件，不是目录";
-    else input.prompt = `${msg.entries.length} 个子目录 · 回车在该目录新建会话`;
-  };
-  client.on("dirs", onDirs);
-  input.onDidChangeValue(() => {
-    if (input.value.trim().length >= 1) req();
-  });
-  req();
-
-  const result = await new Promise<string | undefined>((resolve) => {
-    input.onDidAccept(() => resolve(input.value.trim()));
-    input.onDidHide(() => resolve(undefined));
-    input.show();
-  });
-  client.off("dirs", onDirs);
-  input.dispose();
-  return result;
-}
+/** 工作目录输入（带服务端目录补全）在 cwd-input.ts，与圆桌面板共用 */
 
 async function waitForNewSession(harnessId: string, timeoutMs: number): Promise<SessionInfo | undefined> {
   const known = new Set(store.sessionsOf(harnessId).map((s) => s.id));

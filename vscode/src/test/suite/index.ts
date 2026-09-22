@@ -14,7 +14,7 @@ export async function run(): Promise<void> {
   };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const ext = vscode.extensions.getExtension("harnessgate.harnessgate");
+  const ext = vscode.extensions.getExtension("meichuan.harnessgate");
   check("插件被识别", Boolean(ext), ext?.id ?? "未找到");
   const api = (await ext?.activate()) as HarnessGateApi | undefined;
   check("插件激活成功", Boolean(ext?.isActive));
@@ -26,6 +26,10 @@ export async function run(): Promise<void> {
     "harnessgate.refresh",
     "harnessgate.newSession",
     "harnessgate.openChat",
+    "harnessgate.rooms",
+    "harnessgate.configServer",
+    "harnessgate.collapseAll",
+    "harnessgate.expandAll",
     "harnessgate.syncHistory",
     "harnessgate.deleteSession",
   ]) {
@@ -46,6 +50,72 @@ export async function run(): Promise<void> {
   check("服务端默认目录已同步", Boolean(api?.store.defaultCwd), api?.store.defaultCwd ?? "");
 
   // 树视图 provider 的数据（直接调 provider 拿不到实例，这里用 store 语义等价验证）
+
+  // ---- 圆桌：原生面板（回归：以前只有「在浏览器打开」按钮） ----
+  for (let i = 0; i < 20 && !(api?.store.roomsList().length); i++) await sleep(500);
+  const rooms0 = api?.store.roomsList() ?? [];
+  check("圆桌列表已同步", rooms0.length > 0, `${rooms0.length} 个`);
+  let roomsPanelOk = true;
+  try {
+    await vscode.commands.executeCommand("harnessgate.rooms");
+  } catch (err) {
+    roomsPanelOk = false;
+    console.log("  ✘ 圆桌面板打开失败:", err);
+  }
+  check("圆桌面板能打开", roomsPanelOk);
+  {
+    let rinfo: { rooms: number; ms: number } | undefined;
+    for (let i = 0; i < 30 && !rinfo; i++) {
+      await sleep(400);
+      rinfo = api?.roomsRenderInfo();
+    }
+    check("圆桌面板完成渲染", Boolean(rinfo && rinfo.rooms > 0), rinfo ? `${rinfo.rooms} 个圆桌 · ${rinfo.ms}ms` : "12s 无回执");
+  }
+
+  // ---- 大会话加载回归（用户报告：800 条历史会话一直卡「加载中」） ----
+  // 只挑归档（saved）会话：曾按「最近活跃」挑选，结果选中了用户正在用的 live 会话，
+  // 测完 close 把正在跑的回合连同 harness 进程一起杀掉（表现为 ACP connection closed）。
+  {
+    const big = await new Promise<{ id: string; total: number } | undefined>((resolve) => {
+      const cands = [...(api?.store.sessions.values() ?? [])]
+        .filter((s) => !s.live && s.status === "saved")
+        .sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+      let i = 0;
+      let waiting = "";
+      const onT = (m: unknown) => {
+        const mm = m as { type: string; sessionId: string; entries?: Array<Record<string, unknown>> };
+        if (mm.type !== "transcript" || mm.sessionId !== waiting) return;
+        const n = (mm.entries ?? []).length;
+        if (n > 300) resolve({ id: mm.sessionId, total: n });
+        else step();   // 这个不够大，看下一个
+      };
+      const step = () => {
+        const s = cands[i++];
+        if (!s) { api!.client.off("transcript", onT); resolve(undefined); return; }
+        waiting = s.id;
+        api!.client.send({ type: "transcript", sessionId: s.id });
+      };
+      api!.client.on("transcript", onT);
+      step();
+      setTimeout(() => { api!.client.off("transcript", onT); resolve(undefined); }, 45000);
+    });
+    check("找到大会话（>300 条）", Boolean(big), big ? `#${big.id.slice(0, 8)} ${big.total} 条` : "没有，跳过");
+    if (big) {
+      api!.openChat(big.id);
+      let info: { count: number; start: number; total: number; ms: number } | undefined;
+      for (let i = 0; i < 60 && !info; i++) {
+        await sleep(500);
+        info = api!.chatRenderInfo(big.id);
+      }
+      check("大会话面板完成渲染（不再卡加载中）", Boolean(info), info ? `${info.count}/${info.total} 条 · ${info.ms}ms` : "30s 无回执");
+      check("首屏只发窗口内条目", Boolean(info && info.count <= 150 && info.count < info.total), info ? `count=${info.count}` : "");
+      check("窗口外还有更早条目（可分页载入）", Boolean(info && info.start > 0), info ? `start=${info.start}` : "");
+      // 打开归档会话会触发 resume（拉起 agent），测完关掉，别留进程
+      api!.client.send({ type: "close", sessionId: big.id });
+      await sleep(1500);
+    }
+  }
+
   // 优先用实测稳定的 harness（opencode 的免费模型偶发无限慢，不能让测试陪它赌）
   const prefer = ["zcode", "hermes", "claude", "codex"];
   const pick = prefer.map((id) => usable.find((h) => h.id === id)).find(Boolean) ?? usable[0];

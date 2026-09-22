@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
-    launchArgs: ["--no-sandbox", "--disable-gpu", "--disable-workspace-trust"],
+    launchArgs: ["--no-sandbox", "--disable-gpu", "--disable-workspace-trust", "--remote-debugging-port=9222"],
   });
 }
 main().catch((err) => {
