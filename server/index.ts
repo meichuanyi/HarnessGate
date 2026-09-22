@@ -6,7 +6,7 @@ import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { loadRegistry, availability, loadTrust, loadProbe } from "./registry.ts";
+import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyOverrides, saveOverrides } from "./registry.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle } from "./session.ts";
@@ -35,6 +35,12 @@ const TOKEN = process.env.HG_TOKEN ?? readFileSync(TOKEN_FILE, "utf8").trim();
 const AUTH_OFF = ["off", "none", "0", "false", "no"].includes((process.env.HG_AUTH ?? "").toLowerCase());
 
 const registry = loadRegistry(join(ROOT, "harness.json"));
+// UI 里按 harness 配置的运行时覆盖（代理等）：对手写与导入条目都生效，持久化在 harness.overrides.json
+const OVERRIDES_FILE = join(ROOT, "harness.overrides.json");
+// 基线代理（harness.json/registry 的原值）：UI 清除覆盖时恢复到它，而不是保留上一次设置的值
+const baseProxy = new Map(registry.harnesses.map((h) => [h.id, h.proxy]));
+const overrides = loadOverrides(OVERRIDES_FILE);
+applyOverrides(registry, overrides);
 const trust = loadTrust(join(ROOT, "harness.trust.json"));
 const probeFile = join(DATA_DIR, "probe.json");
 let probe = loadProbe(probeFile);
@@ -997,6 +1003,35 @@ wss.on("connection", (ws, req) => {
         case "set-auto-approve": {
           const session = live.get(msg.sessionId);
           if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "harness-proxy": {
+          // UI 里按 harness 配置代理：立即更新内存 spec（对之后新建的会话生效）并持久化覆盖文件
+          const spec = registry.harnesses.find((h) => h.id === msg.id);
+          if (!spec) {
+            ws.send(JSON.stringify({ type: "error", message: `未知 harness: ${msg.id}` } satisfies ServerMsg));
+            break;
+          }
+          const proxy = String(msg.proxy ?? "").trim();
+          if (proxy && !/^(https?|socks5):\/\//.test(proxy)) {
+            ws.send(JSON.stringify({ type: "error", message: "代理地址需以 http:// / https:// / socks5:// 开头" } satisfies ServerMsg));
+            break;
+          }
+          const ov: { proxy?: string } = { ...(overrides[msg.id] ?? {}) };
+          if (proxy) ov.proxy = proxy; else delete ov.proxy;
+          overrides[msg.id] = ov;
+          // 直接设 spec：设置 → 覆盖值；清除 → 恢复基线（harness.json 原值）
+          spec.proxy = ov.proxy ?? baseProxy.get(msg.id) ?? undefined;
+          try {
+            saveOverrides(OVERRIDES_FILE, overrides);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: `覆盖文件写入失败: ${err instanceof Error ? err.message : String(err)}` } satisfies ServerMsg));
+            break;
+          }
+          audit.append({ op: "harness.proxy.set", harness: msg.id, proxy: proxy || "(直连)" });
+          console.log(`[harness] ${msg.id} 代理 → ${proxy || "(直连)"}（对之后新建的会话生效）`);
+          broadcast(helloPayload());
           break;
         }
 

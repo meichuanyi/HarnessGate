@@ -1271,6 +1271,7 @@ function renderHarnessGrid() {
               <div class="top">
                 <span class="nm">${esc(h.label)}</span>
                 <span class="badge ${h.registered ? "reg" : ""}">${h.registered ? "注册" : "内置"}</span>
+                ${h.proxy ? '<span class="badge reg" title="此 harness 的流量走配置的代理">代理</span>' : ""}
                 ${h.available ? "" : '<span class="badge warn">不可用</span>'}
               </div>
               <div class="desc">${esc(h.note || "（无说明）")}</div>
@@ -1328,6 +1329,13 @@ function renderSessionList() {
       <button class="primary" id="startBtn">启动</button>
     </div>
 
+    <div class="newbox" style="padding:9px 12px">
+      <span class="cfgl">🌐 代理（对此 harness 之后新建的会话生效；留空 = 恢复默认配置）</span>
+      <input type="text" id="hProxy" value="${esc(h.proxy || "")}" placeholder="http://127.0.0.1:7890 或 socks5://…" style="flex:1;min-width:220px" />
+      <button class="mini primary" id="hProxySave">保存</button>
+      ${h.proxy ? '<button class="mini ghost" id="hProxyClear" title="清除代理覆盖，恢复默认配置">清除</button>' : ""}
+    </div>
+
     <div class="rows">
       ${list.map((s) => `
         <div class="row" data-sid="${s.id}">
@@ -1358,6 +1366,19 @@ function renderSessionList() {
     const vars = agentSel ? { HG_OPENCLAW_AGENT: agentSel.value } : undefined;
     send({ type: "create", harnessId: h.id, cwd, isolate: $("newIso")?.checked || false, vars });
   };
+
+  // 代理配置：保存/清除 → 服务端持久化到 harness.overrides.json 并广播刷新
+  const saveProxy = (v) => {
+    send({ type: "harness-proxy", id: h.id, proxy: v.trim() });
+    showToast(v.trim() ? `代理已保存：${v.trim()}（之后新建的会话生效）` : "代理已清除，恢复直连", 3500);
+  };
+  $("hProxySave").onclick = () => {
+    const v = $("hProxy").value.trim();
+    if (v && !/^(https?|socks5):\/\//.test(v)) { showToast("⚠ 代理地址需以 http:// / https:// / socks5:// 开头", 4000); return; }
+    saveProxy(v);
+  };
+  const clr = $("hProxyClear");
+  if (clr) clr.onclick = () => saveProxy("");
 
   root.querySelectorAll(".row").forEach((el) => {
     const id = el.dataset.sid;

@@ -44,6 +44,7 @@ export type HarnessAvailability = {
   available: boolean;
   binPath: string | null;
   note?: string;
+  proxy?: string;
   version?: string;
   description?: string;
   tier?: "vendor" | "known" | "unknown";

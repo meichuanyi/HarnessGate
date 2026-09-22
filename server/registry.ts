@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync, readdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
@@ -108,6 +108,33 @@ export function trustOf(spec: HarnessSpec, trust: ReturnType<typeof loadTrust>):
   return { tier: spec.source === "acp-registry" ? "unknown" : "vendor", reason: spec.source === "acp-registry" ? "社区提交，来源未经核实：星数极低或找不到公开仓库" : "本机手工配置" };
 }
 
+/** UI 里按 harness 配置的运行时覆盖（当前只有代理）。与 harness.json / registry.json 分离存储，
+ *  对两类条目都生效；空字符串 = 清除（直连）。 */
+export type HarnessOverrides = Record<string, { proxy?: string }>;
+
+export function loadOverrides(file: string): HarnessOverrides {
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    return raw.overrides ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export function applyOverrides(reg: Registry, ov: HarnessOverrides): void {
+  for (const h of reg.harnesses) {
+    const o = ov[h.id];
+    if (!o) continue;
+    if (o.proxy !== undefined) h.proxy = o.proxy || undefined;
+  }
+}
+
+export function saveOverrides(file: string, ov: HarnessOverrides): void {
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ overrides: ov }, null, 1));
+  renameSync(tmp, file);
+}
+
 export type ProbeConfigOption = {
   id: string;
   name: string;
@@ -208,6 +235,7 @@ export function availability(spec: HarnessSpec, trust?: ReturnType<typeof loadTr
     available,
     binPath,
     note,
+    proxy: spec.proxy,
     experimental: spec.experimental,
     source: spec.source,
     version: spec.version,

@@ -35,7 +35,13 @@ function loadMerged() {
   const importedFile = join(ROOT, "harness.registry.json");
   const imported = existsSync(importedFile) ? JSON.parse(readFileSync(importedFile, "utf8")).harnesses ?? [] : [];
   const ids = new Set(curated.harnesses.map((h) => h.id));
-  return [...curated.harnesses, ...imported.filter((h) => !ids.has(h.id))];
+  // UI 里的运行时覆盖（代理等）：探活与真实会话行为保持一致
+  const ovFile = join(ROOT, "harness.overrides.json");
+  const ov = existsSync(ovFile) ? JSON.parse(readFileSync(ovFile, "utf8")).overrides ?? {} : {};
+  return [...curated.harnesses, ...imported.filter((h) => !ids.has(h.id))].map((h) => {
+    const o = ov[h.id];
+    return o?.proxy !== undefined ? { ...h, proxy: o.proxy || undefined } : h;
+  });
 }
 
 function which(cmd) {

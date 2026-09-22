@@ -120,6 +120,7 @@ export type HarnessAvailability = {
   binPath: string | null;
   note?: string;
   experimental?: boolean;
+  proxy?: string;
   source?: string;
   version?: string;
   description?: string;
@@ -153,6 +154,8 @@ export type ClientMsg =
   | { type: "interrupt"; sessionId: string }
   /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */
   | { type: "set-auto-approve"; sessionId: string; level: "off" | "readonly" | "all" }
+  /** UI 里按 harness 配置代理（空串 = 清除，直连） */
+  | { type: "harness-proxy"; id: string; proxy: string }
   /** 单会话右侧面板：决策记录 + 改动/交付件 */
   | { type: "session-detail"; sessionId: string }
   | { type: "delete"; sessionId: string }
