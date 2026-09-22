@@ -624,9 +624,57 @@
 
   html.is-mobile .drawer { top:0; left:0; right:0; bottom:0; width:100vw; max-width:100vw; height:100%; height:100dvh; border-left:none; z-index:150; padding:14px 12px; }
 
+  /* ---------- 认证门（token 登录页）：4401 时覆盖全屏，验证通过自动消失 ---------- */
+  #gate { position:fixed; inset:0; z-index:9999; display:none; align-items:center; justify-content:center;
+    background:radial-gradient(1100px 560px at 50% -8%, #16203a 0%, var(--bg) 58%); }
+  .gateCard { width:min(92vw, 384px); background:var(--panel); border:1px solid var(--line2); border-radius:14px;
+    padding:36px 30px 24px; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,.55);
+    animation:gateIn .26s ease; }
+  @keyframes gateIn { from { transform:translateY(12px) scale(.97); opacity:0; } }
+  .gateLogo { font-size:36px; line-height:1; margin-bottom:10px; }
+  .gateTitle { font-size:19px; font-weight:700; letter-spacing:.4px; }
+  .gateSub { color:var(--dim); font-size:12.5px; margin:7px 0 24px; }
+  .gateRow { display:flex; gap:8px; margin-bottom:12px; }
+  #gateInput { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--line2); color:var(--fg);
+    border-radius:8px; padding:10px 12px; font-size:13.5px; letter-spacing:.4px;
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; outline:none; transition:border-color .15s, box-shadow .15s; }
+  #gateInput:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(91,156,248,.16); }
+  #gateInput.bad { border-color:var(--err); animation:gateShake .32s; }
+  @keyframes gateShake { 25% { transform:translateX(-5px); } 75% { transform:translateX(5px); } }
+  #gateEye { background:none; border:1px solid var(--line2); color:var(--dim); border-radius:8px; width:42px;
+    cursor:pointer; font-size:14px; flex:none; transition:color .15s, border-color .15s; }
+  #gateEye:hover { color:var(--fg); border-color:var(--dim); }
+  #gateGo { width:100%; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 0;
+    font-size:14px; font-weight:600; cursor:pointer; margin-bottom:16px; transition:filter .15s; }
+  #gateGo:hover { filter:brightness(1.12); }
+  #gateGo:disabled { opacity:.55; cursor:wait; }
+  #gateErr { color:var(--err); font-size:12.5px; margin:-4px 0 12px; display:none; }
+  .gateHint { color:var(--dim2); font-size:11.5px; line-height:1.9; }
+  .gateHint code { background:var(--panel2); border:1px solid var(--line); padding:1px 6px; border-radius:4px; font-size:10.5px; }
+  html.is-mobile .gateCard { padding:28px 20px 20px; }
+
 </style>
 </head>
 <body>
+
+<!-- 认证门：服务端开认证且本机 token 缺失/不对时显示；输入一次记住本设备 -->
+<div id="gate">
+  <div class="gateCard">
+    <div class="gateLogo">⚡</div>
+    <div class="gateTitle">HarnessGate</div>
+    <div class="gateSub">这台服务器开启了访问认证</div>
+    <div class="gateRow">
+      <input id="gateInput" type="password" placeholder="访问 token" autocomplete="off" spellcheck="false" />
+      <button id="gateEye" type="button" title="显示 / 隐藏">👁</button>
+    </div>
+    <button id="gateGo" type="button">进入</button>
+    <div id="gateErr"></div>
+    <div class="gateHint">
+      token 在服务器上的 <code>~/.harnessgate/token</code><br />
+      输入一次即记住本设备，之后不用再填
+    </div>
+  </div>
+</div>
 
 <header>
   <button id="menuBtn" class="menu-btn ghost" title="打开导航">☰</button>
@@ -677,10 +725,12 @@ const state = {
   filter: "",
   rtStep: 1,
   rtCwd: "",
+  rtKind: "crew",         // "crew" 工作队（默认） | "discuss" 圆桌讨论 —— 第一步选目录时就确定
   rtPicked: new Set(),
   rtMemberCfg: {},        // { [harnessId]: { [configId]: value } }
   rtMemberVars: {},       // { [harnessId]: { [变量名]: 值 } }（如 openclaw 的 HG_OPENCLAW_AGENT）
   rtHost: "",
+  rtHostCfg: {},          // { [configId]: value } 主持人/工头自己的模型与参数
   rtHostOpening: true,
   rtHostRound: true,
   rtHostFinal: true,
@@ -716,20 +766,69 @@ function tokenOf() {
   } catch { return ""; }
 }
 window.__hgToken = tokenOf();   // 下载链接等 <a href> 用（不能走 WS 认证）
+/* ?token= 存入 localStorage 后立即从地址栏抹掉（不留历史/不被分享误带） */
+if (new URLSearchParams(location.search).get("token")) {
+  try { history.replaceState(null, "", location.pathname); } catch {}
+}
+
+/* ---------- 认证门 ---------- */
+let gateOn = false, gateSubmitted = false;
+function showGate(tried) {
+  if (!gateOn) {
+    gateOn = true;
+    $("gate").style.display = "flex";
+    $("gateInput").value = localStorage.getItem("hg_token") || "";
+    setTimeout(() => $("gateInput").focus(), 60);
+  }
+  if (tried) {
+    const inp = $("gateInput");
+    inp.classList.remove("bad"); void inp.offsetWidth; inp.classList.add("bad");   // 重触发抖动
+    $("gateErr").textContent = "token 不对，请检查后重试";
+    $("gateErr").style.display = "block";
+  }
+  $("gateGo").disabled = false;
+  $("gateGo").textContent = "进入";
+}
+function hideGate() {
+  gateOn = false;
+  $("gate").style.display = "none";
+}
+function submitGate() {
+  const v = $("gateInput").value.trim();
+  if (!v) { $("gateInput").focus(); return; }
+  localStorage.setItem("hg_token", v);
+  window.__hgToken = v;
+  try { if (new URLSearchParams(location.search).get("token")) history.replaceState(null, "", location.pathname); } catch {}
+  $("gateErr").style.display = "none";
+  $("gateGo").disabled = true;
+  $("gateGo").textContent = "验证中…";
+  gateSubmitted = true;
+  if (ws) { try { ws.onclose = null; ws.close(); } catch {} }   // 掐掉旧连接的重连逻辑，走提交后的显式重连
+  connect();
+}
+$("gateGo").onclick = submitGate;
+$("gateInput").addEventListener("keydown", (e) => { if (e.key === "Enter") submitGate(); });
+$("gateEye").onclick = () => { const i = $("gateInput"); i.type = i.type === "password" ? "text" : "password"; };
+/* 其他标签页改了 token → 这边自动重试 */
+window.addEventListener("storage", (e) => { if (e.key === "hg_token" && gateOn) { gateSubmitted = true; connect(); } });
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const tk = tokenOf();
   ws = new WebSocket(`${proto}//${location.host}/ws${tk ? `?token=${encodeURIComponent(tk)}` : ""}`);
   ws.onopen = () => {
+    /* 注意：开了认证时，未授权连接也会先 open、随后才被服务端以 4401 关闭。
+       真正的“验证通过”以收到 hello 为准（见 onmessage），这里不能关登录门。 */
     $("conn").textContent = "已连接";
     $("conn").className = "pill ready";
   };
   ws.onclose = (ev) => {
     if (ev && ev.code === 4401) {
-      /* 2026-09-19: 认证失败不要疯巴重连，放慢等 localStorage 里的 token */
+      /* 认证失败：弹登录门（提交过的 token 又失败会标红），门开着就不盲连了 */
       $("conn").textContent = "认证失败";
       $("conn").className = "pill error";
-      setTimeout(connect, 5000);
+      showGate(gateSubmitted);
+      gateSubmitted = false;
       return;
     }
     $("conn").textContent = "已断开";
@@ -740,6 +839,7 @@ function connect() {
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
+      if (msg.type === "hello" && gateOn) { gateSubmitted = false; hideGate(); }   // hello = 认证真正通过
       handleServer(msg);
     } catch (e) {
       console.error("ws 消息解析失败", e, ev.data);
@@ -873,11 +973,11 @@ function handleServer(msg) {
       render();
       break;
     case "status":
-    case "session": /* 2026-09-19 服务端协议改名 status→session */
-      if (msg.session) {
+    case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
         const isNewSession = !sessions.has(msg.session.id);
         sessions.set(msg.session.id, msg.session);
         renderTree();
+        refreshPills(msg.session.id);
         if (isNewSession && pendingCreate) {
           pendingCreate = false;
           openSession(msg.session.id);   // 新建后自动进入对话（原行为）
@@ -967,6 +1067,11 @@ function handleServer(msg) {
       if (msg.roomId === state.roomId || crewPanelRoomId === msg.roomId) {
         renderCrewPanel(msg.roomId, { decisions: msg.decisions || [], deliverables: msg.deliverables || [] });
       }
+      break;
+    case "error":
+      /* 服务端的各类拒绝（圆桌前置校验、会话操作失败…）必须可见——吞掉就会表现为"点了没反应" */
+      showToast("⚠ " + (msg.message || "操作失败"), 6000);
+      console.warn("服务端错误:", msg.message, msg.sessionId || "");
       break;
     case "session-detail":
       if (msg.sessionId) renderSessPanel(msg.sessionId, { decisions: msg.decisions || [], changes: msg.changes || [], git: msg.git });
@@ -1088,7 +1193,7 @@ function renderTree() {
               const activeS = state.sessionId === s.id;
               return `
                 <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}">
-                  <span class="pill ${s.status}" style="font-size:9.5px;padding:0 5px">${STATUS_TAG[s.status] || s.status}</span>
+                  <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
                   <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
                 </div>`;
             }).join("")}
@@ -1119,6 +1224,29 @@ function renderTree() {
 
 const STATUS_TAG = { ready: "运行中", starting: "启动中", awaiting: "待审批", error: "出错", saved: "已存档" };
 const STATUS = { ready: "运行中", starting: "启动中", awaiting: "等授权", error: "出错", saved: "已归档" };
+/* ready 只代表进程活着；跑没跑完回合看 inTurn（服务端在回合开始/结束时都会广播状态） */
+function statusInfo(s) {
+  if (s.status === "ready") {
+    return s.inTurn ? { cls: "ready", text: "运行中" } : { cls: "saved", text: "空闲" };
+  }
+  return null;
+}
+function pillOf(s, map) {
+  const si = statusInfo(s);
+  if (si) return `<span class="pill ${si.cls}">${si.text}</span>`;
+  return `<span class="pill ${s.status}">${map[s.status] || s.status}</span>`;
+}
+/* session 广播到达时就地更新各行胶囊（整列表重绘会冲掉输入框/滚动位置） */
+function refreshPills(sid) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = pillOf(s, STATUS);
+  const fresh = wrap.firstElementChild;
+  if (!fresh) return;
+  document.querySelectorAll(`.row[data-sid="${sid}"] .pill, .sRow[data-sid="${sid}"] .pill`)
+    .forEach((el) => el.replaceWith(fresh.cloneNode(true)));
+}
 
 /* =====================================================================
    总览视图（卡片）
@@ -1202,7 +1330,7 @@ function renderSessionList() {
     <div class="rows">
       ${list.map((s) => `
         <div class="row" data-sid="${s.id}">
-          <span class="pill ${s.status}">${STATUS[s.status] || s.status}</span>
+          ${pillOf(s, STATUS)}
           <div class="main">
             <div class="t1"><b>${esc(s.title || "(无标题)")}</b></div>
             <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
@@ -1429,7 +1557,7 @@ function updateChatHeader() {
   if (!s) return;
   const live = s.live;
   head.innerHTML = `
-    <span class="pill ${s.status}">${STATUS[s.status] || s.status}</span>
+    ${pillOf(s, STATUS)}
     <span>工作目录 <b style="color:var(--fg)">${esc(s.cwd)}</b></span>
     ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
     <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>`;
@@ -2320,6 +2448,23 @@ function cfgList(map) {
   return Object.entries(map ?? {}).map(([configId, value]) => ({ configId, value }));
 }
 
+/* 主持人/工头自己的模型与参数（和服务端 room-start 的 host.configs 对齐） */
+function hostConfigsHtml() {
+  const h = harnesses.get(state.rtHost);
+  if (!h) return "";
+  const cfgs = (h.configs ?? []).filter((c) => c.options?.length);
+  if (!cfgs.length) {
+    return `<div class="meta2" style="margin-top:7px">${esc(h.label)} 没有上报可切换的配置项（模型等用默认值）${h.state === "probed-ok" ? "" : "（未探活，跑一次 doctor --probe --deep 可拿到目录）"}</div>`;
+  }
+  const sels = cfgs.map((c) => {
+    const cur = state.rtHostCfg[c.id] ?? c.currentValue ?? "";
+    const opts = c.options.map((o) =>
+      `<option value="${esc(o.value)}" ${o.value === cur ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+    return `<label>${esc(c.name)}<select data-hcfg="${esc(c.id)}">${opts}</select></label>`;
+  }).join("");
+  return `<div style="margin-top:8px;display:flex;gap:12px;flex-wrap:wrap;font-size:12px">${sels}</div>`;
+}
+
 function memberConfigsHtml(picked) {
   if (!picked.length) return "";
   const rows = picked.map((id) => {
@@ -2356,19 +2501,35 @@ function roomWizardHtml() {
   // 换个模型可能就能用；圆桌对个别成员失败本来就有容错）。没装的（找不到可执行文件）不列。
   const risky = avail.filter((h) => !h.available && h.binPath);
   const pickable = [...avail.filter((h) => h.available), ...risky];
-  const usable = avail.filter((h) => h.available);   // 主持人必须可靠，仍然只用探活通过的
+  const usable = avail.filter((h) => h.available);   // 主持人/工头必须可靠，仍然只用探活通过的
   const picked = [...state.rtPicked].filter((id) => pickable.some((h) => h.id === id));
+  // 主持人/工头是必选的指挥角色：进入第 2 步时还没选就默认第一位可靠的
+  if (step === 2 && !state.rtHost) state.rtHost = usable[0]?.id ?? "";
 
   let body = "";
   if (step === 1) {
     body = `
       <div class="rtCard">
-        <h3>① 选一个工作目录（所有成员共享它）</h3>
+        <h3>① 选一个工作目录，并确定开会方式</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input type="text" id="rtCwd" value="${esc(state.rtCwd)}" placeholder="/path/to/project" style="flex:1;min-width:240px" />
           <button class="primary" id="rtNext1" ${state.rtCwd.trim() ? "" : "disabled"}>下一步</button>
         </div>
-        <div class="meta2" style="margin-top:8px">支持补全：输入片段会列出子目录；目录不存在也能继续（会自动创建）。</div>
+        <div style="display:flex;gap:10px;margin-top:13px;flex-wrap:wrap">
+          <div class="pick ${state.rtKind === "crew" ? "sel" : ""}" data-kind="crew" style="flex:1;min-width:230px;cursor:pointer">
+            <input type="radio" name="rtKind" ${state.rtKind === "crew" ? "checked" : ""} style="width:auto" />
+            <span><b>工作队</b>（默认）——协同干活：工头拆任务 → 各队员在独立 worktree 并行改代码 → 独立评审 → 合并</span>
+          </div>
+          <div class="pick ${state.rtKind === "discuss" ? "sel" : ""}" data-kind="discuss" style="flex:1;min-width:230px;cursor:pointer">
+            <input type="radio" name="rtKind" ${state.rtKind === "discuss" ? "checked" : ""} style="width:auto" />
+            <span><b>圆桌讨论</b>——只动嘴不动手：多 harness 就议题轮流发言、互相批评，主持人汇总</span>
+          </div>
+        </div>
+        <div class="meta2" style="margin-top:9px">
+          ${state.rtKind === "crew"
+            ? "目录不用事先准备：不是 git 仓库会自动 git init 并做初始提交；已是仓库则直接用。"
+            : "支持补全：输入片段会列出子目录；目录不存在也能继续（会自动创建）。"}
+        </div>
       </div>`;
   } else if (step === 2) {
     body = `
@@ -2384,12 +2545,14 @@ function roomWizardHtml() {
         ${risky.length ? `<div class="meta2" style="margin-top:6px">⚠ = 探活失败/未深探过，但仍可尝试（深探只测默认模型，换个模型可能就能用；失败成员会被记为无输出，不拖累其他人）</div>` : ""}
         ${memberConfigsHtml(picked)}
         <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
-          <label class="cfgl">主持人（可选，负责开场拆题 / 轮间小结 / 最终汇总）</label>
+          <label class="cfgl">${state.rtKind === "crew"
+            ? "<b>工头（必选）</b>——指挥角色：拆解任务、分派队员、把关评审、收尾汇报"
+            : "<b>主持人（必选）</b>——负责开场拆题 / 轮间小结 / 最终汇总"}</label>
           <select id="rtHost" style="margin-left:8px;width:auto">
-            <option value="">不设主持人</option>
-            ${usable.map((h) => `<option value="${esc(h.id)}" ${state.rtHost === h.id ? "selected" : ""}>${esc(h.label)}${state.rtPicked.has(h.id) ? "（成员兼主持）" : ""}</option>`).join("")}
+            ${usable.map((h) => `<option value="${esc(h.id)}" ${state.rtHost === h.id ? "selected" : ""}>${esc(h.label)}${state.rtPicked.has(h.id) ? "（成员兼任职）" : ""}</option>`).join("")}
           </select>
-          ${state.rtHost ? `<div style="margin-top:9px;display:flex;gap:14px;flex-wrap:wrap;font-size:12px">
+          ${hostConfigsHtml()}
+          ${state.rtKind === "discuss" ? `<div style="margin-top:9px;display:flex;gap:14px;flex-wrap:wrap;font-size:12px">
             <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostOpening" style="width:auto" ${state.rtHostOpening ? "checked" : ""} />开场拆题</label>
             <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostRound" style="width:auto" ${state.rtHostRound ? "checked" : ""} />轮间小结</label>
             <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtHostFinal" style="width:auto" ${state.rtHostFinal ? "checked" : ""} />最终汇总</label>
@@ -2405,37 +2568,36 @@ function roomWizardHtml() {
         </div>
       </div>`;
   } else {
+    const crew = state.rtKind === "crew";
     body = `
       <div class="rtCard">
-        <h3>③ 写下议题，开始讨论</h3>
-        <textarea class="rtTopic" id="rtTopic" placeholder="例如：为嵌入式设备设计极简键值存储——请给出 API 设计与并发/持久化的取舍"></textarea>
+        <h3>${crew ? "③ 写下目标，开工" : "③ 写下议题，开始讨论"}</h3>
+        <textarea class="rtTopic" id="rtTopic" placeholder="${crew
+          ? "例如：给这个项目加上导入/导出功能——工头会把它拆成任务分给队员并行实现"
+          : "例如：为嵌入式设备设计极简键值存储——请给出 API 设计与并发/持久化的取舍"}"></textarea>
         <div style="display:flex;gap:12px;align-items:center;margin-top:11px;flex-wrap:wrap;font-size:12px">
-          <label class="cfgl" id="rtRoundsWrap">最多轮数 <select id="rtRounds" style="width:auto">
+          <label class="cfgl" id="rtRoundsWrap" ${crew ? "hidden" : ""}>最多轮数 <select id="rtRounds" style="width:auto">
             ${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n}</option>`).join("")}
             <option value="0">无上限 ∞</option>
           </select></label>
-          <label class="cfgl" id="rtConvergeWrap" style="display:flex;align-items:center;gap:4px" title="每轮小结时由主持人判定是否收敛；至少 2 轮后才可能提前结束"><input type="checkbox" id="rtConverge" style="width:auto" checked />共识即停</label>
-          <label class="cfgl" id="rtTournamentWrap" style="display:flex;align-items:center;gap:4px" title="主持人逐轮给发言打分：高分摘录更全、本人收到私密点评、最终按累计分加权汇总"><input type="checkbox" id="rtTournament" style="width:auto" />评分锦标赛</label>
-          <label class="cfgl">模式 <select id="rtKind" style="width:auto">
-            <option value="discuss">圆桌讨论（只讨论不动手）</option>
-            <option value="crew">工作队（协同干活：拆任务→worktree 并行→评审→合并，需 git 仓库）</option>
-          </select></label>
-          <label class="cfgl" id="rtModeWrap">发言方式 <select id="rtMode" style="width:auto">
+          <label class="cfgl" id="rtConvergeWrap" style="display:flex;align-items:center;gap:4px" title="每轮小结时由主持人判定是否收敛；至少 2 轮后才可能提前结束" ${crew ? "hidden" : ""}><input type="checkbox" id="rtConverge" style="width:auto" checked />共识即停</label>
+          <label class="cfgl" id="rtTournamentWrap" style="display:flex;align-items:center;gap:4px" title="主持人逐轮给发言打分：高分摘录更全、本人收到私密点评、最终按累计分加权汇总" ${crew ? "hidden" : ""}><input type="checkbox" id="rtTournament" style="width:auto" />评分锦标赛</label>
+          <label class="cfgl" id="rtModeWrap" ${crew ? "hidden" : ""}>发言方式 <select id="rtMode" style="width:auto">
             <option value="parallel">并行（同时发言，各自独立思考）</option>
             <option value="sequential">串行（依次发言，能接话）</option>
           </select></label>
-          <label class="cfgl" id="rtCrewWrap" hidden>合并 <select id="rtMergeMode" style="width:auto">
+          <label class="cfgl" id="rtCrewWrap" ${crew ? "" : "hidden"}>合并 <select id="rtMergeMode" style="width:auto">
             <option value="manual">人工确认合并（推荐）</option>
             <option value="auto">自动合并</option>
           </select></label>
-          <label class="cfgl" id="rtWriteWrap" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="rtWrite" style="width:auto" />允许改文件</label>
+          <label class="cfgl" id="rtWriteWrap" style="display:flex;align-items:center;gap:4px" ${crew ? "hidden" : ""}><input type="checkbox" id="rtWrite" style="width:auto" />允许改文件</label>
           <span class="spacer" style="flex:1"></span>
           <button class="mini" id="rtBack3">上一步</button>
-          <button class="primary" id="rtGo">开始圆桌</button>
+          <button class="primary" id="rtGo">${crew ? "开工" : "开始圆桌"}</button>
         </div>
         <div class="meta2" style="margin-top:10px">
           成员：${picked.map((id) => esc(harnesses.get(id)?.label || id)).join("、")} · 目录 ${esc(state.rtCwd)}
-          ${state.rtHost ? ` · 主持人：${esc(harnesses.get(state.rtHost)?.label || state.rtHost)}` : " · 无主持人"}
+          · ${crew ? "工头" : "主持人"}：${esc(harnesses.get(state.rtHost)?.label || state.rtHost || "（未选）")}
           ${Object.keys(state.rtMemberCfg).length ? ` · 已配 ${Object.keys(state.rtMemberCfg).length} 个成员的模型/参数` : ""}
           <span id="rtRoundsHint"></span>
         </div>
@@ -2445,9 +2607,11 @@ function roomWizardHtml() {
   return `
     <div class="rtWrap">
       <div class="rtHead"><span class="ttl">圆桌会议</span>
-        <span class="meta2">多个 harness 就同一议题轮流发言，主持人把彼此的观点互相投喂</span></div>
+        <span class="meta2">${state.rtKind === "crew"
+          ? "工作队：工头拆解任务，队员在独立 worktree 并行干活，独立评审后合并"
+          : "多个 harness 就同一议题轮流发言，主持人把彼此的观点互相投喂"}</span></div>
       <div class="steps">
-        ${[[1, "选目录"], [2, "选 harness"], [3, "写议题"]].map(([n, label]) =>
+        ${[[1, "选目录与方式"], [2, "选 harness"], [3, state.rtKind === "crew" ? "写目标" : "写议题"]].map(([n, label]) =>
           `<div class="step ${step === n ? "on" : step > n ? "done" : ""}"><span class="n">${step > n ? "✓" : n}</span>${label}</div>`
         ).join('<span class="meta2">›</span>')}
       </div>
@@ -2484,6 +2648,10 @@ function bindRoomWizard() {
       if (btn) btn.disabled = !input.value.trim();
     });
     $("rtNext1").onclick = () => { state.rtCwd = input.value.trim(); next(2); };
+    // 开会方式（工作队/圆桌讨论）在第一步就确定
+    document.querySelectorAll("#viewRoot .pick[data-kind]").forEach((el) => {
+      el.onclick = () => { state.rtKind = el.dataset.kind; renderRoundtable(); };
+    });
   } else if (state.rtStep === 2) {
     $("rtBack2").onclick = () => next(1);
     $("rtNext2").onclick = () => next(3);
@@ -2507,7 +2675,10 @@ function bindRoomWizard() {
         state.rtMemberVars[hid] = { ...(state.rtMemberVars[hid] ?? {}), [sel.dataset.var]: sel.value };
       };
     });
-    $("rtHost").onchange = (e) => { state.rtHost = e.target.value; renderRoundtable(); };
+    $("rtHost").onchange = (e) => { state.rtHost = e.target.value; state.rtHostCfg = {}; renderRoundtable(); };
+    $("viewRoot").querySelectorAll("select[data-hcfg]").forEach((sel) => {
+      sel.onchange = () => { state.rtHostCfg = { ...(state.rtHostCfg ?? {}), [sel.dataset.hcfg]: sel.value }; };
+    });
     if ($("rtHostOpening")) $("rtHostOpening").onchange = (e) => { state.rtHostOpening = e.target.checked; };
     if ($("rtHostRound")) $("rtHostRound").onchange = (e) => { state.rtHostRound = e.target.checked; };
     if ($("rtHostFinal")) $("rtHostFinal").onchange = (e) => { state.rtHostFinal = e.target.checked; };
@@ -2516,30 +2687,13 @@ function bindRoomWizard() {
     $("rtBack3").onclick = () => next(2);
     const updRoundsHint = () => {
       const el = $("rtRoundsHint");
-      if (!el) return;
-      if ($("rtKind").value === "crew") { el.textContent = ""; return; }
+      if (!el || state.rtKind === "crew") { if (el) el.textContent = ""; return; }
+      const conv = $("rtConverge")?.checked, tour = $("rtTournament")?.checked;
       const n = Number($("rtRounds").value);
-      const conv = $("rtConverge").checked;
-      const tour = $("rtTournament").checked;
-      const hostNote = n === 0 && !state.rtHost ? "（无上限时会自动由第一位成员兼任主持人）" : "";
       const tourNote = tour ? " · 评分锦标赛" : "";
       el.textContent = n === 0
         ? ` · 轮数无上限${conv ? " · 共识即停（至少 2 轮）" : " · 只能手动停止"}${hostNote}${tourNote}`
         : ` · 最多 ${n} 轮${conv ? " · 共识即停（至少 2 轮）" : ""}${tourNote}`;
-    };
-    $("rtKind").onchange = () => {
-      const crew = $("rtKind").value === "crew";
-      $("rtModeWrap").hidden = crew;
-      $("rtCrewWrap").hidden = !crew;
-      $("rtWriteWrap").hidden = crew;   // 工作队本来就要改文件（在各自 worktree 里）
-      $("rtRoundsWrap").hidden = crew;  // 工作队按任务终态结束，轮数不参与
-      $("rtConvergeWrap").hidden = crew;
-      $("rtTournamentWrap").hidden = crew;
-      if (crew && !state.rtHost) {
-        state.rtHost = [...state.rtPicked][0] ?? "";
-        const sel = $("rtHost"); if (sel) sel.value = state.rtHost;
-      }
-      updRoundsHint();
     };
     $("rtRounds").onchange = updRoundsHint;
     $("rtConverge").onchange = updRoundsHint;
@@ -2547,13 +2701,13 @@ function bindRoomWizard() {
     updRoundsHint();
     $("rtGo").onclick = () => {
       const topic = $("rtTopic").value.trim();
-      if (!topic) { alert("先写议题"); return; }
+      if (!topic) { alert(state.rtKind === "crew" ? "先写下目标" : "先写议题"); return; }
       const ids = [...state.rtPicked].filter((id) => { const h = harnesses.get(id); return h && (h.available || h.binPath); });
       if (ids.length < 2) { alert("至少选两个 harness"); return; }
-      const isCrew = $("rtKind").value === "crew";
-      const rounds = Number($("rtRounds").value);   // 0 = 无上限
-      // 无上限必须有主持人做收敛判定：没选就自动让第一位**探活通过**的成员兼任（risky 成员不当工头）
-      const hostId = state.rtHost || (isCrew || rounds === 0 ? (ids.find((id) => harnesses.get(id)?.available) ?? ids[0]) : "");
+      const isCrew = state.rtKind === "crew";
+      const rounds = Number($("rtRounds").value);   // 0 = 无上限（仅讨论模式）
+      const hostId = state.rtHost || ids.find((id) => harnesses.get(id)?.available) || "";
+      if (!hostId) { alert(isCrew ? "请选择工头" : "请选择主持人"); return; }
       send({
         type: "room-start",
         cwd: state.rtCwd.trim(),
@@ -2561,21 +2715,19 @@ function bindRoomWizard() {
         topic,
         rounds,
         mode: $("rtMode")?.value || "parallel",
-        converge: isCrew ? undefined : $("rtConverge").checked,
-        tournament: isCrew ? undefined : $("rtTournament").checked,
-        writeAllowed: isCrew ? true : $("rtWrite").checked,
+        converge: isCrew ? undefined : $("rtConverge")?.checked,
+        tournament: isCrew ? undefined : $("rtTournament")?.checked,
+        writeAllowed: isCrew ? true : Boolean($("rtWrite")?.checked),
         crew: isCrew ? { maxAttempts: 2, mergeMode: $("rtMergeMode")?.value || "manual" } : undefined,
-        host: hostId
-          ? {
-              harnessId: hostId,
-              opening: state.rtHostOpening,
-              roundSummary: isCrew ? false : state.rtHostRound,
-              finalSummary: true,
-              style: isCrew ? "convergent" : state.rtHostStyle,
-              configs: cfgList(state.rtMemberCfg[hostId]),
-              vars: state.rtMemberVars[hostId],
-            }
-          : undefined,
+        host: {
+          harnessId: hostId,
+          opening: isCrew ? false : state.rtHostOpening,
+          roundSummary: isCrew ? false : state.rtHostRound,
+          finalSummary: true,
+          style: isCrew ? "convergent" : state.rtHostStyle,
+          configs: cfgList({ ...(state.rtMemberCfg[hostId] ?? {}), ...(state.rtHostCfg ?? {}) }),
+          vars: state.rtMemberVars[hostId],
+        },
         memberConfigs: Object.fromEntries(
           ids.map((id) => [id, cfgList(state.rtMemberCfg[id])]).filter(([, v]) => v.length),
         ),
