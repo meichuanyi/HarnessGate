@@ -255,7 +255,8 @@ export class ChatPanel {
       this.transcriptBase = this.entries.length;
       this.streaming = false;
       this.renderAll();
-      this.post({ type: "waiting", on: true });   // 模型慢时给个明确状态，别让人以为挂了
+      // 回合进行中 → 服务端会排队（当前回合完整跑完再发），不显示等待横幅；回合结束后服务端会推新回合
+      if (!s.inTurn) this.post({ type: "waiting", on: true });
       this.client.send({ type: "prompt", sessionId: this.sessionId, text });
       return;
     }

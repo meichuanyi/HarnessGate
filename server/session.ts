@@ -571,16 +571,19 @@ export class HarnessSession {
   }
 
   async prompt(text: string, attachments: Attachment[] = []): Promise<void> {
+    // 排队条件：等授权 / 正在输出（回合进行中——新消息打断正在生成的内容太浪费，
+    // 用户想中止有专门的停止按钮）/ 尚未就绪。排队的消息在回合结束后自动发出。
     const blocked =
       this.status === "awaiting" ||
+      this.inTurnFlag ||
       (this.status === "starting" && (!this.ctx || !this.acpSessionId));
     if (!this.stopRequested && blocked) {
       if (this.queued.length >= 5) {
-        this.push({ kind: "error", ts: now(), message: "排队消息过多（会话仍在启动），请稍后再试" });
+        this.push({ kind: "error", ts: now(), message: "排队消息过多（会话在启动/输出/等授权），请稍后再试" });
         this.hooks.onTurnEnd(this.id, "error");
         return;
       }
-      this.queued.push({ text, attachments, userPushed: true });   // 台账已在此处记录用户消息，实际发送时不再重复推
+      this.queued.push({ text, attachments, userPushed: true });
       if (!this.title) {
         this.title = text.slice(0, 40);
         this.hooks.onStatus(this.info());
@@ -591,7 +594,8 @@ export class HarnessSession {
         text,
         attachments: attachments.length ? attachments.map((a) => ({ name: a.name, mimeType: a.mimeType })) : undefined,
       });
-      this.log(`会话${this.status === "awaiting" ? "正在等你想授权" : "尚未就绪"}，消息已排队（第 ${this.queued.length} 条），恢复后自动发出`);
+      const why = this.status === "awaiting" ? "正在等你想授权" : this.inTurnFlag ? "正在输出中（不打断当前回合）" : "尚未就绪";
+      this.log(`会话${why}，消息已排队（第 ${this.queued.length} 条），当前回合结束后自动发出`);
       this.hooks.onUpdate(this.id, { sessionUpdate: "hg_queued", queueLength: this.queued.length });
       return;
     }
