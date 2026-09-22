@@ -68,7 +68,8 @@
   .pill.ready,.pill.done { color:var(--ok); border-color:#1f4a28; background:#0f1a12; }
   .pill.starting,.pill.running,.pill.awaiting { color:var(--warn); border-color:#4a3c17; background:#171304; }
   .pill.error { color:var(--err); border-color:#4a1f22; background:#190d0e; }
-  .pill.saved,.pill.idle { color:var(--dim); }
+  .pill.saved { color:var(--dim); }
+  .pill.idle { color:var(--accent); border-color:#1f3350; background:#111826; }
   .spacer { flex:1; }
   .cfgw { display:inline-flex; align-items:center; gap:5px; }
   .cfgl { font-size:11.5px; color:var(--dim2); white-space:nowrap; }
@@ -1227,7 +1228,7 @@ const STATUS = { ready: "运行中", starting: "启动中", awaiting: "等授权
 /* ready 只代表进程活着；跑没跑完回合看 inTurn（服务端在回合开始/结束时都会广播状态） */
 function statusInfo(s) {
   if (s.status === "ready") {
-    return s.inTurn ? { cls: "ready", text: "运行中" } : { cls: "saved", text: "空闲" };
+    return s.inTurn ? { cls: "ready", text: "运行中" } : { cls: "idle", text: "空闲" };
   }
   return null;
 }
