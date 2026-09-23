@@ -28,6 +28,9 @@ export class RoomPanel {
   private disposables: vscode.Disposable[] = [];
   private selected?: string;
   private showForm = false;
+  /** 工作队决策/交付件（crew-detail 消息），webview 渲染用 */
+  private crewDetail?: { decisions: never[]; deliverables: never[] };
+  private crewDetailAt = 0;
 
   private readonly onServerMsg = (msg: Record<string, unknown>): void => this.onServer(msg);
 
@@ -79,6 +82,14 @@ export class RoomPanel {
     if (type === "room") {
       this.store.upsertRoom(msg.room as Room);
       this.pushAll();
+      // 工作队：房间有变化就刷新决策/交付件（3 秒节流，别跟着广播风暴走）
+      const room = msg.room as Room;
+      if (room?.crew && this.selected === room.id) this.requestCrewDetail(room.id);
+      return;
+    }
+    if (type === "crew-detail") {
+      this.crewDetail = { decisions: (msg.decisions ?? []) as never, deliverables: (msg.deliverables ?? []) as never };
+      this.post({ type: "crewDetail", roomId: String(msg.roomId ?? ""), decisions: this.crewDetail.decisions, deliverables: this.crewDetail.deliverables });
       return;
     }
     // 成员会话的流式文本 → 当前轮的对应分栏（room 广播是整轮粒度，直播靠这个）
@@ -93,6 +104,14 @@ export class RoomPanel {
         this.post({ type: "live", sessionId: sid, text: c.text });
       }
     }
+  }
+
+  /** 请求工作队决策/交付件数据（3 秒节流） */
+  private requestCrewDetail(roomId: string): void {
+    const now = Date.now();
+    if (now - this.crewDetailAt < 3000) return;
+    this.crewDetailAt = now;
+    this.client.send({ type: "crew-detail", roomId });
   }
 
   private onMessage(m: Record<string, unknown>): void {
@@ -140,19 +159,41 @@ export class RoomPanel {
         if (clean.length) cfg[hid] = clean;
       }
       const hostId = String(m.hostId ?? "");
+      const isCrew = m.kind === "crew";
+      const hostCfg = (m.hostCfg ?? {}) as Record<string, string>;
+      const hostConfigs = Object.entries(hostCfg).map(([configId, value]) => ({ configId, value }));
       this.client.send({
         type: "room-start",
         cwd: String(m.cwd ?? ""),
         harnessIds: members,
         topic: String(m.topic ?? ""),
-        rounds: Number(m.rounds ?? 1) || 1,
+        rounds: isCrew ? 0 : Number(m.rounds ?? 1) || 1,
         mode: m.mode === "sequential" ? "sequential" : "parallel",
-        writeAllowed: m.writeAllowed === true,
-        host: hostId ? { harnessId: hostId, opening: true, roundSummary: true, finalSummary: true } : undefined,
+        writeAllowed: isCrew ? true : m.writeAllowed === true,
+        crew: isCrew ? { maxAttempts: 2, mergeMode: m.mergeMode === "auto" ? "auto" : "manual" } : undefined,
+        host: hostId
+          ? {
+              harnessId: hostId,
+              opening: !isCrew,
+              roundSummary: !isCrew,
+              finalSummary: true,
+              configs: hostConfigs.length ? hostConfigs : undefined,
+            }
+          : undefined,
         memberConfigs: Object.keys(cfg).length ? cfg : undefined,
       });
       this.showForm = false;
-      this.log(`已发起圆桌：${String(m.topic ?? "").slice(0, 40)}（${members.length} 个成员）`);
+      this.log(isCrew
+        ? `已开工工作队：${String(m.topic ?? "").slice(0, 40)}（工头 + ${members.length} 个队员）`
+        : `已发起圆桌：${String(m.topic ?? "").slice(0, 40)}（${members.length} 个成员）`);
+      return;
+    }
+    if (cmd === "crewMerge") {
+      this.client.send({ type: "crew-merge", roomId: String(m.roomId ?? "") });
+      return;
+    }
+    if (cmd === "crewDetail") {
+      this.requestCrewDetail(String(m.roomId ?? ""));
       return;
     }
     if (cmd === "stop") {
@@ -303,6 +344,17 @@ export class RoomPanel {
   .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 14px; }
   .crewTask { border:1px solid var(--line); border-radius:6px; padding:8px 11px; margin:8px 0; }
   .crewTask .s { font-size:11px; color:var(--dim); }
+  .btn.sec.on { outline:2px solid var(--vscode-focusBorder); }
+  .board { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; margin:8px 0; }
+  .boardCol { background:var(--vscode-editorWidget-background); border:1px solid var(--line); border-radius:6px; padding:6px 8px; min-width:0; }
+  .boardCol>.hd { font-size:11.5px; font-weight:600; color:var(--dim); margin-bottom:5px; }
+  .boardTask { background:var(--vscode-editor-background); border:1px solid var(--line); border-radius:5px; padding:5px 7px; margin-bottom:5px; font-size:12px; }
+  .boardTask .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .boardTask .m { font-size:10.5px; color:var(--dim); margin-top:2px; }
+  .decision { border-bottom:1px dashed var(--line); padding:4px 0; font-size:11.5px; line-height:1.5; }
+  .decision .h { color:var(--dim); font-size:10.5px; }
+  .deliverable { border:1px solid var(--line); border-radius:6px; padding:7px 10px; margin:6px 0; font-size:12px; }
+  .deliverable .m { font-size:10.5px; color:var(--dim); margin:2px 0; }
 </style></head>
 <body>
 <header>
@@ -328,7 +380,7 @@ export class RoomPanel {
   const $ = (id) => document.getElementById(id);
   /* esc/mdToHtml 由注入的渲染器提供，别重复声明（重复声明=脚本整体语法错误，页面卡加载中） */
 
-  let state = { rooms: [], selected: undefined, showForm: false, defaultCwd: '', harnesses: [] };
+  let state = { rooms: [], selected: undefined, showForm: false, defaultCwd: '', harnesses: [], kind: 'crew', hostCfg: {} };
   let room = null;
   /* 已渲染发言的指纹：room 广播是整对象替换，指纹没变的分栏不重绘（滚动位置/性能都保得住） */
   const nodeCache = new Map();
@@ -378,23 +430,66 @@ export class RoomPanel {
     const hostOpts = state.harnesses.map((h, i) =>
       '<option value="' + esc(h.id) + '"' + (i === 0 ? " selected" : "") + '>' + esc(h.label) + '</option>').join('');
     f.innerHTML =
-      '<h3>新建圆桌</h3>' +
+      '<h3>新建圆桌 / 工作队</h3>' +
       '<div class="row"><label>工作目录</label><input type="text" id="fCwd" style="flex:1" placeholder="/path/on/server" value="' + esc(state.defaultCwd) + '" /><button class="sec" id="pickCwd">浏览…</button></div>' +
-      '<textarea id="fTopic" placeholder="议题：想让大家讨论什么？（具体一点，例如「给 X 项目选测试框架，对比 A/B/C」）"></textarea>' +
+      '<div class="row" style="gap:8px">' +
+        '<button class="btn sec pickKind' + (state.kind === "crew" ? " on" : "") + '" data-kind="crew" style="flex:1">🛠 工作队（默认）<div style="font-size:10.5px;opacity:.75;font-weight:400">工头拆任务 → 多 agent 并行干活 → 评审 → 合并</div></button>' +
+        '<button class="btn sec pickKind' + (state.kind === "discuss" ? " on" : "") + '" data-kind="discuss" style="flex:1">🎤 圆桌讨论<div style="font-size:10.5px;opacity:.75;font-weight:400">多 harness 就议题轮流发言、互相批注</div></button>' +
+      '</div>' +
+      '<textarea id="fTopic" placeholder="' + (state.kind === "crew"
+        ? "目标：要做成什么事？（工头会把它拆成任务分给队员并行实现，例如「给项目加上导入导出功能」）"
+        : "议题：想让大家讨论什么？（具体一点，例如「给 X 项目选测试框架，对比 A/B/C」）") + '"></textarea>' +
       '<div class="row"><label>成员（≥2，勾选参与）</label></div>' +
       '<div id="fMembers">' + memberRows + '</div>' +
-      '<div class="row">' +
+      '<div class="row"><label>' + (state.kind === "crew" ? "🛠 工头（必选）：拆解任务 / 分派队员 / 把关评审" : "🎤 主持人（必选）：开场拆题 / 轮间小结 / 最终汇总") + '</label><select id="fHost">' + hostOpts + '</select></div>' +
+      '<div class="row" id="fHostCfg"></div>' +
+      '<div class="row" id="fCrewCtl"' + (state.kind === "crew" ? "" : ' hidden') + '>' +
+        '<label>合并</label><select id="fMerge"><option value="manual">人工确认合并（推荐）</option><option value="auto">自动合并</option></select>' +
+      '</div>' +
+      '<div class="row" id="fDiscussCtl"' + (state.kind === "discuss" ? "" : ' hidden') + '>' +
         '<label>轮数</label><select id="fRounds">' + [1,2,3,4,5].map((n)=>'<option'+(n===2?' selected':'')+'>'+n+'</option>').join('') + '</select>' +
         '<label>发言方式</label><select id="fMode"><option value="parallel">并行（同轮互不可见）</option><option value="sequential">串行（后发言者能看到前面）</option></select>' +
+        '<label><input type="checkbox" id="fConverge" checked> 共识即停</label>' +
+        '<label><input type="checkbox" id="fTournament"> 评分锦标赛</label>' +
         '<label><input type="checkbox" id="fWrite"> 允许改文件</label>' +
       '</div>' +
-      '<div class="row"><label>主持人</label><select id="fHost">' + hostOpts + '</select>' +
-        '<span style="flex:1"></span><button class="btn primary" id="fGo">开始圆桌</button></div>';
+      '<div class="row"><span style="flex:1"></span><button class="btn primary" id="fGo">' + (state.kind === "crew" ? "开工" : "开始圆桌") + '</button></div>';
     slot.appendChild(f);
-    $('pickCwd').onclick = () => vscode.postMessage({ cmd:'pickCwd', current: $('fCwd').value });
-    $('fGo').onclick = () => {
+    const bindHostCfg = () => {
+      f.querySelectorAll("select[data-hcfg]").forEach((s) => {
+        s.onchange = () => { state.hostCfg[s.dataset.hcfg] = s.value; };
+      });
+    };
+    const renderHostCfg = () => {
+      const box = f.querySelector("#fHostCfg");
+      if (!box) return;
+      const host = state.harnesses.find((h) => h.id === $("fHost").value);
+      const cfgs = (host?.configs || []).filter((c) => c.options && c.options.length);
+      box.innerHTML = cfgs.length
+        ? cfgs.map((c) => {
+            const cur = (state.hostCfg || {})[c.id] || c.currentValue || "";
+            return '<label>' + esc(c.name || c.id) + '<select data-hcfg="' + esc(c.id) + '">' +
+              c.options.map((o) => '<option value="' + esc(o.value) + '"' + (o.value === cur ? " selected" : "") + '>' + esc(o.name || o.value) + '</option>').join("") +
+              '</select></label>';
+          }).join("")
+        : '<span style="font-size:11px;opacity:.7">' + esc(host?.label || "") + ' 未上报可切换配置（模型等用默认值）</span>';
+      bindHostCfg();
+    };
+    $("fHost").onchange = () => { state.hostCfg = {}; renderHostCfg(); };
+    renderHostCfg();
+    f.querySelectorAll(".pickKind").forEach((b) => {
+      b.onclick = () => {
+        state.kind = b.dataset.kind;
+        const topic = $("fTopic").value;      // 切模式保留已输入内容
+        const cwd = $("fCwd").value;
+        renderForm();
+        $("fTopic").value = topic; $("fCwd").value = cwd;
+      };
+    });
+    $("pickCwd").onclick = () => vscode.postMessage({ cmd:'pickCwd', current: $("fCwd").value });
+    $("fGo").onclick = () => {
       const members = [...f.querySelectorAll('#fMembers input[type=checkbox]:checked')].map((c) => c.value);
-      const topic = $('fTopic').value.trim();
+      const topic = $("fTopic").value.trim();
       if (!topic) { $('fTopic').style.borderColor = 'var(--vscode-errorForeground)'; $('fTopic').focus(); return; }
       if (members.length < 2) { alertLike('至少选 2 个成员'); return; }
       const memberConfigs = {};
@@ -403,10 +498,16 @@ export class RoomPanel {
         const [hid, cid] = s.dataset.cfg.split(':');
         (memberConfigs[hid] = memberConfigs[hid] || []).push({ configId: cid, value: s.value });
       });
+      const hostCfg = {};
+      f.querySelectorAll('select[data-hcfg]').forEach((s) => { hostCfg[s.dataset.hcfg] = s.value; });
       vscode.postMessage({
-        cmd:'create', cwd: $('fCwd').value.trim(), topic, members,
-        rounds: Number($('fRounds').value), mode: $('fMode').value,
-        writeAllowed: $('fWrite').checked, hostId: $('fHost').value, memberConfigs,
+        cmd:'create', kind: state.kind, cwd: $("fCwd").value.trim(), topic, members,
+        rounds: Number(($("fRounds") || {}).value || 1), mode: ($("fMode") || {}).value || "parallel",
+        converge: ($("fConverge") || {}).checked !== false,
+        tournament: ($("fTournament") || {}).checked === true,
+        writeAllowed: ($("fWrite") || {}).checked === true,
+        mergeMode: ($("fMerge") || {}).value || "manual",
+        hostId: $("fHost").value, memberConfigs, hostCfg,
       });
     };
   }
@@ -520,21 +621,100 @@ export class RoomPanel {
   function renderCrew(r) {
     const wrap = document.createElement('div');
     const crew = r.crew || {};
-    wrap.innerHTML = '<div class="topicHead">工作队 · ' + esc(crew.phase || '') + '</div>' +
-      '<div class="metaLine">目标：' + esc(crew.goal || '') + '</div>';
-    for (const t of crew.tasks || []) {
-      wrap.innerHTML += '<div class="crewTask"><b>' + esc(t.title) + '</b> <span class="s">[' + esc(t.status) +
-        (t.assignee ? ' · ' + esc(t.assignee) : '') + ']</span>' +
-        (t.files && t.files.length ? '<div class="s">文件：' + esc(t.files.join(', ')) + '</div>' : '') +
-        (t.summary ? '<div class="md">' + mdToHtml(String(t.summary).slice(0, 600)) + '</div>' : '') +
-        (t.review ? '<div class="s">评审：' + esc(t.review.verdict) + (t.review.score !== undefined ? ' · ' + t.review.score + ' 分' : '') + ' — ' + esc(String(t.review.comments || '').slice(0, 300)) + '</div>' : '') +
-        '</div>';
+    const PH = { working:'🔨 干活中', 'ready-merge':'📦 待合并', merged:'✅ 已合并', conflict:'⚠️ 合并冲突' };
+    wrap.innerHTML = '<div class="topicHead">工作队 · ' + esc(PH[crew.phase] || crew.phase || '') + '</div>' +
+      '<div class="metaLine">目标：' + esc(crew.goal || '') + '</div>' +
+      (crew.mergeLines && crew.mergeLines.length
+        ? '<div class="metaLine">合并：' + crew.mergeLines.map((l) => esc(l)).join(' ｜ ') + '</div>'
+        : '') +
+      (crew.phase === 'ready-merge' && r.status !== 'running'
+        ? '<div class="actions" style="margin:4px 0 10px"><button class="btn" id="crewMergeBtn">🔗 合并到主目录</button></div>'
+        : '');
+    const mergeBtn = wrap.querySelector('#crewMergeBtn');
+    if (mergeBtn) mergeBtn.onclick = () => vscode.postMessage({ cmd: 'crewMerge', roomId: r.id });
+
+    // 任务板：按状态分列
+    const COLS = [['pending','待办'], ['working','进行中'], ['review','待评审'], ['done','完成'], ['failed','失败']];
+    const board = document.createElement('div');
+    board.className = 'board';
+    for (const [st, label] of COLS) {
+      const tasks = (crew.tasks || []).filter((t) => t.status === st);
+      const col = document.createElement('div');
+      col.className = 'boardCol';
+      col.innerHTML = '<div class="hd">' + label + '（' + tasks.length + '）</div>';
+      for (const t of tasks) {
+        const rv = t.review || {};
+        const c = document.createElement('div');
+        c.className = 'boardTask';
+        c.innerHTML = '<div class="t" title="' + esc(t.title) + '">' + esc(t.title) + '</div>' +
+          '<div class="m">' + esc(t.assignee || '未分配') + ' · 尝试 ' + (t.attempts ?? 0) + '</div>' +
+          (t.files && t.files.length ? '<div class="m">📄 ' + esc(t.files.join(', ')) + '</div>' : '') +
+          (rv.comments ? '<div class="m" title="' + esc(String(rv.comments).slice(0, 400)) + '">💬 ' + esc(String(rv.comments).slice(0, 60)) + '</div>' : '');
+        col.appendChild(c);
+      }
+      board.appendChild(col);
+    }
+    wrap.appendChild(board);
+
+    // 决策记录 + 交付件（crew-detail 数据）
+    const cd = crewDetailData && crewDetailData.roomId === r.id ? crewDetailData : null;
+    if (cd) {
+      if (cd.decisions && cd.decisions.length) {
+        const box = document.createElement('div');
+        box.innerHTML = '<div class="topicHead">决策记录（' + cd.decisions.length + '）</div>';
+        for (const d of cd.decisions.slice(0, 40)) {
+          const el = document.createElement('div');
+          el.className = 'decision';
+          el.innerHTML = '<div class="h">' + esc(d.ts ? d.ts.slice(11, 19) : '') + ' · ' + esc(d.harness) +
+            (d.task ? ' · ' + esc(d.task) : '') + (d.auto !== undefined ? '' : '') +
+            ' → <b>' + esc(d.chosen || '?') + '</b>' + (d.danger ? ' ⚠️' : '') + '</div>' +
+            (d.title ? '<div>' + esc(d.title) + '</div>' : '') +
+            (d.reason ? '<div class="h">理由：' + esc(String(d.reason).slice(0, 160)) + '</div>' : '');
+          box.appendChild(el);
+        }
+        wrap.appendChild(box);
+      }
+      if (cd.deliverables && cd.deliverables.length) {
+        const box = document.createElement('div');
+        box.innerHTML = '<div class="topicHead">交付件与改动</div>';
+        for (const d of cd.deliverables) {
+          const el = document.createElement('div');
+          el.className = 'deliverable';
+          el.innerHTML = '<b>' + esc(d.title) + '</b> <span class="m">[' + esc(d.status) + ']</span>' +
+            (d.commits && d.commits.length ? '<div class="m">提交：' + d.commits.slice(0, 3).map((x) => esc(String(x).slice(0, 70))).join('<br>') + '</div>' : '') +
+            (d.artifacts && d.artifacts.length ? '<div class="m">产物：' + d.artifacts.map((a) => esc(a.path + ' (' + Math.max(1, Math.round(a.size / 1024)) + 'KB)')).join('、') + '</div>' : '') +
+            (d.review ? '<div class="m">评审：' + esc(d.review.verdict) + (d.review.score !== undefined ? ' · ' + d.review.score + ' 分' : '') + ' — ' + esc(String(d.review.comments || '').slice(0, 200)) + '</div>' : '');
+          box.appendChild(el);
+        }
+        wrap.appendChild(box);
+      }
+    }
+
+    // 队员实时输出分栏（干活中的逐字流式）
+    if (r.status === 'running') {
+      const head = document.createElement('div');
+      head.className = 'topicHead';
+      head.textContent = '队员实时输出';
+      wrap.appendChild(head);
+      const row = document.createElement('div');
+      row.className = 'cols'; row.id = 'liveRow';
+      for (const sid of r.members) {
+        const info = (r.memberInfo || []).find((mi) => mi.sessionId === sid);
+        const col = document.createElement('div');
+        col.className = 'col'; col.dataset.sid = sid;
+        col.innerHTML = '<div class="h">' + esc(info ? info.harnessLabel : sid.slice(0, 8)) + ' ⋯</div><div class="md"></div>';
+        const raw = liveBuf[sid] || '';
+        if (raw) col.querySelector('.md').innerHTML = mdToHtml(raw);
+        row.appendChild(col);
+      }
+      wrap.appendChild(row);
     }
     return wrap;
   }
 
   const STATUS = { idle:'未开始', running:'进行中', done:'已完成', error:'出错', stopped:'已停止' };
   let cachedRoomId = '';
+  let crewDetailData = null;
 
   function renderRoom(r) {
     const detail = $('detail');
@@ -613,6 +793,9 @@ export class RoomPanel {
 
     body.appendChild(r.crew ? renderCrew(r) : renderTopics(r));
 
+    // 工作队：渲染后拉一次决策/交付件（host 侧 3 秒节流）
+    if (r.crew) vscode.postMessage({ cmd: 'crewDetail', roomId: r.id });
+
     if (near) detail.scrollTop = detail.scrollHeight;
   }
 
@@ -625,7 +808,8 @@ export class RoomPanel {
   window.addEventListener('message', (ev) => {
     const m = ev.data || {};
     if (m.type === 'state') {
-      state = { rooms: m.rooms || [], selected: m.selected, showForm: m.showForm, defaultCwd: m.defaultCwd || '', harnesses: m.harnesses || [] };
+      // kind/hostCfg 是本地面板状态（用户选的模式/工头配置），跨 state 消息保留
+      state = { rooms: m.rooms || [], selected: m.selected, showForm: m.showForm, defaultCwd: m.defaultCwd || '', harnesses: m.harnesses || [], kind: state.kind || 'crew', hostCfg: state.hostCfg || {} };
       render();
       return;
     }
@@ -633,6 +817,11 @@ export class RoomPanel {
     if (m.type === 'cwd') {
       const inp = document.getElementById('fCwd');
       if (inp) inp.value = m.value;
+      return;
+    }
+    if (m.type === 'crewDetail') {
+      crewDetailData = { roomId: m.roomId, decisions: m.decisions || [], deliverables: m.deliverables || [] };
+      if (room && room.id === m.roomId) renderRoom(room);
       return;
     }
     if (m.type === 'live') {

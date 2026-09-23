@@ -149,6 +149,9 @@ export type ClientMsg =
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
   | { type: "set-auto-approve"; sessionId: string; level: "off" | "readonly" | "all" }
+  /** 工作队：请求决策记录 + 交付件面板数据；确认合并到主目录 */
+  | { type: "crew-detail"; roomId: string }
+  | { type: "crew-merge"; roomId: string }
   | { type: "config"; sessionId: string; configId: string; value: string }
   | { type: "prompt"; sessionId: string; text: string }
   | { type: "permission"; sessionId: string; requestId: string; optionId: string }
@@ -167,8 +170,19 @@ export type ClientMsg =
       topic: string;
       rounds: number;
       mode?: "parallel" | "sequential";
+      converge?: boolean;
+      tournament?: boolean;
       writeAllowed?: boolean;
-      host?: { harnessId?: string; opening?: boolean; roundSummary?: boolean; finalSummary?: boolean };
+      /** 工作队模式：评审打回上限与合并方式 */
+      crew?: { maxAttempts: number; mergeMode: "manual" | "auto" };
+      host?: {
+        harnessId?: string;
+        opening?: boolean;
+        roundSummary?: boolean;
+        finalSummary?: boolean;
+        /** 工头/主持人自己的模型等配置 */
+        configs?: Array<{ configId: string; value: string }>;
+      };
       memberConfigs?: Record<string, Array<{ configId: string; value: string }>>;
     }
   | { type: "room-topic"; roomId: string; topic: string; rounds: number; mode?: "parallel" | "sequential" }
@@ -198,4 +212,33 @@ export type ServerMsg =
   | { type: "history"; providers: Array<{ id: string; label: string }>; summaries?: Array<{ label: string; imported: number; updated: number; skipped: number }> }
   | { type: "log"; sessionId: string; line: string }
   | { type: "deleted"; sessionId: string }
+  | {
+      type: "crew-detail";
+      roomId: string;
+      /** 自动权限决策记录（新→旧） */
+      decisions: Array<{
+        ts: string; harness: string; title: string; chosen?: string; reason?: string; task?: string; intent?: string;
+        permKind?: string; locations?: string[]; input?: string; raw?: string; danger?: boolean; held?: boolean;
+      }>;
+      /** 交付件：每个任务的产物摘要、评审结论、分支提交与 diff */
+      deliverables: Array<{
+        taskId: string;
+        title: string;
+        status: string;
+        assignee?: string;
+        files: string[];
+        summary?: string;
+        review?: { reviewer: string; verdict: string; score?: number; comments: string };
+        commits: string[];
+        artifacts: Array<{ path: string; size: number }>;
+        diff?: string;
+      }>;
+    }
+  | {
+      type: "session-detail";
+      sessionId: string;
+      decisions: Array<{ ts: string; title: string; chosen?: string; reason?: string; level?: string; auto?: boolean; held?: boolean; danger?: boolean; task?: string; intent?: string; permKind?: string; input?: string }>;
+      changes: Array<{ path: string; size: number; source: "git" | "audit" }>;
+      git: boolean;
+    }
   | { type: "error"; sessionId?: string; message: string };
