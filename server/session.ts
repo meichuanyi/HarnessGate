@@ -818,11 +818,40 @@ export class HarnessSession {
     if (inTurn) {
       this.turnStartedAt = Date.now();
       this.lastProgressAt = Date.now();   // 回合开始即视为有进展，静默时钟从这里起算
+      this.armMaxTurnWatch();
     } else {
       this.turnStartedAt = undefined;
+      this.clearMaxTurnWatch();
     }
     this.hub.setInTurn(this.id, inTurn);
     this.hooks.onStatus(this.info());   // 前端靠这个显示/隐藏「停止」按钮和运行时长
+  }
+
+  private maxTurnTimer?: NodeJS.Timeout;
+
+  /** 回合最长时长（分钟）：超时自动打断并停止会话，防止挂死/失控的回合长期占用进程。
+   *  顺序：先 cancelTurn（正确放行聊天 UI 和房间循环的等待方）再 stop（SIGTERM→SIGKILL）。
+   *  会话记录保留，列表里「恢复」一键即可继续。 */
+  private armMaxTurnWatch(): void {
+    this.clearMaxTurnWatch();
+    const min = Number(process.env.HG_MAX_TURN_MIN ?? 30);
+    if (!min || min <= 0) return;   // 0 = 不限制
+    this.maxTurnTimer = setTimeout(() => {
+      if (!this.inTurnFlag) return;
+      const ran = Math.round((Date.now() - (this.turnStartedAt ?? Date.now())) / 60000);
+      const why = `回合已持续 ${ran} 分钟（超过 ${min} 分钟上限），自动停止会话以释放资源`;
+      this.log(`⚠️ ${why}；会话记录保留，列表里「恢复」即可继续`);
+      this.push({ kind: "log", ts: now(), text: `⚠️ ${why}。需要继续时在会话列表点「恢复」。` });
+      void (async () => {
+        await this.cancelTurn("max-duration");
+        await this.stop();
+      })();
+    }, min * 60_000);
+    this.maxTurnTimer.unref?.();
+  }
+
+  private clearMaxTurnWatch(): void {
+    if (this.maxTurnTimer) { clearTimeout(this.maxTurnTimer); this.maxTurnTimer = undefined; }
   }
 
   async promptAndWait(text: string, timeoutMs = 0): Promise<{ text: string; stopReason: string }> {
