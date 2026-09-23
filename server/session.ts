@@ -513,6 +513,7 @@ export class HarnessSession {
         }
 
         this.setStatus("ready");
+        this.armIdleStopWatch();   // 会话就绪即进入空闲计时（回合开始会自动解除）
         const hadModeCfg = this.pendingConfigs.some((c) => /mode/i.test(c.configId));
         if (this.pendingConfigs.length) {
           const pending = [...this.pendingConfigs];
@@ -818,13 +819,36 @@ export class HarnessSession {
     if (inTurn) {
       this.turnStartedAt = Date.now();
       this.lastProgressAt = Date.now();   // 回合开始即视为有进展，静默时钟从这里起算
+      this.clearIdleStopWatch();          // 干活中：不参与空闲回收
       this.armMaxTurnWatch();
     } else {
       this.turnStartedAt = undefined;
       this.clearMaxTurnWatch();
+      if (!this.stopRequested && this.status === "ready" && !this.roomId) this.armIdleStopWatch();
     }
     this.hub.setInTurn(this.id, inTurn);
     this.hooks.onStatus(this.info());   // 前端靠这个显示/隐藏「停止」按钮和运行时长
+  }
+
+  private idleStopTimer?: NodeJS.Timeout;
+
+  /** 空闲自动停止：进程活着但一直没干活（空闲）超过 HG_IDLE_STOP_MIN 分钟 → 自动停进程释放内存。
+   *  会话记录保留，列表「恢复」一键即可回来（agent 侧上下文也在）。房间成员会话不参与（由房间流程管理）。 */
+  private armIdleStopWatch(): void {
+    this.clearIdleStopWatch();
+    const min = Number(process.env.HG_IDLE_STOP_MIN ?? 30);
+    if (!min || min <= 0) return;   // 0 = 不限制
+    this.idleStopTimer = setTimeout(() => {
+      if (this.stopRequested || this.inTurnFlag || this.status !== "ready") return;
+      this.log(`⚠️ 空闲超过 ${min} 分钟，自动停止会话释放资源；列表里「恢复」一键即可继续（上下文都在）`);
+      this.push({ kind: "log", ts: now(), text: `⚠️ 空闲超过 ${min} 分钟，已自动停止会话（释放进程占用）。需要时点「恢复」，上下文无缝接续。` });
+      void this.stop();
+    }, min * 60_000);
+    this.idleStopTimer.unref?.();
+  }
+
+  private clearIdleStopWatch(): void {
+    if (this.idleStopTimer) { clearTimeout(this.idleStopTimer); this.idleStopTimer = undefined; }
   }
 
   private maxTurnTimer?: NodeJS.Timeout;
@@ -1267,6 +1291,7 @@ export class HarnessSession {
   /** 停掉进程但保留会话记录（可再 resume） */
   async stop(): Promise<void> {
     this.stopRequested = true;
+    this.clearIdleStopWatch();
     this.audit.append({ session: this.id, harness: this.harnessId, op: "session.stop" });
     this.ctx = undefined;
     this.pendingPerm = undefined;
