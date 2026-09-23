@@ -688,6 +688,7 @@
     <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
   </div>
   <button id="roomBtn" class="mini">圆桌</button>
+  <button id="schedBtn" class="mini" title="定时执行 agent 任务">定时</button>
   <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
   <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
   <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
@@ -742,6 +743,8 @@ let ws = null;
 let harnesses = new Map();
 let sessions = new Map();
 let rooms = [];
+let schedulesArr = [];   // 定时任务
+let schedEdit = null;    // 正在编辑的定时任务（null = 列表态）
 let pendingFiles = [];
 let entries = [];
 let nodes = [];
@@ -970,6 +973,7 @@ function handleServer(msg) {
       harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
       sessions = new Map((msg.sessions || []).map((s) => [s.id, s]));
       rooms = msg.rooms || [];
+      schedulesArr = msg.schedules || [];
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
       render();
       break;
@@ -1027,6 +1031,10 @@ function handleServer(msg) {
       break;
     case "workspace":
       renderWorkspace(msg.reports);
+      break;
+    case "schedules":
+      schedulesArr = msg.schedules || [];
+      if (state.view === "schedules") { schedEdit = null; renderSchedules(); }
       break;
     case "rooms":
       rooms = msg.rooms || [];
@@ -1105,6 +1113,7 @@ function render() {
   else if (state.view === "sessions") renderSessionList();
   else if (state.view === "chat") renderChat();
   else if (state.view === "roundtable") renderRoundtable();
+  else if (state.view === "schedules") renderSchedules();
 }
 
 function renderCrumbs() {
@@ -2409,9 +2418,185 @@ $("roomBtn").onclick = () => {
   if (!state.rtCwd) state.rtCwd = $("viewRoot").dataset.cwd || "";
   render();
 };
+$("schedBtn").onclick = () => {
+  $("wsPanel").hidden = true;
+  state.view = "schedules";
+  state.harnessId = null;
+  state.sessionId = null;
+  schedEdit = null;
+  send({ type: "schedules-list" });
+  render();
+};
 
 const ROOM_STATUS = { running: "讨论中", done: "已完成", error: "出错", stopped: "已停止", idle: "待开始" };
 const roomById = (id) => rooms.find((r) => r.id === id);
+
+/* =====================================================================
+   定时任务：列表 + 编辑器（频率+窗口两层模型 → cron，croner 求值）
+   ===================================================================== */
+function cadenceDescWeb(c) {
+  if (!c) return "?";
+  const wd = (days) => (days || []).map((d) => "日一二三四五六"[d] ?? d).join("/");
+  if (c.type === "daily") return "每天 " + c.at;
+  if (c.type === "interval") return "每 " + c.everyMinutes + " 分钟";
+  if (c.type === "weekly") return "每周" + wd(c.days) + " " + c.at;
+  if (c.type === "cron") return "cron: " + c.expr;
+  return "?";
+}
+const LAST_STATUS = { ok: "✓ 成功", error: "✕ 出错", "contract-fail": "✕ 契约未满足", timeout: "⏱ 超时", "skipped-running": "跳过（上次仍在跑）", "missing-files": "✕ 缺前置文件" };
+
+function renderSchedules() {
+  const root = $("viewRoot");
+  if (schedEdit) { renderSchedEditor(schedEdit); return; }
+  const rows = schedulesArr.map((s) => {
+    const st = s.state || {};
+    const h = harnesses.get(s.harnessId);
+    const statusPill = !s.enabled
+      ? '<span class="pill saved">已停用</span>'
+      : st.lastStatus === "ok" ? '<span class="pill done">✓ 上次成功</span>'
+      : st.lastStatus === "error" ? '<span class="pill error">✕ 上次出错</span>'
+      : st.lastStatus ? '<span class="pill starting">' + (LAST_STATUS[st.lastStatus] || st.lastStatus) + '</span>'
+      : '<span class="pill idle">待首次运行</span>';
+    const next = st.nextFireAt ? new Date(st.nextFireAt).toLocaleString() : "—";
+    return `
+      <div class="wsRow" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+        ${statusPill}
+        <div style="flex:1;min-width:220px">
+          <div style="font-weight:600;font-size:13.5px">${esc(s.name || s.id)} <span class="meta2">${esc(h?.label || s.harnessId)}</span></div>
+          <div class="meta2">${esc(cadenceDescWeb(s.cadence))} · 下次: ${esc(next)}${st.lastRunAt ? " · 上次: " + esc(new Date(st.lastRunAt).toLocaleString()) + " " + (LAST_STATUS[st.lastStatus || ""] || "") : ""}${st.consecutiveFailures ? " · 连续失败 " + st.consecutiveFailures : ""}</div>
+        </div>
+        <button class="mini primary" data-run="${esc(s.id)}">▶ 立即运行</button>
+        <button class="mini" data-toggle="${esc(s.id)}">${s.enabled ? "停用" : "启用"}</button>
+        <button class="mini" data-edit="${esc(s.id)}">编辑</button>
+        <button class="mini ghost" data-del="${esc(s.id)}">删除</button>
+      </div>`;
+  }).join("");
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">定时任务</span>
+        <span class="meta2">到点自动驱动 agent 执行 prompt；会话即产物，全程审计</span></div>
+      <div class="rtCard">${rows || '<div class="empty">还没有定时任务。点右上「新建」。</div>'}</div>
+    </div>`;
+  root.querySelectorAll("[data-run]").forEach((b) => { b.onclick = () => send({ type: "schedule-run", id: b.dataset.run }); });
+  root.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { schedEdit = JSON.parse(JSON.stringify(schedulesArr.find((x) => x.id === b.dataset.edit))); renderSchedules(); }; });
+  root.querySelectorAll("[data-toggle]").forEach((b) => {
+    b.onclick = () => {
+      const s = schedulesArr.find((x) => x.id === b.dataset.toggle);
+      if (s) send({ type: "schedule-save", schedule: { ...s, enabled: !s.enabled } });
+    };
+  });
+  root.querySelectorAll("[data-del]").forEach((b) => {
+    b.onclick = () => {
+      if (!confirm("删除该定时任务？（历史会话保留）")) return;
+      send({ type: "schedule-delete", id: b.dataset.del });
+    };
+  });
+}
+
+function renderSchedEditor(e) {
+  const root = $("viewRoot");
+  const c = e.cadence || { type: "daily", at: "09:00" };
+  const w = e.window || {};
+  const wk = w.weekdays || [1, 2, 3, 4, 5];
+  const wdBoxes = [1, 2, 3, 4, 5, 6, 0].map((d) =>
+    '<label style="font-size:11.5px"><input type="checkbox" class="seWd" value="' + d + '"' + (wk.includes(d) ? " checked" : "") + ' style="width:auto">' + "一二三四五六日"[d === 0 ? 6 : d - 1] + "</label>"
+  ).join("");
+  const hOpts = [...harnesses.values()].filter((h) => !h.blocked).map((h) =>
+    '<option value="' + esc(h.id) + '"' + (h.id === e.harnessId ? " selected" : "") + ">" + esc(h.label) + "</option>").join("");
+  const ct = c.type || "daily";
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">定时任务</span><span class="meta2">频率 + 运行窗口 → cron 求值（croner）</span></div>
+      <div class="rtCard">
+        <div class="row"><label>名称 *</label><input type="text" id="seName" value="${esc(e.name || "")}" style="flex:1;min-width:220px" /></div>
+        <div class="row"><label>Harness *</label><select id="seHarness" style="max-width:240px">${hOpts}</select>
+          <label>自动决策</label><select id="seAA">
+            <option value="readonly"${e.autoApprove === "readonly" ? " selected" : ""}>只读自动（推荐）</option>
+            <option value="off"${!e.autoApprove || e.autoApprove === "off" ? " selected" : ""}>人工审批</option>
+            <option value="all"${e.autoApprove === "all" ? " selected" : ""}>全自动</option>
+          </select>
+          <label>会话</label><select id="seSessionMode">
+            <option value="fresh"${e.sessionMode !== "dedicated" ? " selected" : ""}>每次全新（格式最稳）</option>
+            <option value="dedicated"${e.sessionMode === "dedicated" ? " selected" : ""}>专属会话（上下文累积）</option>
+          </select>
+        </div>
+        <div class="row"><label>工作目录</label><input type="text" id="seCwd" value="${esc(e.cwd || "")}" placeholder="留空 = 自动工作区 ~/.harnessgate/schedules/<id>（自动 git init）" style="flex:1;min-width:260px" /></div>
+        <div class="row"><label>频率 *</label>
+          <select id="seCadType">
+            <option value="daily"${ct === "daily" ? " selected" : ""}>每天</option>
+            <option value="interval"${ct === "interval" ? " selected" : ""}>每隔 N 分钟</option>
+            <option value="weekly"${ct === "weekly" ? " selected" : ""}>每周某几天</option>
+            <option value="cron"${ct === "cron" ? " selected" : ""}>cron 表达式（高级）</option>
+          </select>
+          <span id="seCadDyn"></span>
+        </div>
+        <div class="row"><label>运行窗口（可选，窗口外顺延）</label>
+          从 <input type="time" id="seWinFrom" value="${esc(w.from || "")}" />
+          到 <input type="time" id="seWinTo" value="${esc(w.to || "")}" />
+          ${wdBoxes}
+        </div>
+        <div class="row" style="margin-top:10px"><label>Prompt 模板 *</label></div>
+        <textarea id="sePrompt" style="width:100%;min-height:88px;box-sizing:border-box;font-family:var(--vscode-editor-font-family,monospace);padding:8px">${esc(e.promptTemplate || "")}</textarea>
+        <div class="meta2" style="margin:4px 0 10px">占位符：{{date}} {{time}} {{weekday}} 会替换为运行时的实际值；要调用的脚本放在工作目录里，用相对路径引用。</div>
+        <div class="row">
+          <label>产出契约：前置文件</label><input type="text" id="seRequires" value="${esc((e.contract?.requires || []).join(", "))}" placeholder="scripts/fetch.py, score.py（逗号分隔，可空）" style="flex:1;min-width:200px" />
+        </div>
+        <div class="row">
+          <label>产出契约：产物文件</label><input type="text" id="seOutput" value="${esc(e.contract?.outputFile || "")}" placeholder="日报-{{date}}.md（可空；跑完校验存在且非空）" style="flex:1;min-width:200px" />
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="seEnabled"${e.enabled !== false ? " checked" : ""} style="width:auto"> 启用</label>
+          <span style="flex:1"></span>
+          <button class="mini" id="seCancel">取消</button>
+          <button class="btn primary" id="seSave">保存</button>
+        </div>
+      </div>
+    </div>`;
+
+  const dyn = () => {
+    const t = $("seCadType").value;
+    const box = $("seCadDyn");
+    const cur = e.cadence || {};
+    if (t === "daily") box.innerHTML = '每天 <input type="time" id="seAt" value="' + esc((ct === "daily" && cur.at) || "09:00") + '" />';
+    else if (t === "interval") box.innerHTML = '每 <input type="number" id="seEvery" min="1" value="' + esc(String((ct === "interval" && cur.everyMinutes) || 60)) + '" style="width:70px" /> 分钟（窗口外自动顺延）';
+    else if (t === "weekly") box.innerHTML = '每周 ' + wdBoxes + ' <input type="time" id="seAt" value="' + esc((ct === "weekly" && cur.at) || "09:00") + '" />';
+    else box.innerHTML = '<input type="text" id="seExpr" value="' + esc((ct === "cron" && cur.expr) || "0 9 * * 1-5") + '" placeholder="分 时 日 月 周" style="width:180px" />';
+  };
+  $("seCadType").onchange = dyn;
+  dyn();
+
+  $("seCancel").onclick = () => { schedEdit = null; renderSchedules(); };
+  $("seSave").onclick = () => {
+    const t = $("seCadType").value;
+    let cadence;
+    try {
+      if (t === "daily") cadence = { type: "daily", at: $("seAt").value || "09:00" };
+      else if (t === "interval") cadence = { type: "interval", everyMinutes: Number($("seEvery").value) || 60 };
+      else if (t === "weekly") {
+        const days = [...root.querySelectorAll(".seWd:checked")].map((x) => Number(x.value));
+        if (!days.length) { alertLike2("每周频率至少选一天"); return; }
+        cadence = { type: "weekly", days, at: $("seAt").value || "09:00" };
+      } else cadence = { type: "cron", expr: $("seExpr").value.trim() };
+    } catch (err) { alertLike2(String(err.message || err)); return; }
+    const winFrom = $("seWinFrom").value, winTo = $("seWinTo").value;
+    const weekdays = [...root.querySelectorAll(".seWd:checked")].map((x) => Number(x.value));
+    const window = (winFrom || winTo || weekdays.length) ? { from: winFrom || undefined, to: winTo || undefined, weekdays: weekdays.length ? weekdays : undefined } : undefined;
+    const spec = {
+      id: e.id, name: $("seName").value.trim(), enabled: $("seEnabled").checked,
+      harnessId: $("seHarness").value, cwd: $("seCwd").value.trim(),
+      autoApprove: $("seAA").value, sessionMode: $("seSessionMode").value,
+      cadence, window, overlap: "skip",
+      promptTemplate: $("sePrompt").value,
+      contract: { requires: $("seRequires").value.split(",").map((x) => x.trim()).filter(Boolean), outputFile: $("seOutput").value.trim() || undefined },
+    };
+    if (!spec.name) { alertLike2("先起个名字"); return; }
+    send({ type: "schedule-save", schedule: spec });
+    schedEdit = null;
+  };
+}
+function alertLike2(msg) {
+  showToast("⚠ " + msg, 3500);
+}
 
 function renderRoundtable() {
   const root = $("viewRoot");

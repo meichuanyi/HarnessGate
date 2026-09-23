@@ -1,5 +1,6 @@
 import type { WorkspaceReport } from "./workspace.ts";
 import type { Room } from "./room.ts";
+import type { Schedule } from "./schedules.ts";
 
 export type HarnessSpec = {
   id: string;
@@ -204,6 +205,10 @@ export type ClientMsg =
   | { type: "crew-detail"; roomId: string }
   | { type: "room-run"; roomId: string }
   | { type: "room-stop"; roomId: string }
+  | { type: "schedules-list" }
+  | { type: "schedule-save"; schedule: Schedule }
+  | { type: "schedule-delete"; id: string }
+  | { type: "schedule-run"; id: string }
   | { type: "list" };
 
 export type ServerMsg =
@@ -213,6 +218,7 @@ export type ServerMsg =
       sessions: SessionInfo[];
       defaultCwd: string;
       rooms?: Room[];
+      schedules?: Schedule[];
       providers?: Array<{ id: string; label: string }>;
     }
   | { type: "session"; session: SessionInfo }
@@ -273,5 +279,6 @@ export type ServerMsg =
   | { type: "handoff_done"; from: string; to: string }
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
+  | { type: "schedules"; schedules: Schedule[] }
   | { type: "log"; sessionId: string; line: string }
   | { type: "error"; sessionId?: string; message: string };

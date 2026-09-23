@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyOverrides, saveOverrides } from "./registry.ts";
+import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle } from "./session.ts";
@@ -24,6 +25,8 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.HG_PORT ?? 9830);
 const HOST = process.env.HG_HOST ?? "0.0.0.0";
 const DATA_DIR = process.env.HG_DATA_DIR ?? join(homedir(), ".harnessgate");
+const SCHEDULES_FILE = join(DATA_DIR, "schedules.json");
+const AUTO_WORKSPACE_ROOT = join(DATA_DIR, "schedules");
 const TOKEN_FILE = join(DATA_DIR, "token");
 
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -1035,6 +1038,62 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "schedules-list": {
+          ws.send(JSON.stringify({ type: "schedules", schedules } satisfies ServerMsg));
+          break;
+        }
+
+        case "schedule-save": {
+          const incoming = (msg as unknown as { schedule: Partial<Schedule> }).schedule;
+          if (!incoming?.name || !incoming?.harnessId || !incoming?.cadence || !incoming?.promptTemplate) {
+            ws.send(JSON.stringify({ type: "error", message: "定时任务缺少必填字段（名称/harness/频率/prompt 模板）" } satisfies ServerMsg));
+            break;
+          }
+          try {
+            compileCronCheck(incoming.cadence);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: `频率配置有误: ${err instanceof Error ? err.message : String(err)}` } satisfies ServerMsg));
+            break;
+          }
+          const id = incoming.id || newScheduleId();
+          const existing = schedules.find((s) => s.id === id);
+          const rec: Schedule = {
+            ...(existing ?? { id, createdAt: new Date().toISOString(), state: {} as Schedule["state"] }),
+            ...(incoming as Schedule),
+            id,
+            enabled: incoming.enabled !== false,
+            state: {
+              ...(existing?.state ?? {}),
+              nextFireAt: incoming.enabled !== false ? nextFire(incoming.cadence, incoming.window)?.toISOString() : undefined,
+            },
+          };
+          const idx = schedules.findIndex((s) => s.id === id);
+          if (idx >= 0) schedules[idx] = rec; else schedules.push(rec);
+          audit.append({ op: "schedule.save", schedule: id, name: rec.name });
+          saveAndBroadcastSchedules();
+          break;
+        }
+
+        case "schedule-delete": {
+          const before = schedules.length;
+          schedules = schedules.filter((s) => s.id !== msg.id);
+          if (schedules.length !== before) {
+            audit.append({ op: "schedule.delete", schedule: String(msg.id) });
+            saveAndBroadcastSchedules();
+          }
+          break;
+        }
+
+        case "schedule-run": {
+          const s = schedules.find((x) => x.id === msg.id);
+          if (!s) {
+            ws.send(JSON.stringify({ type: "error", message: "找不到该定时任务" } satisfies ServerMsg));
+            break;
+          }
+          void runSchedule(s);
+          break;
+        }
+
         case "session-detail": {
           const sess = live.get(msg.sessionId);
           const rec = sess ? sess.record() : store.get(msg.sessionId);
@@ -1134,6 +1193,119 @@ function lanAddress(): string {
   }
   return "localhost";
 }
+
+/* ---------- 定时任务：状态、执行器与 tick ---------- */
+
+let schedules: Schedule[] = loadSchedules(SCHEDULES_FILE);
+// 恢复时校正 nextFireAt（文件里的时刻可能已过）
+for (const s of schedules) if (s.enabled && !s.state.running) s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
+
+function saveAndBroadcastSchedules(): void {
+  saveSchedules(SCHEDULES_FILE, schedules);
+  broadcast({ type: "schedules", schedules } as never);
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+function fillTemplate(tpl: string): string {
+  const d = new Date();
+  const vars: Record<string, string> = {
+    date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+    time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+    weekday: ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()] ?? "",
+  };
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "");
+}
+
+const compileCronCheck = compileCron;
+const SCHEDULE_MAX_SILENCE_MS = Number(process.env.HG_SCHEDULE_TURN_TIMEOUT_MS ?? 30 * 60_000);
+
+async function runSchedule(s: Schedule): Promise<void> {
+  if (s.state.running) { s.state.lastStatus = "skipped-running"; return; }
+  s.state.running = true;
+  saveAndBroadcastSchedules();
+  const cwd = s.cwd?.trim() || join(AUTO_WORKSPACE_ROOT, s.id);
+  const vars = fillTemplate;
+  let session: HarnessSession | undefined;
+  try {
+    try { mkdirSync(cwd, { recursive: true }); } catch { /* 已存在 */ }
+    // 前置预检：契约要求的文件必须存在且非空
+    for (const req of s.contract?.requires ?? []) {
+      const p = join(cwd, req);
+      if (!existsSync(p) || statSync(p).size === 0) throw new Error(`缺少前置文件: ${req}`);
+    }
+    // 会话：dedicated → 复用/复活；fresh → 新建
+    if (s.sessionMode === "dedicated" && s.state.lastSessionId) {
+      if (!live.has(s.state.lastSessionId)) reviveSession(s.state.lastSessionId);
+      session = live.get(s.state.lastSessionId);
+    }
+    if (!session) {
+      const spec = specOf(s.harnessId);
+      if (!spec) throw new Error(`未知 harness: ${s.harnessId}`);
+      const record = HarnessSession.newRecord(spec, cwd);
+      session = new HarnessSession(spec, record, audit, makeHooks(), hub);
+      live.set(session.id, session);
+      store.upsert(session.record());
+      broadcast({ type: "session", session: session.info() });
+      void session.start("new");
+    }
+    s.state.lastSessionId = session.id;
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline && session.info().status === "starting") {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (session.info().status !== "ready") throw new Error(`会话未就绪（${session.info().status}）`);
+    if (s.autoApprove) session.setAutoApprove(s.autoApprove);
+
+    const r = await session.promptAndWait(vars(s.promptTemplate), SCHEDULE_MAX_SILENCE_MS);
+    if (r.stopReason === "timeout") throw new Error("回合静默超时");
+    // 产物验收：契约声明的输出文件必须存在且非空
+    if (s.contract?.outputFile) {
+      const out = vars(s.contract.outputFile);
+      const p = join(cwd, out);
+      if (!existsSync(p) || statSync(p).size === 0) throw new Error(`契约未满足：产物 ${out} 未生成`);
+    }
+    s.state.lastStatus = "ok";
+    s.state.consecutiveFailures = 0;
+    s.state.lastError = undefined;
+    audit.append({ op: "schedule.run", schedule: s.id, status: "ok", session: session.id, chars: r.text.length });
+    console.log(`[schedule] ${s.name || s.id}: 完成（${r.text.length} 字）`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    s.state.lastStatus = "error";
+    s.state.lastError = message;
+    s.state.consecutiveFailures = (s.state.consecutiveFailures ?? 0) + 1;
+    let extra = "";
+    if ((s.state.consecutiveFailures ?? 0) >= 3) {
+      s.enabled = false;
+      extra = "；连续失败 3 次，已自动暂停（修复后在定时面板重新启用）";
+    }
+    audit.append({ op: "schedule.run", schedule: s.id, status: "error", error: message });
+    console.error(`[schedule] ${s.name || s.id}: ${message}${extra}`);
+  } finally {
+    s.state.running = false;
+    s.state.lastRunAt = new Date().toISOString();
+    s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
+    saveAndBroadcastSchedules();
+  }
+}
+
+// tick：每 30 秒扫描到期的定时任务
+setInterval(() => {
+  let changed = false;
+  for (const s of schedules) {
+    if (!s.enabled || s.state.running) continue;
+    if (!s.state.nextFireAt) {
+      s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
+      changed = true;
+      continue;
+    }
+    if (new Date(s.state.nextFireAt).getTime() <= Date.now()) {
+      changed = true;
+      void runSchedule(s);
+    }
+  }
+  if (changed) saveAndBroadcastSchedules();
+}, 30_000).unref?.();
 
 http.listen(PORT, HOST, () => {
   const avail = registry.harnesses.map((h) => availability(h, trust, currentProbe()));
