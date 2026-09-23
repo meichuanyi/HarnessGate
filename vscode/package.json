@@ -2,7 +2,7 @@
   "name": "harnessgate",
   "displayName": "HarnessGate",
   "description": "HarnessGate 的 VS Code 客户端（瘦客户端，本机无需装任何 agent CLI）。需要先在服务器上安装并运行后端 HarnessGate：git clone 后 npm install && npm start（监听 9830），插件里填 ws://<服务器IP>:9830/ws 即可远程驱动 OpenCode/Claude Code/Codex/ZCode 等多个编码 agent",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "publisher": "meichuan",
   "license": "MIT",
   "engines": {

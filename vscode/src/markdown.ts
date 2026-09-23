@@ -80,5 +80,47 @@ function mdToHtml(src: string): string {
   return out.join("");
 }
 
+/* ---------- 数学公式提取（与网页版同管线的前半段，KaTeX 由 webview 挂载）----------
+   先从原文抠出数学段（$$…$$ / $…$ / \[…\] / \(…\)）换成私有区占位符（转义/行内变换碰不到），
+   渲染后再还原成 .ktx 占位 span（data-tex 带原文），webview 里 mountMath 用 KaTeX 渲染。
+   代码块/行内代码不参与提取；$…$ 需含 ^ _ \ { } = 之一才当公式（避免 "$5 和 $10" 误伤）。 */
+export type MathSeg = { tex: string; display: 0 | 1 };
+
+const mathish = (s: string): boolean => /[\\^_{}=]/.test(s) && /[A-Za-z0-9]/.test(s);
+
+export function extractMath(src: string): { text: string; math: MathSeg[] } {
+  const math: MathSeg[] = [];
+  const ph = (tex: string, display: 0 | 1): string => {
+    math.push({ tex, display });
+    return `\uE000${math.length - 1}\uE001`;
+  };
+  let text = String(src ?? "");
+  const codes: string[] = [];
+  text = text
+    .replace(/```[\s\S]*?```/g, (m) => { codes.push(m); return `\uE002${codes.length - 1}\uE003`; })
+    .replace(/`[^`\n]+`/g, (m) => { codes.push(m); return `\uE002${codes.length - 1}\uE003`; });
+  text = text
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex: string) => ph(tex.trim(), 1))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex: string) => ph(tex.trim(), 1))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, tex: string) => ph(tex.trim(), 0))
+    .replace(/\$([^$\n]+)\$/g, (m, tex: string) => (mathish(tex) ? ph(tex, 0) : m));
+  text = text.replace(/\uE002(\d+)\uE003/g, (_, i: string) => codes[Number(i)] ?? "");
+  return { text, math };
+}
+
+export function restoreMathPlaceholders(html: string, math: MathSeg[]): string {
+  return html.replace(/\uE000(\d+)\uE001/g, (_, i: string) => {
+    const m = math[Number(i)];
+    if (!m) return "";
+    return `<span class="ktx" data-display="${m.display}" data-tex="${esc(m.tex)}">${esc(m.tex)}</span>`;
+  });
+}
+
+/** mdToHtml + 数学占位符：插件侧渲染含公式的消息用这个（webview 的 mountMath 负责最终排版） */
+export function mdToHtmlMath(src: string): string {
+  const { text, math } = extractMath(src);
+  return restoreMathPlaceholders(mdToHtml(text), math);
+}
+
 export { mdToHtml, inlineMd, esc };
 

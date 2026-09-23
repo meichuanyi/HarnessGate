@@ -18,7 +18,10 @@ export function generateRendererSourceSync() {
   const stripped = ts
     .replace(/^import .*$/gm, "")
     .replace(/export const RENDERER_SOURCE: string = (?:.|\n)*?;\n$/, "")
-    .replace(/export \{ mdToHtml, inlineMd, esc \};\n?/, "")
+    // 行内具名导出一律剥前缀（export function / export const / export type …）；
+    // 旧的固定行匹配会在 markdown.ts 增删导出时漏剥 → 注入串带 export → webview 整块 SyntaxError
+    .replace(/^export (?=(const|function|class|let|var|type)\b)/gm, "")
+    .replace(/export \{[^}]*\};?\n?/g, "")
     .replace(/\/\*\*\n \* 同一套渲染器的源码字符串[\s\S]*?\*\/\n/, "")
     .trim();
 
@@ -26,6 +29,9 @@ export function generateRendererSourceSync() {
   if (!js.includes("function mdToHtml")) throw new Error("渲染器转译结果异常");
   if (new RegExp(":\\s*(string|number|boolean|unknown)\\b").test(js)) {
     throw new Error("转译后仍含类型标注");
+  }
+  if (/\bexport\b/.test(js)) {
+    throw new Error("转译后仍含 export 语句（会让 Webview 脚本整体语法错误）");
   }
 
   const out = `/* 该文件由 esbuild.mjs 生成（把 markdown.ts 转译成 JS 再字符串化），勿手改 */

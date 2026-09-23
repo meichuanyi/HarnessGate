@@ -4,6 +4,8 @@ import type { Store } from "./store.ts";
 import type { Room, RoomTopic, RoomTurn } from "./protocol.ts";
 import { mdToHtml } from "./markdown.ts";
 import { RENDERER_SOURCE } from "./generated/renderer-source.ts";
+import { MATH_MOUNT_SOURCE, katexInline } from "./math-mount.ts";
+
 import { promptCwd } from "./cwd-input.ts";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -275,10 +277,12 @@ export class RoomPanel {
   }
 
   private html(): string {
-    const csp = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';";
+    const kt = katexInline();
+    const csp = "default-src 'none'; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline';";
     return `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
+
 <style>
   :root { --line: var(--vscode-panel-border); --dim: var(--vscode-descriptionForeground); }
   body { margin:0; font-family:var(--vscode-font-family); font-size:var(--vscode-font-size);
@@ -355,7 +359,8 @@ export class RoomPanel {
   .decision .h { color:var(--dim); font-size:10.5px; }
   .deliverable { border:1px solid var(--line); border-radius:6px; padding:7px 10px; margin:6px 0; font-size:12px; }
   .deliverable .m { font-size:10.5px; color:var(--dim); margin:2px 0; }
-</style></head>
+</style><style>${kt.css}</style><script>${kt.js}</script>
+</head>
 <body>
 <header>
   <span class="ttl">圆桌会议</span>
@@ -369,6 +374,7 @@ export class RoomPanel {
 </main>
 <script>
   ${RENDERER_SOURCE}
+  ${MATH_MOUNT_SOURCE}
   const vscode = acquireVsCodeApi();
   /* 页面脚本任何未捕获异常都回报扩展主机 */
   window.addEventListener('error', (e) => {

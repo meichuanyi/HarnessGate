@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import type { GateClient } from "./client.ts";
 import type { Store } from "./store.ts";
 import type { PermissionOption, SessionInfo, TranscriptEntry } from "./protocol.ts";
-import { mdToHtml, esc } from "./markdown.ts";
+import { mdToHtml, mdToHtmlMath, esc } from "./markdown.ts";
 import { RENDERER_SOURCE } from "./generated/renderer-source.ts";
+import { MATH_MOUNT_SOURCE, katexInline } from "./math-mount.ts";
+
 
 const STATUS_LABEL: Record<string, string> = {
   starting: "启动中",
@@ -307,7 +309,7 @@ export class ChatPanel {
       return;
     }
     if (cmd === "wvError") {
-      this.log(`[chat webview] ${String(m.message ?? "未知错误")}`);
+      this.log(`[chat webview] ${String(m.message ?? "未知错误")}`); console.error("[chat webview]", String(m.message ?? ""));
       this.entries.push({ kind: "error", message: `webview: ${String(m.message ?? "")}` });
       this.upsertEntry(this.entries.length - 1);
       return;
@@ -393,10 +395,12 @@ export class ChatPanel {
   }
 
   private html(): string {
-    const csp = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';";
+    const kt = katexInline();
+    const csp = "default-src 'none'; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline';";
     return `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
+<style>${kt.css}</style>
 <style>
   :root { --line: var(--vscode-panel-border); --dim: var(--vscode-descriptionForeground); }
   body { margin:0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
@@ -472,7 +476,8 @@ export class ChatPanel {
   .loadMore button { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
     border:0; border-radius:4px; padding:4px 14px; font-size:12px; cursor:pointer; }
   .stat { text-align:center; color:var(--dim); font-size:11.5px; padding:4px 0 10px; }
-</style></head>
+</style><script>${kt.js}</script>
+</head>
 <body>
 <header id="head"></header>
 <div class="bar">
@@ -494,6 +499,7 @@ export class ChatPanel {
 <script>
   /* 与服务端/插件同一套 Markdown 渲染器（构建时内联；esc/mdToHtml 都来自它，别重复声明） */
   ${RENDERER_SOURCE}
+  ${MATH_MOUNT_SOURCE}
   const vscode = acquireVsCodeApi();
   /* 页面脚本任何未捕获异常都回报扩展主机——「卡在加载中」时能看到真实原因 */
   window.addEventListener('error', (e) => {
@@ -815,7 +821,7 @@ function toEntry(e: TranscriptEntry): Entry {
 function htmlOf(e: Entry): string {
   switch (e.kind) {
     case "user": return `<p>${esc(e.text).replace(/\n/g, "<br>")}</p>`;
-    case "assistant": return mdToHtml(e.text);
+    case "assistant": return mdToHtmlMath(e.text);
     case "thought": return `<p>${esc(e.text).replace(/\n/g, "<br>")}</p>`;
     case "tool": return `${esc(e.title)} <span style="opacity:.7">[${esc(e.status)}]</span>` +
       (e.detail ? `<details style="margin-top:5px"><summary>看执行细节</summary><pre>${esc(e.detail)}</pre></details>` : "");
