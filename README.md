@@ -90,7 +90,6 @@ ACP agent 干活时会请求授权。HarnessGate 提供三档：
 | `HG_DATA_DIR` | ~/.harnessgate | 全部落盘数据 |
 | `HG_DEFAULT_CWD` | /root/projects | 新会话默认目录 |
 | `HG_ROOM_TURN_TIMEOUT_MS` | 300000 | 圆桌单次发言**静默**上限（看门狗） |
-| `HG_MAX_TURN_MIN` | 30 | 单回合最长时长（分钟）：超时自动打断并**停止会话**防占用（0=不限制）；会话可从列表恢复继续 |
 | `HG_IDLE_STOP_MIN` | 30 | 空闲自动停止（分钟）：进程活着但持续无回合，自动停进程释放内存（0=不限制；房间成员会话不参与） |
 | `HG_CREW_TURN_TIMEOUT_MS` | 1200000 | 工作队单任务**静默**上限 |
 | `HG_CREW_APPROVE_SCORE` | 8 | 评审通过分数线（0-10） |
