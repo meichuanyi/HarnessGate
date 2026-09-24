@@ -1095,6 +1095,13 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "schedule-segmented-get": {
+          // AI 精切结果缓存查询：结果广播是瞬时的，面板晚开也能取
+          const cached = segmentationCache.get(String(msg.sessionId ?? ""));
+          ws.send(JSON.stringify({ type: "schedule-segmented", sessionId: String(msg.sessionId ?? ""), segments: cached?.segments ?? [] } satisfies ServerMsg));
+          break;
+        }
+
         case "schedule-segment": {
           // AI 精切：把压缩后的用户消息序列交给当前会话的模型，输出任务段（本地切分的复核/兜底）
           const session = live.get(msg.sessionId);
@@ -1147,6 +1154,7 @@ ${users.join("\n")}`;
               }
             }
             audit.append({ op: "schedule.segment", session: session.id, found: segsOut.length });
+            segmentationCache.set(session.id, { segments: segsOut.slice(0, 5), at: new Date().toISOString() });
             ws.send(JSON.stringify({ type: "schedule-segmented", sessionId: session.id, segments: segsOut.slice(0, 5) } satisfies ServerMsg));
           })();
           break;
@@ -1334,6 +1342,7 @@ function parseDistilled(text: string): Record<string, unknown> | null {
 /* ---------- 定时任务：状态、执行器与 tick ---------- */
 
 let schedules: Schedule[] = loadSchedules(SCHEDULES_FILE);
+const segmentationCache = new Map<string, { segments: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }>; at: string }>();
 // 恢复时校正 nextFireAt（文件里的时刻可能已过）
 for (const s of schedules) if (s.enabled && !s.state.running) s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
 

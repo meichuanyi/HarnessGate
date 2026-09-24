@@ -211,6 +211,7 @@ export type ClientMsg =
   | { type: "schedule-run"; id: string }
   | { type: "schedule-distill"; sessionId: string; fromTs?: string; toTs?: string }
   | { type: "schedule-segment"; sessionId: string }
+  | { type: "schedule-segmented-get"; sessionId: string }
   | { type: "list" };
 
 export type ServerMsg =
