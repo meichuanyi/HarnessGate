@@ -2474,9 +2474,20 @@ function renderSchedules() {
   root.innerHTML = `
     <div class="rtWrap">
       <div class="rtHead"><span class="ttl">定时任务</span>
-        <span class="meta2">到点自动驱动 agent 执行 prompt；会话即产物，全程审计</span></div>
+        <span class="meta2">到点自动驱动 agent 执行 prompt；会话即产物，全程审计</span>
+        <span style="flex:1"></span>
+        <button class="mini primary" id="schedNew">＋ 新建定时任务</button></div>
       <div class="rtCard">${rows || '<div class="empty">还没有定时任务。点右上「新建」。</div>'}</div>
     </div>`;
+  $("schedNew").onclick = () => {
+    const first = [...harnesses.values()].find((h) => !h.blocked);
+    schedEdit = {
+      name: "", enabled: true, harnessId: first?.id || "", cwd: "", autoApprove: "readonly",
+      cadence: { type: "daily", at: "09:00" }, window: {}, overlap: "skip", sessionMode: "fresh",
+      promptTemplate: "", contract: {}
+    };
+    renderSchedules();
+  };
   root.querySelectorAll("[data-run]").forEach((b) => { b.onclick = () => send({ type: "schedule-run", id: b.dataset.run }); });
   root.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { schedEdit = JSON.parse(JSON.stringify(schedulesArr.find((x) => x.id === b.dataset.edit))); renderSchedules(); }; });
   root.querySelectorAll("[data-toggle]").forEach((b) => {
