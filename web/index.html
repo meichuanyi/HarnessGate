@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#12151c" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <script>
@@ -16,6 +18,12 @@
     var isNarrow = window.innerWidth <= 860;
     var isMob = pref === "mobile" || (pref !== "desktop" && (isMobUA || isTouch || isNarrow));
     if (isMob) document.documentElement.classList.add("is-mobile");
+  } catch(e) {}
+  /* PWA：仅 https 安全上下文注册 Service Worker（http 局域网自动跳过） */
+  try {
+    if ("serviceWorker" in navigator && location.protocol === "https:") {
+      navigator.serviceWorker.register("/sw.js").catch(function() {});
+    }
   } catch(e) {}
 })();
 </script>

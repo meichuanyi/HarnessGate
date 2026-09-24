@@ -362,6 +362,21 @@ const http = createServer(async (req, res) => {
     }
   }
   // 静态资源（/static/... → web/ 目录，白名单扩展名；KaTeX 等自托管依赖）
+  if (url.pathname === "/sw.js") {
+    // Service Worker 必须在根作用域才能覆盖全站（加 Service-Worker-Allowed 头）
+    res.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "service-worker-allowed": "/",
+      "cache-control": "no-cache",
+    });
+    res.end(readFileSync(join(ROOT, "web", "sw.js")));
+    return;
+  }
+  if (url.pathname === "/manifest.webmanifest") {
+    res.writeHead(200, { "content-type": "application/manifest+json", "cache-control": "public, max-age=3600" });
+    res.end(readFileSync(join(ROOT, "web", "static", "manifest.webmanifest")));
+    return;
+  }
   if (url.pathname.startsWith("/static/")) {
     const rel = url.pathname.slice("/static/".length);
     const safe = rel.replace(/\.\./g, "");   // 防目录穿越
