@@ -1095,6 +1095,63 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "schedule-segment": {
+          // AI 精切：把压缩后的用户消息序列交给当前会话的模型，输出任务段（本地切分的复核/兜底）
+          const session = live.get(msg.sessionId);
+          if (!session || session.info().status !== "ready") {
+            ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: "AI 精切需要会话在运行（先恢复会话）" } satisfies ServerMsg));
+            break;
+          }
+          const users = session.transcriptEntries()
+            .map((e, i) => ({ e, i }))
+            .filter(({ e }) => e.kind === "user" && (e as { text?: string }).text?.trim())
+            .map(({ e, i }) => {
+              const u = e as { text: string; ts: string };
+              const t = new Date(u.ts);
+              const stamp = `${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+              return `#${i} ${stamp} ${u.text.trim().slice(0, 120)}`;
+            });
+          if (!users.length) {
+            ws.send(JSON.stringify({ type: "error", sessionId: session.id, message: "会话里没有用户消息" } satisfies ServerMsg));
+            break;
+          }
+          const ASK = `【任务段切分】下面是一次会话里我的全部发言（#编号 时间 内容）。请把它们切成若干"任务段"：同一个任务的推进（包括"继续/好的"这类短回复）归同一段，不同任务分开。只输出一个 JSON 对象（可放 \`\`\`json 围栏），不要解释：
+{"segments":[{"from":起始消息的#编号,"to":结束消息的#编号,"name":"任务名(10字内)","schedulable":该任务是否适合定时重复执行(true/false，一次性修复/纯问答=false),"score":1-3的推荐度}]}
+按时间顺序，最多 5 段，最值得定时化的排前面。
+
+${users.join("\n")}`;
+          void (async () => {
+            const r = await session.promptAndWait(ASK, 120_000);
+            let parsed = parseDistilled(r.text);
+            if (!parsed || !Array.isArray(parsed.segments)) {
+              const r2 = await session.promptAndWait("上一条没有给出合法的 segments JSON。请立即只输出那个 JSON 对象。", 60_000);
+              parsed = parseDistilled(r2.text);
+            }
+            const ents = session.transcriptEntries();
+            const all = ents.map((e, i) => ({ e, i })).filter(({ e }) => e.kind === "user");
+            const segsOut: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }> = [];
+            if (parsed && Array.isArray(parsed.segments)) {
+              for (const g of parsed.segments as Array<Record<string, unknown>>) {
+                const from = Number(g.from), to = Number(g.to);
+                if (!Number.isInteger(from) || !Number.isInteger(to) || to < from) continue;
+                if (g.schedulable === false) continue;
+                const inRange = all.filter(({ i }) => i >= from && i <= to);
+                if (!inRange.length) continue;
+                segsOut.push({
+                  head: String(g.name ?? (("text" in inRange[0]!.e ? inRange[0]!.e.text : "") || "任务段")).slice(0, 60),
+                  fromTs: (inRange[0]!.e as { ts: string }).ts,
+                  toTs: (inRange[inRange.length - 1]!.e as { ts: string }).ts,
+                  turns: inRange.length,
+                  score: Math.max(1, Math.min(3, Number(g.score) || 2)),
+                });
+              }
+            }
+            audit.append({ op: "schedule.segment", session: session.id, found: segsOut.length });
+            ws.send(JSON.stringify({ type: "schedule-segmented", sessionId: session.id, segments: segsOut.slice(0, 5) } satisfies ServerMsg));
+          })();
+          break;
+        }
+
         case "schedule-distill": {
           // 从会话蒸馏定时任务：在原会话上跑提炼 prompt（上下文免费），只针对选定时间范围
           const session = live.get(msg.sessionId);
@@ -1268,7 +1325,7 @@ function parseDistilled(text: string): Record<string, unknown> | null {
   for (const c of candidates) {
     try {
       const o = JSON.parse(c.trim());
-      if (o && typeof o === "object" && (o.prompt || o.name)) return o as Record<string, unknown>;
+      if (o && typeof o === "object" && !Array.isArray(o)) return o as Record<string, unknown>;
     } catch { /* 下一个 */ }
   }
   return null;

@@ -1044,6 +1044,20 @@ function handleServer(msg) {
       schedulesArr = msg.schedules || [];
       if (state.view === "schedules" && !schedDistill && !schedEdit) renderSchedules();
       break;
+    case "schedule-segmented": {
+      // AI 精切结果替换本地段（AI 给的任务名更可读；schedulable=false 的已由服务端过滤）
+      if (schedPick && schedPick.sessionId === msg.sessionId) {
+        schedPick.segments = msg.segments || [];
+        schedPick.aiBusy = false;
+        if (schedPick.segments.length === 1) {
+          const s2 = sessions.get(schedPick.sessionId);
+          const only = schedPick.segments[0];
+          schedPick = null;
+          distillSegment(s2, only);
+        } else renderSchedules();
+      }
+      break;
+    }
     case "schedule-distilled": {
       // 蒸馏完成：用结果 + 本地兜底字段合成表单
       const src = sessions.get(msg.sessionId);
@@ -2524,12 +2538,32 @@ function segmentSession(ents) {
 
 function startSchedFromSession(s) {
   const segs = segmentSession(entries);
-  if (!segs.length) { showToast("⚠ 这条会话里没找到适合定时化的任务段，可手动新建", 4000); return; }
+  if (!segs.length) {
+    // 本地规则切不出段：会话在运行就自动交给 AI 精切兜底，别硬拒绝
+    if (s.live) {
+      schedPick = { sessionId: s.id, segments: [], aiBusy: true };
+      schedEdit = null;
+      state.view = "schedules";
+      render();
+      send({ type: "schedule-segment", sessionId: s.id });
+      showToast("本地切分没找到任务段，已转 AI 精切…", 3000);
+    } else {
+      showToast("⚠ 这条会话里没找到适合定时化的任务段（恢复会话后可试 AI 精切）", 4500);
+    }
+    return;
+  }
   if (segs.length === 1) { distillSegment(s, segs[0]); return; }   // 只有一段：跳过选择直接蒸馏
   schedPick = { sessionId: s.id, segments: segs };
   schedEdit = null;
   state.view = "schedules";
   render();
+}
+
+function aiSegment() {
+  if (!schedPick) return;
+  schedPick.aiBusy = true;
+  renderSchedules();
+  send({ type: "schedule-segment", sessionId: schedPick.sessionId });
 }
 
 function renderSchedPick() {
@@ -2551,14 +2585,20 @@ function renderSchedPick() {
   root.innerHTML = `
     <div class="rtWrap">
       <div class="rtHead"><span class="ttl">从会话整理定时任务</span>
-        <span class="meta2">${esc(s?.title || "")} · 检测到 ${schedPick.segments.length} 个任务段，选择要定时化的范围</span></div>
-      <div class="rtCard">${rows}
-        <div class="meta2" style="margin-top:10px">★ 越多越适合定时化（跨天多轮的长程任务 &gt; 一次性修复 &gt; 纯问答）。选择后由 AI 蒸馏成任务表单，可再修改。</div>
+        <span class="meta2">${esc(s?.title || "")} · 检测到 ${schedPick.segments.length} 个任务段，选择要定时化的范围</span>
+        <span style="flex:1"></span>
+        <button class="mini" id="schedAiSeg" ${s?.live ? "" : "disabled title=\"会话未运行\""}>${schedPick.aiBusy ? "✨ AI 精切中…" : "✨ AI 精切"}</button></div>
+      <div class="rtCard">${rows || (schedPick.aiBusy
+          ? '<div class="empty">✨ 正在让模型切分这段会话…</div>'
+          : '<div class="empty">AI 也没找到可定时化的任务段，可返回手动新建。</div>')}
+        <div class="meta2" style="margin-top:10px">★ 越多越适合定时化。切分不准？点右上「AI 精切」让模型重新切；选择后由 AI 蒸馏成任务表单，可再修改。</div>
       </div>
     </div>`;
   root.querySelectorAll("[data-seg]").forEach((el) => {
     el.onclick = () => distillSegment(s, schedPick.segments[Number(el.dataset.seg)]);
   });
+  const aiBtn = $("schedAiSeg");
+  if (aiBtn) aiBtn.onclick = () => { if (!schedPick.aiBusy) aiSegment(); };
 }
 
 function distillSegment(s, seg) {

@@ -210,6 +210,7 @@ export type ClientMsg =
   | { type: "schedule-delete"; id: string }
   | { type: "schedule-run"; id: string }
   | { type: "schedule-distill"; sessionId: string; fromTs?: string; toTs?: string }
+  | { type: "schedule-segment"; sessionId: string }
   | { type: "list" };
 
 export type ServerMsg =
@@ -281,6 +282,7 @@ export type ServerMsg =
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
   | { type: "schedules"; schedules: Schedule[] }
+  | { type: "schedule-segmented"; sessionId: string; segments: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }> }
   | {
       /** 从会话蒸馏出的定时任务草稿（schedule-distill 的回复） */
       type: "schedule-distilled";
