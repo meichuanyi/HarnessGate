@@ -996,6 +996,14 @@ function handleServer(msg) {
       }
       break;
     case "update":
+      if (schedPick && schedPick.aiBusy && msg.sessionId === schedPick.sessionId) {
+        const u0 = msg.update || {};
+        if (u0.sessionUpdate === "agent_message_chunk" && u0.content?.text) {
+          schedPick.text = (schedPick.text || "") + u0.content.text;
+          const out = $("segOut");
+          if (out) { out.textContent = schedPick.text; out.scrollTop = out.scrollHeight; }
+        }
+      }
       if (schedDistill && msg.sessionId === schedDistill.sessionId) {
         const u0 = msg.update || {};
         if (u0.sessionUpdate === "agent_message_chunk" && u0.content?.text) {
@@ -2562,6 +2570,7 @@ function startSchedFromSession(s) {
 function aiSegment() {
   if (!schedPick) return;
   schedPick.aiBusy = true;
+  schedPick.text = "";
   renderSchedules();
   send({ type: "schedule-segment", sessionId: schedPick.sessionId });
 }
@@ -2589,7 +2598,7 @@ function renderSchedPick() {
         <span style="flex:1"></span>
         <button class="mini" id="schedAiSeg" ${s?.live ? "" : "disabled title=\"会话未运行\""}>${schedPick.aiBusy ? "✨ AI 精切中…" : "✨ AI 精切"}</button></div>
       <div class="rtCard">${rows || (schedPick.aiBusy
-          ? '<div class="empty">✨ 正在让模型切分这段会话…</div>'
+          ? `<pre id="segOut" style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;max-height:46vh;overflow:auto;color:var(--dim)">${esc(schedPick.text || "✨ 正在让模型切分这段会话…")}</pre>`
           : '<div class="empty">AI 也没找到可定时化的任务段，可返回手动新建。</div>')}
         <div class="meta2" style="margin-top:10px">★ 越多越适合定时化。切分不准？点右上「AI 精切」让模型重新切；选择后由 AI 蒸馏成任务表单，可再修改。</div>
       </div>
