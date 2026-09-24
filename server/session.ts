@@ -44,6 +44,10 @@ export type SessionHooks = {
   onLog: (sessionId: string, line: string) => void;
   /** 会话记录有变化（含 transcript），交给 store 落盘 */
   onPersist: (record: PersistedSession) => void;
+  /** 会话彻底停止（进程已停、状态已置 saved）：宿主必须把它从「运行中」登记表摘除。
+   *  空闲自动停止等路径不走 close/delete 消息，没有这个回调就会留下死实例，
+   *  之后 resume 全被 live.has() 挡住——表现为界面显示"未运行"但恢复永远报"该会话已在运行" */
+  onStopped?: (sessionId: string) => void;
 };
 
 type Child = ChildProcessByStdio<NodeWritable, NodeReadable, NodeReadable>;
@@ -139,7 +143,12 @@ export class HarnessSession {
   readonly cwd: string;
   status: SessionStatus;
   error?: string;
+  /** 对外：这个会话还能不能恢复（有 ACP 会话 id，resume/fork 总可以试）。
+   *  前端据此显示「恢复会话」/「不可恢复」——绝不能只认 loadSession 能力，
+   *  否则不支持 session/load 的 harness 会被误判成不可恢复（但 session/resume 明明可用） */
   resumable = false;
+  /** agent 是否声明 loadSession 能力——只决定恢复三选一里的 load 这条路，与 resumable 分离 */
+  private canLoadSession = false;
   acpSessionId?: string;
   title?: string;
   origin: "new" | "imported" = "new";
@@ -205,7 +214,7 @@ export class HarnessSession {
     this.cwd = record.cwd;
     this.status = record.status;
     this.acpSessionId = record.acpSessionId;
-    this.resumable = record.resumable;
+    this.resumable = record.resumable || Boolean(record.acpSessionId);
     this.title = record.title;
     this.origin = record.origin ?? "new";
     this.roomId = record.roomId;
@@ -407,8 +416,9 @@ export class HarnessSession {
         this.log(
           `initialized: protocol v${init.protocolVersion} agent=${JSON.stringify(init.agentInfo ?? {})}`,
         );
-        this.resumable = Boolean(init.agentCapabilities?.loadSession);
-        this.log(`会话可恢复(loadSession)=${this.resumable}`);
+        this.canLoadSession = Boolean(init.agentCapabilities?.loadSession);
+        this.resumable = Boolean(this.acpSessionId) || this.canLoadSession;
+        this.log(`会话可恢复=${this.resumable}（loadSession=${this.canLoadSession}）`);
         if (init.authMethods?.length) {
           const ids = init.authMethods.map((m: { id: string }) => m.id);
           this.log(`agent 声明了认证方式: ${ids.join(", ")}`);
@@ -472,7 +482,7 @@ export class HarnessSession {
             }
           };
           const tryLoad = async (): Promise<boolean> => {
-            if (!this.resumable) return false;
+            if (!this.canLoadSession) return false;
             this.replaying = this.transcript.length > 0;
             if (!this.replaying) this.log("本地台账为空，本次将采用 harness 回放的历史重建台账");
             await ctx.request(acp.methods.agent.session.load, {
@@ -500,6 +510,7 @@ export class HarnessSession {
             mcpServers: [],
           });
           this.acpSessionId = created.sessionId;
+          this.resumable = true;   // 拿到 ACP 会话 id 后，停止/重启就总能 resume/fork
           this.modes = created.modes
             ? { currentModeId: created.modes.currentModeId, availableModes: created.modes.availableModes }
             : undefined;
@@ -1279,5 +1290,6 @@ export class HarnessSession {
     this.status = "saved";
     this.hooks.onStatus(this.info());
     this.persist();
+    this.hooks.onStopped?.(this.id);
   }
 }

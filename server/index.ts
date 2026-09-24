@@ -94,7 +94,9 @@ function specOf(id: string): HarnessSpec | undefined {
  * WS 的 resume 分支和圆桌的 waitReady 都走这里，避免两套逻辑。
  */
 function reviveSession(id: string): boolean {
-  if (live.has(id)) return true;
+  const cur = live.get(id);
+  if (cur?.info().live) return true;
+  if (cur) live.delete(id);   // 残留死实例（进程已停但从未摘除）：挡在这里只会让恢复静默失败，清掉
   const rec = store.get(id);
   if (!rec) return false;
   const spec = specOf(rec.harnessId);
@@ -160,7 +162,9 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     createdAt: rec.createdAt,
     lastActiveAt: rec.lastActiveAt,
     live: false,
-    resumable: rec.resumable,
+    // 与 session.ts 的新语义对齐：有 ACP 会话 id 就可恢复（resume/fork 总可以试），
+    // 兼容旧记录里只认 loadSession 能力时写下的 false
+    resumable: rec.resumable || Boolean(rec.acpSessionId),
     acpSessionId: rec.acpSessionId,
     title: rec.title ?? deriveTitle(rec.transcript),
   };
@@ -211,6 +215,11 @@ function makeHooks() {
       broadcast({ type: "log", sessionId, line });
     },
     onPersist: (record: PersistedSession) => store.upsert(record),
+    // 任何路径的 stop()（含空闲自动停止）都从这里统一摘除 live 实例，
+    // 防止死实例残留把后续 resume 挡成"该会话已在运行"
+    onStopped: (sessionId: string) => {
+      live.delete(sessionId);
+    },
   };
 }
 
@@ -466,7 +475,8 @@ wss.on("connection", (ws, req) => {
         }
 
         case "resume": {
-          if (live.has(msg.sessionId)) {
+          // 只有「真活着」的会话才拒绝重复恢复；进程已停但实例残留（空闲自动停止的历史遗留）直接放行
+          if (live.get(msg.sessionId)?.info().live) {
             ws.send(
               JSON.stringify({
                 type: "error",

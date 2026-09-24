@@ -2485,6 +2485,8 @@ let schedPick = null;    // { sessionId, segments:[{head,fromTs,toTs,turns,spanM
 let schedDistill = null; // { sessionId, seg, text } 蒸馏进行中（text 累积流式）
 
 const CHATTER_RE = /^(继续|继续吧|好的?|好嘞|嗯+|行|可以|ok|OK|Ok|收到|对|是|没错|go|Go|开始|继续干).{0,6}$/;
+// 时间/动作信号：带这些词的短消息不是闲聊（"晚上8点提醒我打球"只有 9 个字，却是最典型的定时任务）
+const TASKISH_RE = /(提醒|记得|别忘|每天|每周|每月|每小时|每隔|定时|到点|\d+\s*[点:：]|明[天早晚]|今[天晚]|今晚|早上|晚上|中午|小时后)/;
 
 function segmentSession(ents) {
   const segs = [];
@@ -2494,10 +2496,11 @@ function segmentSession(ents) {
     const t = (e.text || "").trim();
     if (!t) continue;
     const ts = new Date(e.ts).getTime();
-    const chatter = t.length < 12 || CHATTER_RE.test(t);
+    const taskish = TASKISH_RE.test(t);
+    const chatter = !taskish && (t.length < 12 || CHATTER_RE.test(t));
     const gap = prevTs ? ts - prevTs : Infinity;
-    if (!cur || (!chatter && (t.length >= 30 || gap > 30 * 60_000))) {
-      cur = { head: t.slice(0, 80), fromTs: e.ts, toTs: e.ts, turns: 0 };
+    if (!cur || (!chatter && (t.length >= 30 || taskish || gap > 30 * 60_000))) {
+      cur = { head: t.slice(0, 80), fromTs: e.ts, toTs: e.ts, turns: 0, taskish };
       segs.push(cur);
     }
     cur.toTs = e.ts;
@@ -2507,15 +2510,16 @@ function segmentSession(ents) {
   const now2 = Date.now();
   for (const g of segs) {
     g.spanMin = Math.round((new Date(g.toTs).getTime() - new Date(g.fromTs).getTime()) / 60000);
-    // 推荐指数：跨天的多轮任务段最适合定时化；一次性小修/纯问答降权
+    // 推荐指数：提醒类是定时任务的原型；跨天的多轮任务次之；一次性小修/纯问答降权
     g.score = 0;
+    if (g.taskish) g.score += 2;
     if (g.spanMin > 20 * 60) g.score += 2;
     else if (g.spanMin > 60) g.score += 1;
     if (g.turns >= 3 && g.turns <= 20) g.score += 1;
     if (g.head.length >= 30) g.score += 1;
     if (now2 - new Date(g.toTs).getTime() > 7 * 864e5) g.score -= 1;   // 太老的段降权
   }
-  return segs.filter((g) => g.turns >= 2 || g.head.length >= 30).slice(-4).reverse();
+  return segs.filter((g) => g.turns >= 2 || g.head.length >= 30 || g.taskish).slice(-4).reverse();
 }
 
 function startSchedFromSession(s) {
