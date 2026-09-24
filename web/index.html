@@ -996,6 +996,14 @@ function handleServer(msg) {
       }
       break;
     case "update":
+      if (schedDistill && msg.sessionId === schedDistill.sessionId) {
+        const u0 = msg.update || {};
+        if (u0.sessionUpdate === "agent_message_chunk" && u0.content?.text) {
+          schedDistill.text += u0.content.text;
+          const out = $("distillOut");
+          if (out) { out.textContent = schedDistill.text; out.scrollTop = out.scrollHeight; }
+        }
+      }
       if (state.view === "chat" && state.sessionId === msg.sessionId) {
         applyUpdate(msg.update);
       }
@@ -1034,8 +1042,31 @@ function handleServer(msg) {
       break;
     case "schedules":
       schedulesArr = msg.schedules || [];
-      if (state.view === "schedules") { schedEdit = null; renderSchedules(); }
+      if (state.view === "schedules" && !schedDistill && !schedEdit) renderSchedules();
       break;
+    case "schedule-distilled": {
+      // 蒸馏完成：用结果 + 本地兜底字段合成表单
+      const src = sessions.get(msg.sessionId);
+      const d = msg.spec || {};
+      const seg = schedDistill?.seg;
+      schedDistill = null;
+      schedEdit = {
+        name: (d.name || src?.title || "定时任务").slice(0, 24),
+        enabled: true,
+        harnessId: src?.harnessId || "",
+        cwd: src?.cwd || "",
+        autoApprove: "all",
+        cadence: d.cadence && d.cadence.type ? d.cadence : { type: "daily", at: "09:00" },
+        window: {}, overlap: "skip",
+        sessionMode: "dedicated",
+        promptTemplate: d.prompt || seg?.head || "",
+        contract: d.outputFile ? { outputFile: d.outputFile } : {},
+        state: { lastSessionId: msg.sessionId },
+      };
+      if (d.reason) showToast("频率建议：" + d.reason, 5000);
+      if (state.view === "schedules") renderSchedules();
+      break;
+    }
     case "rooms":
       rooms = msg.rooms || [];
       if (pendingRoomStart && rooms.length) {
@@ -1591,7 +1622,11 @@ function updateChatHeader() {
     ${pillOf(s, STATUS)}
     <span>工作目录 <b style="color:var(--fg)">${esc(s.cwd)}</b></span>
     ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
-    <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>`;
+    <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>
+    <span style="flex:1"></span>
+    <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
+  const toSched = $("chatToSched");
+  if (toSched) toSched.onclick = () => startSchedFromSession(s);
   const ready = s.status === "ready";
   const awaiting = s.status === "awaiting";
   const inp = $("input"), btn = $("sendBtn");
@@ -2445,8 +2480,110 @@ function cadenceDescWeb(c) {
 }
 const LAST_STATUS = { ok: "✓ 成功", error: "✕ 出错", "contract-fail": "✕ 契约未满足", timeout: "⏱ 超时", "skipped-running": "跳过（上次仍在跑）", "missing-files": "✕ 缺前置文件" };
 
+/* ---------- 从会话整理定时任务：分段 → 选段 → AI 蒸馏 → 表单 ---------- */
+let schedPick = null;    // { sessionId, segments:[{head,fromTs,toTs,turns,spanMin,score}] }
+let schedDistill = null; // { sessionId, seg, text } 蒸馏进行中（text 累积流式）
+
+const CHATTER_RE = /^(继续|继续吧|好的?|好嘞|嗯+|行|可以|ok|OK|Ok|收到|对|是|没错|go|Go|开始|继续干).{0,6}$/;
+
+function segmentSession(ents) {
+  const segs = [];
+  let cur = null, prevTs = 0;
+  for (const e of ents) {
+    if (e.kind !== "user") continue;
+    const t = (e.text || "").trim();
+    if (!t) continue;
+    const ts = new Date(e.ts).getTime();
+    const chatter = t.length < 12 || CHATTER_RE.test(t);
+    const gap = prevTs ? ts - prevTs : Infinity;
+    if (!cur || (!chatter && (t.length >= 30 || gap > 30 * 60_000))) {
+      cur = { head: t.slice(0, 80), fromTs: e.ts, toTs: e.ts, turns: 0 };
+      segs.push(cur);
+    }
+    cur.toTs = e.ts;
+    cur.turns++;
+    prevTs = ts;
+  }
+  const now2 = Date.now();
+  for (const g of segs) {
+    g.spanMin = Math.round((new Date(g.toTs).getTime() - new Date(g.fromTs).getTime()) / 60000);
+    // 推荐指数：跨天的多轮任务段最适合定时化；一次性小修/纯问答降权
+    g.score = 0;
+    if (g.spanMin > 20 * 60) g.score += 2;
+    else if (g.spanMin > 60) g.score += 1;
+    if (g.turns >= 3 && g.turns <= 20) g.score += 1;
+    if (g.head.length >= 30) g.score += 1;
+    if (now2 - new Date(g.toTs).getTime() > 7 * 864e5) g.score -= 1;   // 太老的段降权
+  }
+  return segs.filter((g) => g.turns >= 2 || g.head.length >= 30).slice(-4).reverse();
+}
+
+function startSchedFromSession(s) {
+  const segs = segmentSession(entries);
+  if (!segs.length) { showToast("⚠ 这条会话里没找到适合定时化的任务段，可手动新建", 4000); return; }
+  if (segs.length === 1) { distillSegment(s, segs[0]); return; }   // 只有一段：跳过选择直接蒸馏
+  schedPick = { sessionId: s.id, segments: segs };
+  schedEdit = null;
+  state.view = "schedules";
+  render();
+}
+
+function renderSchedPick() {
+  const root = $("viewRoot");
+  const s = sessions.get(schedPick.sessionId);
+  const rows = schedPick.segments.map((g, i) => {
+    const stars = "★".repeat(Math.max(0, Math.min(3, g.score))) || "☆";
+    const span = g.spanMin > 1440 ? (g.spanMin / 1440).toFixed(1) + " 天" : (g.spanMin >= 60 ? (g.spanMin / 60).toFixed(1) + " 小时" : g.spanMin + " 分钟");
+    return `
+      <div class="wsRow" data-seg="${i}" style="display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;flex-wrap:wrap">
+        <span style="color:var(--warn);font-size:15px">${stars}</span>
+        <div style="flex:1;min-width:240px">
+          <div style="font-weight:600;font-size:13.5px">${esc(g.head)}</div>
+          <div class="meta2">${new Date(g.fromTs).toLocaleString()} → ${new Date(g.toTs).toLocaleString()} · ${g.turns} 轮 · 跨度 ${span}</div>
+        </div>
+        <button class="mini primary">提炼此段 →</button>
+      </div>`;
+  }).join("");
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">从会话整理定时任务</span>
+        <span class="meta2">${esc(s?.title || "")} · 检测到 ${schedPick.segments.length} 个任务段，选择要定时化的范围</span></div>
+      <div class="rtCard">${rows}
+        <div class="meta2" style="margin-top:10px">★ 越多越适合定时化（跨天多轮的长程任务 &gt; 一次性修复 &gt; 纯问答）。选择后由 AI 蒸馏成任务表单，可再修改。</div>
+      </div>
+    </div>`;
+  root.querySelectorAll("[data-seg]").forEach((el) => {
+    el.onclick = () => distillSegment(s, schedPick.segments[Number(el.dataset.seg)]);
+  });
+}
+
+function distillSegment(s, seg) {
+  schedPick = null;
+  schedDistill = { sessionId: s.id, seg, text: "" };
+  state.view = "schedules";
+  render();
+  send({ type: "schedule-distill", sessionId: s.id, fromTs: seg.fromTs, toTs: seg.toTs });
+}
+
+function renderSchedDistill() {
+  const root = $("viewRoot");
+  const s = sessions.get(schedDistill.sessionId);
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">✨ 正在从会话提炼任务…</span>
+        <span class="meta2">${esc(schedDistill.seg.head.slice(0, 50))}</span></div>
+      <div class="rtCard">
+        <pre id="distillOut" style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;max-height:50vh;overflow:auto;color:var(--dim)">${esc(schedDistill.text || "（等待模型输出…）")}</pre>
+      </div>
+    </div>`;
+  const out = $("distillOut");
+  if (out) out.scrollTop = out.scrollHeight;
+}
+
 function renderSchedules() {
   const root = $("viewRoot");
+  if (schedDistill) { renderSchedDistill(); return; }
+  if (schedPick) { renderSchedPick(); return; }
   if (schedEdit) { renderSchedEditor(schedEdit); return; }
   const rows = schedulesArr.map((s) => {
     const st = s.state || {};
@@ -2482,7 +2619,7 @@ function renderSchedules() {
   $("schedNew").onclick = () => {
     const first = [...harnesses.values()].find((h) => !h.blocked);
     schedEdit = {
-      name: "", enabled: true, harnessId: first?.id || "", cwd: "", autoApprove: "readonly",
+      name: "", enabled: true, harnessId: first?.id || "", cwd: "", autoApprove: "all",
       cadence: { type: "daily", at: "09:00" }, window: {}, overlap: "skip", sessionMode: "fresh",
       promptTemplate: "", contract: {}
     };
@@ -2521,10 +2658,10 @@ function renderSchedEditor(e) {
       <div class="rtCard">
         <div class="row"><label>名称 *</label><input type="text" id="seName" value="${esc(e.name || "")}" style="flex:1;min-width:220px" /></div>
         <div class="row"><label>Harness *</label><select id="seHarness" style="max-width:240px">${hOpts}</select>
-          <label>自动决策</label><select id="seAA">
-            <option value="readonly"${e.autoApprove === "readonly" ? " selected" : ""}>只读自动（推荐）</option>
-            <option value="off"${!e.autoApprove || e.autoApprove === "off" ? " selected" : ""}>人工审批</option>
-            <option value="all"${e.autoApprove === "all" ? " selected" : ""}>全自动</option>
+          <label>自动决策</label><select id="seAA" title="定时任务无人值守：写操作没人批准会挂到看门狗超时，默认全自动（危险操作有 ⚠ 审计）">
+            <option value="all"${!e.autoApprove || e.autoApprove === "all" ? " selected" : ""}>全自动（推荐）</option>
+            <option value="readonly"${e.autoApprove === "readonly" ? " selected" : ""}>只读自动</option>
+            <option value="off"${e.autoApprove === "off" ? " selected" : ""}>人工审批</option>
           </select>
           <label>会话</label><select id="seSessionMode">
             <option value="fresh"${e.sessionMode !== "dedicated" ? " selected" : ""}>每次全新（格式最稳）</option>

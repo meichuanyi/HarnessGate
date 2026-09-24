@@ -209,6 +209,7 @@ export type ClientMsg =
   | { type: "schedule-save"; schedule: Schedule }
   | { type: "schedule-delete"; id: string }
   | { type: "schedule-run"; id: string }
+  | { type: "schedule-distill"; sessionId: string; fromTs?: string; toTs?: string }
   | { type: "list" };
 
 export type ServerMsg =
@@ -280,5 +281,17 @@ export type ServerMsg =
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
   | { type: "schedules"; schedules: Schedule[] }
+  | {
+      /** 从会话蒸馏出的定时任务草稿（schedule-distill 的回复） */
+      type: "schedule-distilled";
+      sessionId: string;
+      spec: {
+        name?: string;
+        prompt?: string;
+        outputFile?: string;
+        cadence?: { type: "daily"; at: string } | { type: "weekly"; days: number[]; at: string } | { type: "interval"; everyMinutes: number };
+        reason?: string;
+      };
+    }
   | { type: "log"; sessionId: string; line: string }
   | { type: "error"; sessionId?: string; message: string };

@@ -1064,6 +1064,7 @@ wss.on("connection", (ws, req) => {
             enabled: incoming.enabled !== false,
             state: {
               ...(existing?.state ?? {}),
+              ...(incoming.state ?? {}),   // 从会话整理时带 lastSessionId 进来（专属会话模式续用原会话）
               nextFireAt: incoming.enabled !== false ? nextFire(incoming.cadence, incoming.window)?.toISOString() : undefined,
             },
           };
@@ -1081,6 +1082,58 @@ wss.on("connection", (ws, req) => {
             audit.append({ op: "schedule.delete", schedule: String(msg.id) });
             saveAndBroadcastSchedules();
           }
+          break;
+        }
+
+        case "schedule-distill": {
+          // 从会话蒸馏定时任务：在原会话上跑提炼 prompt（上下文免费），只针对选定时间范围
+          const session = live.get(msg.sessionId);
+          if (!session || session.info().status !== "ready") {
+            ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: "会话未在运行或未就绪（先恢复会话）" } satisfies ServerMsg));
+            break;
+          }
+          const from = msg.fromTs ? new Date(msg.fromTs).toLocaleString("zh-CN") : "会话开始";
+          const to = msg.toTs ? new Date(msg.toTs).toLocaleString("zh-CN") : "最近";
+          const ASK = `【任务提炼】请只基于 ${from} 到 ${to} 之间的对话，提炼一个可定时重复执行的任务。只输出一个 JSON 对象（可放在 \`\`\`json 围栏里），不要多余解释：
+{
+  "name": "任务名（12 字内）",
+  "prompt": "自包含的任务指令：脱离本对话也能独立执行。包含必要背景与步骤；引用文件用相对路径；需要日期的地方写 {{date}} 占位符（运行时自动替换为当天）；规定固定输出格式",
+  "outputFile": "每次运行的产物文件路径（含 {{date}} 占位符；没有固定产物填 null）",
+  "cadence": {"type": "daily", "at": "HH:MM"} 或 {"type": "weekly", "days": [1,2,3,4,5], "at": "HH:MM"} 或 {"type": "interval", "everyMinutes": 数字},
+  "reason": "建议该频率的一句理由"
+}`;
+          void (async () => {
+            const r = await session.promptAndWait(ASK, 180_000);
+            let parsed = parseDistilled(r.text);
+            if (!parsed) {
+              audit.append({ op: "schedule.distill.reask", session: session.id });
+              const r2 = await session.promptAndWait("上一条没有给出合法 JSON。请立即只输出那个 JSON 对象，不要任何其他文字。", 60_000);
+              parsed = parseDistilled(r2.text);
+            }
+            if (!parsed) {
+              ws.send(JSON.stringify({ type: "error", sessionId: session.id, message: "蒸馏失败：模型未能给出结构化结果（表单将以会话信息兜底填充）" } satisfies ServerMsg));
+              ws.send(JSON.stringify({ type: "schedule-distilled", sessionId: session.id, spec: {} } satisfies ServerMsg));
+              return;
+            }
+            // 规范化 cadence
+            const c = parsed.cadence as Record<string, unknown> | undefined;
+            const cadence = c && typeof c.type === "string"
+              ? (c.type === "interval"
+                  ? { type: "interval" as const, everyMinutes: Number(c.everyMinutes) || 60 }
+                  : c.type === "weekly"
+                    ? { type: "weekly" as const, days: Array.isArray(c.days) ? c.days.map(Number) : [1, 2, 3, 4, 5], at: String(c.at || "09:00") }
+                    : { type: "daily" as const, at: String(c.at || "09:00") })
+              : undefined;
+            const spec = {
+              name: typeof parsed.name === "string" ? parsed.name : undefined,
+              prompt: typeof parsed.prompt === "string" ? parsed.prompt : undefined,
+              outputFile: typeof parsed.outputFile === "string" && parsed.outputFile !== "null" ? parsed.outputFile : undefined,
+              cadence,
+              reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+            };
+            audit.append({ op: "schedule.distill", session: session.id, name: spec.name ?? "" });
+            ws.send(JSON.stringify({ type: "schedule-distilled", sessionId: session.id, spec } satisfies ServerMsg));
+          })();
           break;
         }
 
@@ -1192,6 +1245,23 @@ function lanAddress(): string {
     }
   }
   return "localhost";
+}
+
+
+/** 从蒸馏回复里抠 JSON 对象（容忍围栏与前后废话） */
+function parseDistilled(text: string): Record<string, unknown> | null {
+  const candidates: string[] = [];
+  for (const f of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) candidates.push(f[1] ?? "");
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+  for (const c of candidates) {
+    try {
+      const o = JSON.parse(c.trim());
+      if (o && typeof o === "object" && (o.prompt || o.name)) return o as Record<string, unknown>;
+    } catch { /* 下一个 */ }
+  }
+  return null;
 }
 
 /* ---------- 定时任务：状态、执行器与 tick ---------- */
