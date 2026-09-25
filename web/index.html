@@ -697,6 +697,7 @@
   </div>
   <button id="roomBtn" class="mini">圆桌</button>
   <button id="schedBtn" class="mini" title="定时执行 agent 任务">定时</button>
+  <button id="pwaInstall" class="mini" style="display:none" title="安装为独立应用">📲 安装APP</button>
   <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
   <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
   <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
@@ -765,6 +766,26 @@ const collapsedHarnesses = new Set();
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[c]);
+
+/* ---------- PWA 安装入口：Android 用 beforeinstallprompt，iOS 给图文步骤 ---------- */
+let installEvt = null;
+const isStandalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const pwaBtn = () => document.getElementById("pwaInstall");
+if (!isStandalone) {
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; const b = pwaBtn(); if (b) b.style.display = ""; });
+  if (isIOS) { const b = pwaBtn(); if (b) b.style.display = ""; b && (b.title = "iOS：用 Safari 分享菜单添加到主屏幕"); }
+}
+function pwaInstallClick() {
+  if (installEvt) {
+    installEvt.prompt();
+    installEvt.userChoice?.outcome === "accepted" && pwaBtn() && (pwaBtn().style.display = "none");
+    installEvt = null;
+    return;
+  }
+  if (isIOS) showToast("iOS 安装：点 Safari 底部分享按钮 □↑ → 选「添加到主屏幕」", 8000);
+  else showToast("当前浏览器不支持一键安装：用菜单里的「添加到主屏幕/安装应用」，或换 Chrome 试试", 6000);
+}
 
 /* =====================================================================
    WebSocket
@@ -2483,6 +2504,7 @@ $("roomBtn").onclick = () => {
   if (!state.rtCwd) state.rtCwd = $("viewRoot").dataset.cwd || "";
   render();
 };
+$("pwaInstall").onclick = pwaInstallClick;
 $("schedBtn").onclick = () => {
   $("wsPanel").hidden = true;
   state.view = "schedules";
