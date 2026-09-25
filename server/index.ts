@@ -167,6 +167,8 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     resumable: rec.resumable || Boolean(rec.acpSessionId),
     acpSessionId: rec.acpSessionId,
     title: rec.title ?? deriveTitle(rec.transcript),
+    autoApprove: rec.autoApprove,
+    starred: rec.starred,
   };
 }
 
@@ -176,7 +178,10 @@ function sessionList(): SessionInfo[] {
   for (const rec of store.all()) {
     if (!liveIds.has(rec.id)) list.push(savedInfo(rec));
   }
-  return list.sort((a, b) => (b.lastActiveAt ?? "").localeCompare(a.lastActiveAt ?? ""));
+  // 收藏的会话置顶，其余按最近活动倒序
+  return list.sort((a, b) =>
+    Number(b.starred ?? false) - Number(a.starred ?? false) ||
+    (b.lastActiveAt ?? "").localeCompare(a.lastActiveAt ?? ""));
 }
 
 function transcriptOf(id: string) {
@@ -1031,6 +1036,22 @@ wss.on("connection", (ws, req) => {
         case "set-auto-approve": {
           const session = live.get(msg.sessionId);
           if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "star": {
+          // 收藏切换：live 会话走实例（落盘+广播）；仅存档的记录直接改 store 后广播
+          const session = live.get(msg.sessionId);
+          if (session) {
+            session.setStarred(msg.starred);
+          } else {
+            const rec = store.get(msg.sessionId);
+            if (rec) {
+              const updated = { ...rec, starred: msg.starred };
+              store.upsert(updated);
+              broadcast({ type: "session", session: savedInfo(updated) });
+            }
+          }
           break;
         }
 

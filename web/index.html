@@ -695,9 +695,10 @@
     <span class="cfgl">模式</span>
     <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
   </div>
-  <button id="roomBtn" class="mini">圆桌</button>
-  <button id="schedBtn" class="mini" title="定时执行 agent 任务">定时</button>
-  <button id="pwaInstall" class="mini" style="display:none" title="安装为独立应用">📲 安装APP</button>
+  <button id="roomBtn" class="mini ghost">圆桌</button>
+  <button id="schedBtn" class="mini ghost" title="定时执行 agent 任务">定时</button>
+  <button id="pwaInstall" class="mini ghost" style="display:none" title="安装为独立应用">📲 安装APP</button>
+  <button id="starBtn" class="mini ghost" title="查看所有收藏的会话（跨 harness）">收藏</button>
   <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
   <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
   <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
@@ -721,6 +722,7 @@
 </main>
 
 <div id="wsPanel" class="drawer" hidden></div>
+<div id="starPanel" class="drawer" hidden></div>
 <div id="crewPanel" class="drawer" hidden></div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
@@ -1004,6 +1006,7 @@ function handleServer(msg) {
       rooms = msg.rooms || [];
       schedulesArr = msg.schedules || [];
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
+      updateStarBtn();
       render();
       break;
     case "status":
@@ -1012,6 +1015,8 @@ function handleServer(msg) {
         sessions.set(msg.session.id, msg.session);
         renderTree();
         refreshPills(msg.session.id);
+        updateStarBtn();
+        if (!$("starPanel").hidden) renderStarPanel();   // 收藏抽屉开着时实时刷新（新收藏/状态变化）
         if (isNewSession && pendingCreate) {
           pendingCreate = false;
           openSession(msg.session.id);   // 新建后自动进入对话（原行为）
@@ -1262,6 +1267,7 @@ function renderTree() {
 
   for (const h of harnesses.values()) {
     const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
+    list.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
     const liveCount = list.filter((s) => s.live).length;
     const matchH = !filter || h.label.toLowerCase().includes(filter) || h.id.includes(filter);
     const matchedSessions = list.filter((s) =>
@@ -1286,6 +1292,7 @@ function renderTree() {
               return `
                 <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}">
                   <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
+                  ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
                   <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
                 </div>`;
             }).join("")}
@@ -1397,7 +1404,7 @@ function renderSessionList() {
   const savedCwd = localStorage.getItem("hg_cwd_" + h.id) || root.dataset.cwd || "";
 
   const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
-  list.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+  list.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
 
   root.innerHTML = `
     <div class="toolbar">
@@ -1432,10 +1439,11 @@ function renderSessionList() {
         <div class="row" data-sid="${s.id}">
           ${pillOf(s, STATUS)}
           <div class="main">
-            <div class="t1"><b>${esc(s.title || "(无标题)")}</b></div>
+            <div class="t1">${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span> ' : ""}<b>${esc(s.title || "(无标题)")}</b></div>
             <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
           </div>
           <div class="acts">
+            <button class="mini ghost" data-act="star" title="${s.starred ? "取消收藏" : "收藏会话（置顶显示）"}" style="${s.starred ? "color:#f5b942" : ""}">${s.starred ? "★" : "☆"}</button>
             <button class="mini primary" data-act="open">进入</button>
             ${s.live ? '<button class="mini" data-act="stop">停止</button>' : s.resumable ? '<button class="mini" data-act="resume">恢复</button>' : ""}
             <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
@@ -1478,6 +1486,16 @@ function renderSessionList() {
         ev.stopPropagation();
         const act = b.dataset.act;
         if (act === "open") openSession(id);
+        if (act === "star") {
+          // 乐观更新本行按钮；服务端广播到达后侧栏/排序自然跟上（列表整页重绘会冲掉输入框，不做）
+          const s = sessions.get(id);
+          const v = !(s && s.starred);
+          send({ type: "star", sessionId: id, starred: v });
+          if (s) s.starred = v;
+          b.textContent = v ? "★" : "☆";
+          b.style.color = v ? "#f5b942" : "";
+          b.title = v ? "取消收藏" : "收藏会话（置顶显示）";
+        }
         if (act === "stop") send({ type: "close", sessionId: id });
         if (act === "resume") send({ type: "resume", sessionId: id });
         if (act === "handoff") send({ type: "handoff", sessionId: id });
@@ -1575,7 +1593,7 @@ function openSession(id) {
   state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
   entries = []; nodes = []; streamingAssistant = false; transcriptBase = 0;
   // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
-  for (const pid of ["crewPanel", "wsPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  for (const pid of ["crewPanel", "wsPanel", "starPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
   send({ type: "transcript", sessionId: id });
   if (!s.live && s.resumable) {
@@ -1675,9 +1693,17 @@ function updateChatHeader() {
     ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
     <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>
     <span style="flex:1"></span>
+    <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54441a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
+  const chatStar = $("chatStar");
+  if (chatStar) chatStar.onclick = () => {
+    const v = !s.starred;
+    send({ type: "star", sessionId: s.id, starred: v });
+    s.starred = v;   // 乐观更新；服务端广播到达后 updateChatHeader 会再刷一次
+    updateChatHeader();
+  };
   const ready = s.status === "ready";
   const awaiting = s.status === "awaiting";
   const inp = $("input"), btn = $("sendBtn");
@@ -2494,10 +2520,54 @@ function renderWorkspace(reports) {
 }
 
 /* =====================================================================
+   收藏抽屉（跨 harness 的收藏会话）
+   ===================================================================== */
+$("starBtn").onclick = () => {
+  const p = $("starPanel");
+  p.hidden = !p.hidden;
+  if (!p.hidden) renderStarPanel();
+};
+function renderStarPanel() {
+  const p = $("starPanel");
+  if (p.hidden) return;
+  const list = [...sessions.values()].filter((s) => s.starred)
+    .sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+  let html = `<div class="hd"><b>⭐ 收藏的会话（${list.length}）</b><button class="mini ghost" onclick="document.getElementById('starPanel').hidden=true">关闭</button></div>`;
+  if (!list.length) {
+    html += `<div class="empty"><div class="big">⭐</div>还没有收藏的会话。<br/>在会话列表或对话页顶部点「☆ 收藏」，重要的会话就会出现在这里。</div>`;
+  }
+  for (const s of list) {
+    html += `<div class="wsRow" data-sid="${s.id}" style="cursor:pointer">
+      <div style="display:flex;align-items:center;gap:6px">
+        ${pillOf(s, STATUS)}
+        <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title || "(无标题)")}</b>
+        <button class="mini ghost" data-unstar="${s.id}" title="取消收藏" style="color:#f5b942">★</button>
+      </div>
+      <div class="meta2">${esc(s.harnessLabel)} · #${s.id} · ${esc(s.cwd)}</div>
+      <div class="meta2">最后活动 ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}${!s.live && s.resumable ? ' · <span style="color:var(--dim)">已归档，进入时自动恢复</span>' : ""}</div>
+    </div>`;
+  }
+  p.innerHTML = html;
+  p.querySelectorAll(".wsRow").forEach((el) => {
+    el.onclick = () => { p.hidden = true; openSession(el.dataset.sid); };
+  });
+  p.querySelectorAll("button[data-unstar]").forEach((b) => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      send({ type: "star", sessionId: b.dataset.unstar, starred: false });
+      const s = sessions.get(b.dataset.unstar);
+      if (s) s.starred = false;
+      renderStarPanel();
+    };
+  });
+}
+
+/* =====================================================================
    圆桌（独立视图）
    ===================================================================== */
 $("roomBtn").onclick = () => {
   $("wsPanel").hidden = true;
+  $("starPanel").hidden = true;
   state.view = "roundtable";
   state.harnessId = null;
   state.sessionId = null;
@@ -2507,6 +2577,7 @@ $("roomBtn").onclick = () => {
 $("pwaInstall").onclick = pwaInstallClick;
 $("schedBtn").onclick = () => {
   $("wsPanel").hidden = true;
+  $("starPanel").hidden = true;
   state.view = "schedules";
   state.harnessId = null;
   state.sessionId = null;

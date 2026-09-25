@@ -154,6 +154,8 @@ export class HarnessSession {
   origin: "new" | "imported" = "new";
   /** 由哪个圆桌创建（删圆桌时据此连带删除） */
   roomId?: string;
+  /** 用户收藏（重要/常用会话），列表置顶展示 */
+  starred = false;
   modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] };
   configOptions?: ConfigOption[];
   worktree?: WorktreeInfo;
@@ -218,6 +220,7 @@ export class HarnessSession {
     this.title = record.title;
     this.origin = record.origin ?? "new";
     this.roomId = record.roomId;
+    this.starred = Boolean(record.starred);
     this.worktree = record.worktree;
     this.transcript = record.transcript;
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
@@ -264,6 +267,7 @@ export class HarnessSession {
       transcript: this.transcript,
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
       autoApprove: this.autoApprove,
+      starred: this.starred,
     };
   }
 
@@ -297,11 +301,20 @@ export class HarnessSession {
       lastProgressAt: this.lastProgressAt,
       autoApprove: this.autoApprove,
       roomId: this.roomId,
+      starred: this.starred,
     };
   }
 
   transcriptEntries(): TranscriptEntry[] {
     return this.transcript;
+  }
+
+  /** 收藏/取消收藏：落盘并广播（列表据 starred 置顶） */
+  setStarred(v: boolean): void {
+    if (this.starred === v) return;
+    this.starred = v;
+    this.hooks.onStatus(this.info());
+    this.persist();
   }
 
   private live(): boolean {

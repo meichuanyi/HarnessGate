@@ -62,6 +62,8 @@ export type SessionInfo = {
   autoApprove?: string;
   /** 属于哪个圆桌/工作队（前端据此隐藏自动决策下拉） */
   roomId?: string;
+  /** 用户收藏（重要/常用会话）：列表置顶展示 */
+  starred?: boolean;
 };
 
 export type TranscriptEntry =
@@ -151,6 +153,8 @@ export type ClientMsg =
   | { type: "prompt"; sessionId: string; text: string; attachments?: Attachment[] }
   | { type: "permission"; sessionId: string; requestId: string; optionId: string }
   | { type: "close"; sessionId: string }
+  /** 收藏/取消收藏会话（列表置顶展示；对已存档未运行的会话也生效） */
+  | { type: "star"; sessionId: string; starred: boolean }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
   /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */
