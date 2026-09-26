@@ -33,19 +33,41 @@ class GateClient {
   bool get connected => _ws != null;
 
   void connect(String baseUrl, String token) {
-    _url = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    _url = normalizeBaseUrl(baseUrl);
     _token = token.trim();
     _closedByUs = false;
     _doConnect();
   }
 
+  /// 用户输入容错：粘贴网页完整链接（带路径/hash/尾部斜杠）也能用——只保留 协议+主机+端口。
+  /// 裸地址默认补 http（局域网填 IP:端口 的场景最多）。
+  static String normalizeBaseUrl(String input) {
+    final s = input.trim();
+    if (s.isEmpty) return '';
+    try {
+      final u = Uri.parse(s.contains('://') ? s : 'http://$s');
+      final port = u.hasPort && !((u.scheme == 'http' && u.port == 80) || (u.scheme == 'https' && u.port == 443))
+          ? ':${u.port}'
+          : '';
+      return '${u.scheme}://${u.host}$port';
+    } catch (_) {
+      return s.replaceAll(RegExp(r'/+$'), '');
+    }
+  }
+
+  /// WebSocket 地址：http(s) 自动转 ws(s)，已填 ws/wss 的原样保留。
+  static String buildWsUrl(String baseUrl, String token) {
+    var b = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    b = b.replaceFirst(RegExp('^https://'), 'wss://').replaceFirst(RegExp('^http://'), 'ws://');
+    final query = token.trim().isEmpty ? '' : '?token=${Uri.encodeComponent(token.trim())}';
+    return '$b/ws$query';
+  }
+
   void _doConnect() {
     if (_url.isEmpty) return;
     _stateCtrl.add('connecting');
-    final query = _token.isEmpty ? '' : '?token=${Uri.encodeComponent(_token)}';
-    final wsUrl = '$_url/ws$query';
     try {
-      final ws = WebSocketChannel.connect(Uri.parse(wsUrl));
+      final ws = WebSocketChannel.connect(Uri.parse(buildWsUrl(_url, _token)));
       _ws = ws;
       ws.stream.listen(
         (data) {
