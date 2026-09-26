@@ -1,0 +1,127 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'protocol.dart';
+
+/// HarnessGate WS 客户端：自动重连 + 消息分发（broadcast 流，页面各自监听）。
+class GateClient {
+  WebSocketChannel? _ws;
+  Timer? _retry;
+  bool _closedByUs = false;
+  String _url = '';
+  String _token = '';
+
+  final _messages = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get messages => _messages.stream;
+
+  final _stateCtrl = StreamController<String>.broadcast(); // idle/connecting/connected/error
+  Stream<String> get state => _stateCtrl.stream;
+
+  /// 会话列表快照（hello/session 消息自动维护）
+  final Map<String, SessionInfo> sessions = {};
+  final _sessionsCtrl = StreamController<void>.broadcast();
+  Stream<void> get sessionsChanged => _sessionsCtrl.stream;
+
+  /// 可用 harness（hello 下发，新建会话时选择）
+  final Map<String, HarnessInfo> harnesses = {};
+  String defaultCwd = '';
+
+  bool get connected => _ws != null;
+
+  void connect(String baseUrl, String token) {
+    _url = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    _token = token.trim();
+    _closedByUs = false;
+    _doConnect();
+  }
+
+  void _doConnect() {
+    if (_url.isEmpty) return;
+    _stateCtrl.add('connecting');
+    final query = _token.isEmpty ? '' : '?token=${Uri.encodeComponent(_token)}';
+    final wsUrl = '$_url/ws$query';
+    try {
+      final ws = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _ws = ws;
+      ws.stream.listen(
+        (data) {
+          _stateCtrl.add('connected');
+          _retry?.cancel();
+          try {
+            final m = jsonDecode(data as String) as Map<String, dynamic>;
+            _applySessions(m);
+            _messages.add(m);
+          } catch (_) {}
+        },
+        onDone: () {
+          _ws = null;
+          if (!_closedByUs) {
+            _stateCtrl.add('error');
+            _scheduleRetry();
+          } else {
+            _stateCtrl.add('idle');
+          }
+        },
+        onError: (_) {
+          _ws = null;
+          _stateCtrl.add('error');
+          _scheduleRetry();
+        },
+      );
+    } catch (e) {
+      _stateCtrl.add('error');
+      _scheduleRetry();
+    }
+  }
+
+  void _scheduleRetry() {
+    _retry?.cancel();
+    _retry = Timer(const Duration(seconds: 4), _doConnect);
+  }
+
+  void _applySessions(Map<String, dynamic> m) {
+    var changed = false;
+    if (m['type'] == 'hello') {
+      sessions
+        ..clear()
+        ..addEntries(((m['sessions'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((j) => MapEntry(j['id'] as String, SessionInfo.fromJson(j))));
+      harnesses
+        ..clear()
+        ..addEntries(((m['harnesses'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((j) => MapEntry(j['id'] as String, HarnessInfo.fromJson(j))));
+      defaultCwd = m['defaultCwd'] as String? ?? '';
+      changed = true;
+    } else if (m['type'] == 'session' && m['session'] is Map<String, dynamic>) {
+      final s = SessionInfo.fromJson(m['session'] as Map<String, dynamic>);
+      sessions[s.id] = s;
+      changed = true;
+    } else if (m['type'] == 'deleted' && m['sessionId'] is String) {
+      sessions.remove(m['sessionId']);
+      changed = true;
+    }
+    if (changed) _sessionsCtrl.add(null);
+  }
+
+  void send(Map<String, dynamic> msg) {
+    final ws = _ws;
+    if (ws != null) {
+      try {
+        ws.sink.add(jsonEncode(msg));
+        return;
+      } catch (_) {}
+    }
+    // 未连接：hello 到来后由 UI 重新拉取；这里静默丢弃（与网页端行为一致）
+  }
+
+  void dispose() {
+    _closedByUs = true;
+    _retry?.cancel();
+    _ws?.sink.close();
+    _messages.close();
+    _stateCtrl.close();
+    _sessionsCtrl.close();
+  }
+}
