@@ -216,6 +216,10 @@ export type ClientMsg =
   | { type: "schedule-distill"; sessionId: string; fromTs?: string; toTs?: string }
   | { type: "schedule-segment"; sessionId: string }
   | { type: "schedule-segmented-get"; sessionId: string }
+  /** 检查 GitHub 上的新版本（git fetch + 比较），不动任何东西 */
+  | { type: "check-update" }
+  /** 应用更新：git pull --ff-only 后退出进程，交给 systemd Restart 拉起新代码 */
+  | { type: "apply-update" }
   | { type: "list" };
 
 export type ServerMsg =
@@ -227,6 +231,9 @@ export type ServerMsg =
       rooms?: Room[];
       schedules?: Schedule[];
       providers?: Array<{ id: string; label: string }>;
+      /** 服务版本（package.json）与 git 短 commit——前端据此显示/检查更新 */
+      version?: string;
+      commit?: string;
     }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: unknown }
@@ -300,5 +307,23 @@ export type ServerMsg =
         reason?: string;
       };
     }
+  | {
+      /** check-update 的回复：与 origin 的比较结果 */
+      type: "update-check";
+      current: string;
+      commit: string;
+      branch: string;
+      /** 落后上游的提交数（>0 即有更新） */
+      behind: number;
+      /** 本地领先上游的提交数（未推送的本地修改） */
+      ahead: number;
+      /** 工作区有未提交修改（此时拒绝应用更新） */
+      dirty: boolean;
+      /** 上游新提交摘要（oneline，最多 10 条） */
+      commits: string[];
+      updateAvailable: boolean;
+      error?: string;
+    }
+  | { type: "update-applied"; version: string; message: string }
   | { type: "log"; sessionId: string; line: string }
   | { type: "error"; sessionId?: string; message: string };

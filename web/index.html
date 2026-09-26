@@ -699,6 +699,7 @@
   <button id="schedBtn" class="mini ghost" title="定时执行 agent 任务">定时</button>
   <button id="pwaInstall" class="mini ghost" style="display:none" title="安装为独立应用">📲 安装APP</button>
   <button id="starBtn" class="mini ghost" title="查看所有收藏的会话（跨 harness）">收藏</button>
+  <button id="verBtn" class="mini ghost" title="版本与更新">v?</button>
   <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
   <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
   <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
@@ -723,6 +724,7 @@
 
 <div id="wsPanel" class="drawer" hidden></div>
 <div id="starPanel" class="drawer" hidden></div>
+<div id="verPanel" class="drawer" hidden></div>
 <div id="crewPanel" class="drawer" hidden></div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
@@ -801,9 +803,9 @@ function tokenOf() {
   } catch { return ""; }
 }
 window.__hgToken = tokenOf();   // 下载链接等 <a href> 用（不能走 WS 认证）
-/* ?token= 存入 localStorage 后立即从地址栏抹掉（不留历史/不被分享误带） */
+/* ?token= 存入 localStorage 后立即从地址栏抹掉（不留历史/不被分享误带）；保留 hash 路由 */
 if (new URLSearchParams(location.search).get("token")) {
-  try { history.replaceState(null, "", location.pathname); } catch {}
+  try { history.replaceState(null, "", location.pathname + location.hash); } catch {}
 }
 
 /* ---------- 认证门 ---------- */
@@ -994,6 +996,67 @@ if (sideMask) {
   sideMask.onclick = closeSide;
 }
 
+/* ---------- 浏览器返回手势：视图层级压进 history 栈 ----------
+   单页应用不接管 history 时，手机右滑返回找不到上一级就直接退出页面。
+   正向导航 pushState 一份视图快照（URL 带 hash，刷新也能回到原视图）；
+   popstate 按快照逐级恢复；总览是栈底，在总览再返回才真正离开。
+   路由：#/h/<harnessId> 会话列表 · #/s/<sessionId> 对话 · #/r/<roomId> 圆桌 · #/rt 圆桌首页 · #/sched 定时 · #/ 总览；?d= 打开中的抽屉 */
+const DRAWER_KEYS = { starPanel: "star", wsPanel: "ws", crewPanel: "crew", verPanel: "ver" };
+function hashOfNav(n) {
+  let h = "#/";
+  if (n.view === "sessions" && n.harnessId) h = `#/h/${encodeURIComponent(n.harnessId)}`;
+  else if (n.view === "chat" && n.sessionId) h = `#/s/${n.sessionId}`;
+  else if (n.view === "roundtable") h = n.roomId ? `#/r/${n.roomId}` : "#/rt";
+  else if (n.view === "schedules") h = "#/sched";
+  if (n.drawer) h += `?d=${DRAWER_KEYS[n.drawer] || ""}`;
+  return h;
+}
+function navOfHash(h) {
+  if (!h?.startsWith("#/")) return null;
+  const [path, query] = h.slice(2).split("?");
+  const d = new URLSearchParams(query || "").get("d");
+  const drawer = Object.keys(DRAWER_KEYS).find((k) => DRAWER_KEYS[k] === d);
+  const seg = path.split("/").map((s) => { try { return decodeURIComponent(s); } catch { return s; } });
+  if (seg[0] === "h" && seg[1]) return { view: "sessions", harnessId: seg[1], drawer };
+  if (seg[0] === "s" && seg[1]) return { view: "chat", sessionId: seg[1], drawer };
+  if (seg[0] === "r" && seg[1]) return { view: "roundtable", roomId: seg[1], drawer };
+  if (seg[0] === "rt") return { view: "roundtable", drawer };
+  if (seg[0] === "sched") return { view: "schedules", drawer };
+  if (!seg[0]) return { view: "harnesses", drawer };   // "#/" 或 "#/?d=star"
+  return null;
+}
+function pushNav(drawer) {
+  const n = { view: state.view, harnessId: state.harnessId, sessionId: state.sessionId, roomId: state.roomId, drawer: drawer ?? null };
+  try { history.pushState({ hgNav: n }, "", hashOfNav(n)); } catch { /* 极端环境降级为无栈 */ }
+}
+function collapseOverlays() {
+  closeSide();
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
+}
+function applyNav(n) {
+  const target = n?.view || "harnesses";
+  const sid = n?.sessionId ?? null;
+  // 返回到对话视图且会话变了：transcript 已被别的视图占用，需全量重载
+  const reloadChat = target === "chat" && sid && (state.view !== "chat" || state.sessionId !== sid);
+  state.view = target;
+  state.harnessId = n?.harnessId ?? null;
+  state.sessionId = sid;
+  state.roomId = n?.roomId ?? null;
+  if (!state.roomId) state.rtStep = 1;
+  collapseOverlays();
+  if (n?.drawer === "starPanel") { $("starPanel").hidden = false; renderStarPanel(); }
+  else if (n?.drawer === "verPanel") { $("verPanel").hidden = false; renderVerPanel(); }
+  else if (n?.drawer === "crewPanel" && sessPanelSid) openSessPanel(sessPanelSid, sessPanelMode, false);
+  else if (n?.drawer === "wsPanel") openWsPanel(false);
+  if (reloadChat) { openSession(sid, false); return; }
+  render();
+}
+window.addEventListener("popstate", (e) => applyNav(e.state?.hgNav || navOfHash(location.hash)));
+/* 初始 hash 里带的视图（如刷新 #/s/<id>）：等 hello 数据到位再恢复 */
+let navBoot = navOfHash(location.hash);
+try { history.replaceState({ hgNav: navBoot || { view: "harnesses" } }, "", hashOfNav(navBoot || { view: "harnesses" })); } catch {}
+
 /* =====================================================================
    服务端消息分发
    ===================================================================== */
@@ -1005,9 +1068,12 @@ function handleServer(msg) {
       sessions = new Map((msg.sessions || []).map((s) => [s.id, s]));
       rooms = msg.rooms || [];
       schedulesArr = msg.schedules || [];
+      serverVersion = msg.version || "";
+      serverCommit = msg.commit || "";
+      { const vb = $("verBtn"); if (vb) vb.textContent = serverVersion ? `v${serverVersion}` : "v?"; }
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
-      updateStarBtn();
       render();
+      if (navBoot) { const n = navBoot; navBoot = null; applyNav(n); }   // 刷新/分享链接带 #/s/<id> 等时恢复视图
       break;
     case "status":
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
@@ -1015,7 +1081,6 @@ function handleServer(msg) {
         sessions.set(msg.session.id, msg.session);
         renderTree();
         refreshPills(msg.session.id);
-        updateStarBtn();
         if (!$("starPanel").hidden) renderStarPanel();   // 收藏抽屉开着时实时刷新（新收藏/状态变化）
         if (isNewSession && pendingCreate) {
           pendingCreate = false;
@@ -1131,6 +1196,7 @@ function handleServer(msg) {
           pendingRoomStart = false;
           state.view = "roundtable";
           state.roomId = newest.id;
+          pushNav();
         }
       }
       if (state.view === "roundtable") renderRoundtable();
@@ -1144,6 +1210,7 @@ function handleServer(msg) {
           pendingRoomStart = false;
           state.view = "roundtable";
           state.roomId = msg.room.id;
+          pushNav();
         }
         if (state.view === "roundtable" && state.roomId === msg.room.id) {
           renderRoundtable();
@@ -1168,6 +1235,15 @@ function handleServer(msg) {
       /* 服务端的各类拒绝（圆桌前置校验、会话操作失败…）必须可见——吞掉就会表现为"点了没反应" */
       showToast("⚠ " + (msg.message || "操作失败"), 6000);
       console.warn("服务端错误:", msg.message, msg.sessionId || "");
+      break;
+    case "update-check":
+      updateInfo = msg;
+      renderVerPanel();
+      { const vb = $("verBtn"); if (vb) vb.textContent = `v${msg.current || "?"}`; }
+      break;
+    case "update-applied":
+      showToast(`✅ ${msg.message}`, 8000);
+      { const vp = $("verPanel"); if (vp && !vp.hidden) vp.innerHTML = `<div class="hd"><b>版本与更新</b></div><div class="wsRow">✅ ${esc(msg.message)}</div>`; }
       break;
     case "session-detail":
       if (msg.sessionId) renderSessPanel(msg.sessionId, { decisions: msg.decisions || [], changes: msg.changes || [], git: msg.git });
@@ -1233,6 +1309,7 @@ function navHome() {
   state.roomId = null;
   closeSide();
   render();
+  pushNav();
 }
 function navHarness(id) {
   state.view = "sessions";
@@ -1241,6 +1318,7 @@ function navHarness(id) {
   state.roomId = null;
   closeSide();
   render();
+  pushNav();
 }
 function navRoomList() {
   state.view = "roundtable";
@@ -1248,6 +1326,7 @@ function navRoomList() {
   state.rtStep = 1;
   closeSide();
   render();
+  pushNav();
 }
 
 /* =====================================================================
@@ -1587,13 +1666,13 @@ function paintDirList() {
 }
 
 /* ---------- 对话视图 ---------- */
-function openSession(id) {
+function openSession(id, push = true) {
   const s = sessions.get(id);
   if (!s) return;
   state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
   entries = []; nodes = []; streamingAssistant = false; transcriptBase = 0;
   // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
-  for (const pid of ["crewPanel", "wsPanel", "starPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
   send({ type: "transcript", sessionId: id });
   if (!s.live && s.resumable) {
@@ -1602,6 +1681,7 @@ function openSession(id) {
   } else if (!s.live && !s.resumable) {
     pushEntry({ kind: "log", text: "这个 harness 不支持恢复会话；想看历史可以往下翻，想继续聊请用「接续」。" });
   }
+  if (push) pushNav();
 }
 
 function renderChat() {
@@ -2489,11 +2569,19 @@ function doSend() {
    工作区抽屉
    ===================================================================== */
 let wsTimer = null;
+function openWsPanel(push = true) {
+  const p = $("wsPanel");
+  p.hidden = false;
+  p.innerHTML = '<div class="empty">加载中…</div>';
+  send({ type: "workspace" });
+  if (wsTimer) clearInterval(wsTimer);
+  wsTimer = setInterval(() => send({ type: "workspace" }), 4000);
+  if (push) pushNav("wsPanel");
+}
 $("wsBtn").onclick = () => {
   const p = $("wsPanel");
-  p.hidden = !p.hidden;
-  if (!p.hidden) { p.innerHTML = '<div class="empty">加载中…</div>'; send({ type: "workspace" }); wsTimer = setInterval(() => send({ type: "workspace" }), 4000); }
-  else if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
+  if (p.hidden) openWsPanel();
+  else { p.hidden = true; if (wsTimer) { clearInterval(wsTimer); wsTimer = null; } }
 };
 function renderWorkspace(reports) {
   const p = $("wsPanel");
@@ -2522,16 +2610,10 @@ function renderWorkspace(reports) {
 /* =====================================================================
    收藏抽屉（跨 harness 的收藏会话）
    ===================================================================== */
-function updateStarBtn() {
-  const b = $("starBtn");
-  if (!b) return;
-  const n = [...sessions.values()].filter((s) => s.starred).length;
-  b.textContent = n ? `收藏 ${n}` : "收藏";
-}
 $("starBtn").onclick = () => {
   const p = $("starPanel");
-  p.hidden = !p.hidden;
-  if (!p.hidden) renderStarPanel();
+  if (p.hidden) { p.hidden = false; renderStarPanel(); pushNav("starPanel"); }
+  else p.hidden = true;
 };
 function renderStarPanel() {
   const p = $("starPanel");
@@ -2569,27 +2651,82 @@ function renderStarPanel() {
 }
 
 /* =====================================================================
+   版本与更新抽屉（GitHub 构建/发布，应用内一键更新）
+   ===================================================================== */
+let serverVersion = "", serverCommit = "";
+let updateInfo = null;   // update-check 的结果缓存
+$("verBtn").onclick = () => {
+  const p = $("verPanel");
+  if (p.hidden) { p.hidden = false; renderVerPanel(); pushNav("verPanel"); }
+  else p.hidden = true;
+};
+function renderVerPanel() {
+  const p = $("verPanel");
+  if (p.hidden) return;
+  let body = "";
+  if (updateInfo?.error) {
+    body += `<div class="wsRow" style="border-color:#4a1f22">⚠ ${esc(updateInfo.error)}</div>`;
+  } else if (updateInfo) {
+    if (updateInfo.updateAvailable) {
+      body += `<div class="wsRow" style="border-color:#1f4a28;background:#0f1a12">
+        <div>🟢 有新版本：落后 ${updateInfo.behind} 个提交（分支 <b>${esc(updateInfo.branch)}</b> → origin）</div>
+        <button class="mini primary" id="doUpdate" style="margin-top:6px">⬇ 一键更新</button>
+        ${updateInfo.ahead ? `<div class="meta2" style="margin-top:4px">⚠ 本地还有 ${updateInfo.ahead} 个未推送提交</div>` : ""}
+        ${updateInfo.dirty ? `<div class="meta2" style="color:var(--warn);margin-top:4px">⚠ 部署目录有未提交修改，更新会被拒绝（先在服务器上提交或 stash）</div>` : ""}
+      </div>`;
+    } else {
+      body += `<div class="wsRow">✅ 已是最新（分支 ${esc(updateInfo.branch)}，本地/远程一致${updateInfo.ahead ? `，本地领先 ${updateInfo.ahead} 个提交` : ""}）</div>`;
+    }
+    if (updateInfo.commits?.length) {
+      body += `<h3>新提交</h3>` + updateInfo.commits.map((c) => `<div class="wsRow" style="padding:4px 8px;font-size:11.5px">${esc(c)}</div>`).join("");
+    }
+  } else {
+    body += `<div class="meta2" style="padding:6px 0">点下方按钮检查 GitHub 上有没有新版本。</div>`;
+  }
+  p.innerHTML = `
+    <div class="hd"><b>版本与更新</b><button class="mini ghost" onclick="document.getElementById('verPanel').hidden=true">关闭</button></div>
+    <div class="wsRow">
+      <div>当前版本 <b>${esc(serverVersion || "?")}</b> <span class="meta2">commit ${esc(serverCommit || "?")}</span></div>
+      <button class="mini" id="doCheck" style="margin-top:6px">${updateInfo ? "重新检查" : "检查更新"}</button>
+    </div>
+    ${body}
+    <div class="meta2" style="margin-top:10px">更新 = git pull --ff-only + 自动重启（systemd 拉起新代码，运行中的会话转为已存档，可恢复）。构建与发布由 GitHub Actions 完成（push 检查、tag 发版）。</div>`;
+  const chk = $("doCheck");
+  if (chk) chk.onclick = () => { chk.disabled = true; chk.textContent = "检查中…（git fetch）"; send({ type: "check-update" }); };
+  const upd = $("doUpdate");
+  if (upd) upd.onclick = () => {
+    if (!confirm("应用更新？服务会自动重启（运行中的会话转为已存档，可恢复），页面稍后自动重连。")) return;
+    upd.disabled = true; upd.textContent = "更新中…";
+    send({ type: "apply-update" });
+  };
+}
+
+/* =====================================================================
    圆桌（独立视图）
    ===================================================================== */
 $("roomBtn").onclick = () => {
   $("wsPanel").hidden = true;
   $("starPanel").hidden = true;
+  $("verPanel").hidden = true;
   state.view = "roundtable";
   state.harnessId = null;
   state.sessionId = null;
   if (!state.rtCwd) state.rtCwd = $("viewRoot").dataset.cwd || "";
   render();
+  pushNav();
 };
 $("pwaInstall").onclick = pwaInstallClick;
 $("schedBtn").onclick = () => {
   $("wsPanel").hidden = true;
   $("starPanel").hidden = true;
+  $("verPanel").hidden = true;
   state.view = "schedules";
   state.harnessId = null;
   state.sessionId = null;
   schedEdit = null;
   send({ type: "schedules-list" });
   render();
+  pushNav();
 };
 
 const ROOM_STATUS = { running: "讨论中", done: "已完成", error: "出错", stopped: "已停止", idle: "待开始" };
@@ -3646,7 +3783,7 @@ function crewTaskCard(t) {
 let crewPanelRoomId = null;
 let crewPanelMode = "decisions";
 
-function openCrewPanel(roomId, mode) {
+function openCrewPanel(roomId, mode, push = true) {
   crewPanelRoomId = roomId;
   crewPanelMode = mode;
   const p = $("crewPanel");
@@ -3655,6 +3792,7 @@ function openCrewPanel(roomId, mode) {
   const title = mode === "decisions" ? "决策记录" : "交付件";
   p.innerHTML = `<div class="hd"><b>${title}</b><button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>`;
   send({ type: "crew-detail", roomId });
+  if (push) pushNav("crewPanel");
 }
 
 function renderCrewPanel(roomId, data) {
@@ -3705,7 +3843,7 @@ window.openCrewPanel = openCrewPanel;
 /* ---------- 单会话右侧抽屉：决策记录 + 改动文件（可下载） ---------- */
 let sessPanelSid = null;
 let sessPanelMode = "decisions";
-function openSessPanel(sid, mode) {
+function openSessPanel(sid, mode, push = true) {
   sessPanelSid = sid;
   sessPanelMode = mode;
   const p = $("crewPanel");
@@ -3714,6 +3852,7 @@ function openSessPanel(sid, mode) {
   const title = mode === "decisions" ? "决策记录" : "改动文件";
   p.innerHTML = `<div class="hd"><b>${title}</b><button class="mini ghost" onclick="document.getElementById('crewPanel').hidden=true">关闭</button></div><div class="meta2" style="padding:10px 0">加载中…</div>`;
   send({ type: "session-detail", sessionId: sid });
+  if (push) pushNav("crewPanel");
 }
 window.openSessPanel = openSessPanel;
 function renderSessPanel(sid, data) {

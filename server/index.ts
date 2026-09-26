@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -38,6 +39,37 @@ const TOKEN = process.env.HG_TOKEN ?? readFileSync(TOKEN_FILE, "utf8").trim();
 const AUTH_OFF = ["off", "none", "0", "false", "no"].includes((process.env.HG_AUTH ?? "").toLowerCase());
 
 const registry = loadRegistry(join(ROOT, "harness.json"));
+/* 版本单一来源：package.json 的 version（打 tag 发布时同步升它），git 短 commit 用于更新比较与展示 */
+const VERSION = (() => {
+  try {
+    return (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version?: string }).version ?? "dev";
+  } catch {
+    return "dev";
+  }
+})();
+function gitOf(args: string[]): { ok: boolean; out: string } {
+  try {
+    const r = spawnSync("git", args, { cwd: ROOT, timeout: 20_000, encoding: "utf8" });
+    return { ok: r.status === 0, out: (r.stdout ?? "").trim() };
+  } catch {
+    return { ok: false, out: "" };
+  }
+}
+const GIT_COMMIT = gitOf(["rev-parse", "--short", "HEAD"]).out || "unknown";
+/** 运行时的 git 操作走异步（fetch 可能几秒到几十秒，不能阻塞服务事件循环） */
+function gitAsync(args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; out: string; err: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("git", args, { cwd: ROOT });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, out: "", err: e.message }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ ok: code === 0, out: out.trim(), err: err.trim() }); });
+  });
+}
+type UpdateCheckMsg = Extract<ServerMsg, { type: "update-check" }>;
 // UI 里按 harness 配置的运行时覆盖（代理等）：对手写与导入条目都生效，持久化在 harness.overrides.json
 const OVERRIDES_FILE = join(ROOT, "harness.overrides.json");
 // 基线代理（harness.json/registry 的原值）：UI 清除覆盖时恢复到它，而不是保留上一次设置的值
@@ -244,7 +276,8 @@ const http = createServer(async (req, res) => {
       JSON.stringify(
         {
           ok: true,
-          version: "0.2.0",
+          version: VERSION,
+          commit: GIT_COMMIT,
           harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
           sessions: sessionList().map((s) => ({
             id: s.id,
@@ -424,6 +457,8 @@ function helloPayload(): ServerMsg {
   return {
     type: "hello",
     providers: history.availableProviders(),
+    version: VERSION,
+    commit: GIT_COMMIT,
     harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
     sessions: sessionList(),
     defaultCwd,
@@ -1052,6 +1087,87 @@ wss.on("connection", (ws, req) => {
               broadcast({ type: "session", session: savedInfo(updated) });
             }
           }
+          break;
+        }
+
+        case "check-update": {
+          void (async () => {
+            const reply = (extra: Partial<UpdateCheckMsg>) =>
+              ws.send(
+                JSON.stringify({
+                  type: "update-check",
+                  current: VERSION,
+                  commit: GIT_COMMIT,
+                  branch: "",
+                  behind: 0,
+                  ahead: 0,
+                  dirty: false,
+                  commits: [],
+                  updateAvailable: false,
+                  ...extra,
+                } satisfies UpdateCheckMsg),
+              );
+            const branchR = await gitAsync(["rev-parse", "--abbrev-ref", "HEAD"]);
+            const branch = branchR.out || "HEAD";
+            const statusR = await gitAsync(["status", "--porcelain"]);
+            const dirty = statusR.ok ? statusR.out.length > 0 : false;
+            if (!branchR.ok || !statusR.ok) {
+              await reply({ branch, error: "git 不可用（部署目录不是 git 仓库？无法自动更新）" });
+              return;
+            }
+            const fetchR = await gitAsync(["fetch", "--quiet", "origin"], 45_000);
+            if (!fetchR.ok) {
+              await reply({ branch, dirty, error: `git fetch 失败：${fetchR.err || "未知错误"}（服务器无法访问 GitHub？）` });
+              return;
+            }
+            // 上游分支：跟踪分支优先，退回 origin/main
+            const upR = await gitAsync(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+            const upstream = upR.ok && upR.out ? upR.out : "origin/main";
+            const behindR = await gitAsync(["rev-list", "--count", `HEAD..${upstream}`]);
+            const aheadR = await gitAsync(["rev-list", "--count", `${upstream}..HEAD`]);
+            const logR = await gitAsync(["log", "--oneline", "--no-decorate", "-n", "10", `HEAD..${upstream}`]);
+            const behind = behindR.ok ? Number(behindR.out) || 0 : 0;
+            await reply({
+              branch,
+              dirty,
+              behind,
+              ahead: aheadR.ok ? Number(aheadR.out) || 0 : 0,
+              commits: logR.ok ? logR.out.split("\n").filter(Boolean) : [],
+              updateAvailable: behind > 0,
+            });
+          })();
+          break;
+        }
+
+        case "apply-update": {
+          void (async () => {
+            const statusR = await gitAsync(["status", "--porcelain"]);
+            if (!statusR.ok) {
+              ws.send(JSON.stringify({ type: "error", message: "git 不可用（部署目录不是 git 仓库？）" } satisfies ServerMsg));
+              return;
+            }
+            if (statusR.out.length > 0) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "部署目录有未提交的本地修改，拒绝自动更新（防止覆盖你的改动）。请先在服务器上提交或 stash。",
+                } satisfies ServerMsg),
+              );
+              return;
+            }
+            const pullR = await gitAsync(["pull", "--ff-only", "--quiet"], 60_000);
+            if (!pullR.ok) {
+              ws.send(JSON.stringify({ type: "error", message: `git pull 失败：${pullR.err || "未知错误"}` } satisfies ServerMsg));
+              return;
+            }
+            audit.append({ op: "selfupdate.apply", from: GIT_COMMIT });
+            // 广播给所有客户端（含触发者），前端提示重启并自动重连
+            broadcast({ type: "update-applied", version: VERSION, message: "更新已拉取，服务重启中…页面会自动重连" } satisfies ServerMsg);
+            // 优雅收尾运行中的会话（落盘 + 停 harness 子进程），再退出交给 systemd 拉起新代码
+            await Promise.allSettled([...live.values()].map((s) => s.stop()));
+            store.flush();
+            setTimeout(() => process.exit(0), 800);
+          })();
           break;
         }
 
