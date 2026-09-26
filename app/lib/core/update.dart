@@ -84,13 +84,37 @@ class AppUpdate {
   }
 
   /// 下载 APK 到应用缓存目录，返回文件路径。[onProgress] 汇报字节进度（done, total）。
-  static Future<String> download(AppUpdate u, void Function(int done, int total) onProgress) async {
+  /// [relayBaseUrl] 非空时优先走服务器中转（手机直连 GitHub 慢），失败自动回退 GitHub 直链。
+  static Future<String> download(
+    AppUpdate u,
+    void Function(int done, int total) onProgress, {
+    String? relayBaseUrl,
+  }) async {
+    final urls = <Uri>[
+      if (relayBaseUrl != null && relayBaseUrl.isNotEmpty)
+        Uri.parse('$relayBaseUrl/release-apk?tag=${u.tag}'),
+      u.apkUrl,
+    ];
+    Object? lastErr;
+    for (final url in urls) {
+      try {
+        return await _downloadFrom(url, onProgress, fileName: 'harnessgate-${u.tag}.apk');
+      } catch (e) {
+        lastErr = e; // 中转失败（服务器离线/缓存未就绪）→ 试下一个源
+      }
+    }
+    throw lastErr ?? '下载失败';
+  }
+
+  static Future<String> _downloadFrom(Uri url, void Function(int, int) onProgress, {required String fileName}) async {
     final client = http.Client();
     try {
-      final res = await client.send(http.Request('GET', u.apkUrl)).timeout(const Duration(minutes: 5));
-      if (res.statusCode != 200) throw HttpException('下载失败 HTTP ${res.statusCode}');
+      final res = await client.send(http.Request('GET', url)).timeout(const Duration(minutes: 5));
+      if (res.statusCode != 200) {
+        throw HttpException('HTTP ${res.statusCode}');
+      }
       final total = res.contentLength ?? 0;
-      final file = File('${Directory.systemTemp.path}/harnessgate-${u.tag}.apk');
+      final file = File('${Directory.systemTemp.path}/$fileName');
       final sink = file.openWrite();
       var done = 0;
       await for (final chunk in res.stream) {

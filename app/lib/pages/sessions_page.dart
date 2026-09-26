@@ -185,7 +185,11 @@ class _SessionsPageState extends State<SessionsPage> {
       ),
     );
     try {
-      final path = await AppUpdate.download(u, (done, total) => progress.value = (done, total));
+      final path = await AppUpdate.download(
+        u,
+        (done, total) => progress.value = (done, total),
+        relayBaseUrl: widget.client.httpBase, // 服务器中转优先（手机直连 GitHub 慢），失败回退直链
+      );
       progress.dispose();
       if (!mounted) return;
       Navigator.of(context).pop(); // 关进度框

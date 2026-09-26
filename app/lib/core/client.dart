@@ -70,6 +70,12 @@ class GateClient {
     return '$base/download?session=${Uri.encodeComponent(sessionId)}&path=${Uri.encodeComponent(path)}$q';
   }
 
+  /// http(s) 形式的服务地址（APP 更新中转下载用）
+  String get httpBase => _url.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://');
+
+  /// 带 token 的 query（中转下载鉴权用）
+  String get tokenQuery => _token.isEmpty ? '' : 'token=${Uri.encodeComponent(_token)}';
+
   void _doConnect() {
     if (_url.isEmpty) return;
     _stateCtrl.add('connecting');

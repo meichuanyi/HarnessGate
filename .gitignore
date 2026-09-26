@@ -10,3 +10,7 @@ vscode/.vscode-test/
 *.vsix
 vscode/src/generated/
 .sessions/
+
+# APP 签名密钥（本地与 CI secrets 各持一份，绝不入库）
+app/android/app/key.properties
+app/android/app/*.jks

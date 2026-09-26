@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -70,6 +70,83 @@ function gitAsync(args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; ou
   });
 }
 type UpdateCheckMsg = Extract<ServerMsg, { type: "update-check" }>;
+
+/* ---------- APP 更新中转：手机直连 GitHub 慢，服务器（gh 有网络）下载一次并缓存 ----------
+   GET /release-apk[?tag=vX.Y.Z]（默认 latest）→ 找 Release 里的 *-android.apk */
+const APK_CACHE_DIR = join(DATA_DIR, "apk-cache");
+mkdirSync(APK_CACHE_DIR, { recursive: true });
+const apkDlLocks = new Map<string, Promise<boolean>>();
+
+/** gh release view → { tag, apkName, apkSize }；找不到 APK 产物返回 null */
+function ghReleaseApk(tag: string): Promise<{ tag: string; apkName: string; apkSize: number } | null> {
+  return new Promise((resolve) => {
+    const child = spawn("gh", ["release", "view", ...(tag ? [tag] : []), "--json", "tagName,assets"], { cwd: ROOT });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", () => { clearTimeout(timer); resolve(null); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.log(`[release-apk] gh release view 失败: ${err.slice(0, 300)}`);
+        resolve(null);
+        return;
+      }
+      try {
+        const j = JSON.parse(out) as { tagName: string; assets: Array<{ name: string; size: number }> };
+        const apk = j.assets?.find((a) => a.name.endsWith("-android.apk"));
+        resolve(apk ? { tag: j.tagName, apkName: apk.name, apkSize: apk.size } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/** 后台预取 latest APK 到缓存：新版本发布后用户点「更新」大概率直接命中缓存，
+ *  不用现场等服务器从 GitHub 拉（首次可能很慢）。启动后错峰预取 + check-update 发现有更新时预取。 */
+function prefetchLatestApk(): void {
+  void (async () => {
+    const info = await ghReleaseApk("");
+    if (!info) return;
+    const file = join(APK_CACHE_DIR, info.apkName);
+    if (existsSync(file) && statSync(file).size === info.apkSize) return; // 已缓存
+    console.log(`[release-apk] 预取 ${info.apkName}（后台下载进缓存）`);
+    const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.tag, info.apkName);
+    apkDlLocks.set(info.tag, job);
+    const ok = await job;
+    apkDlLocks.delete(info.tag);
+    console.log(`[release-apk] 预取${ok ? "完成" : "失败"}: ${info.apkName}`);
+  })();
+}
+setTimeout(() => prefetchLatestApk(), 60_000).unref?.();
+function ghDownloadApk(tag: string, name: string): Promise<boolean> {
+  const dest = join(APK_CACHE_DIR, name);
+  const tmp = `${dest}.tmp`;
+  return new Promise((resolve) => {
+    const child = spawn("gh", ["release", "download", tag, "--pattern", name, "--output", tmp, "--clobber"], { cwd: ROOT });
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 1_200_000);
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", () => { clearTimeout(timer); resolve(false); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.log(`[release-apk] gh release download 失败: ${err.slice(0, 300)}`);
+        resolve(false);
+        return;
+      }
+      try {
+        renameSync(tmp, dest);
+        resolve(true);
+      } catch {
+        resolve(false);
+      }
+    });
+  });
+}
 // UI 里按 harness 配置的运行时覆盖（代理等）：对手写与导入条目都生效，持久化在 harness.overrides.json
 const OVERRIDES_FILE = join(ROOT, "harness.overrides.json");
 // 基线代理（harness.json/registry 的原值）：UI 清除覆盖时恢复到它，而不是保留上一次设置的值
@@ -321,6 +398,45 @@ const http = createServer(async (req, res) => {
   }
   // 交付件下载：/download?room=<id>&task=<id>&path=<相对路径>（单文件）
   //           /download?room=<id>&task=<id>&all=1（任务全部产物打包 tar.gz）
+  if (url.pathname === "/release-apk") {
+    if (!authorized(req)) {
+      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.end("unauthorized");
+      return;
+    }
+    void (async () => {
+      const tag = url.searchParams.get("tag") ?? "";
+      const info = await ghReleaseApk(tag);
+      if (!info) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end(tag ? `release ${tag} 没有找到 Android APK` : "latest release 没有找到 Android APK");
+        return;
+      }
+      const file = join(APK_CACHE_DIR, info.apkName);
+      let size = existsSync(file) ? statSync(file).size : 0;
+      if (size !== info.apkSize) {
+        // 缓存缺失/大小不符：经服务器下载（并发请求共用一次下载）
+        const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.tag, info.apkName);
+        apkDlLocks.set(info.tag, job);
+        const okDl = await job;
+        apkDlLocks.delete(info.tag);
+        if (!okDl || !existsSync(file)) {
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end("APK 下载失败（服务器无法访问 GitHub？稍后再试）");
+          return;
+        }
+        size = statSync(file).size;
+      }
+      res.writeHead(200, {
+        "content-type": "application/vnd.android.package-archive",
+        "content-length": size,
+        "content-disposition": `attachment; filename="${info.apkName}"`,
+      });
+      createReadStream(file).pipe(res);
+    })();
+    return;
+  }
+
   if (url.pathname === "/download") {
     if (!authorized(req)) {
       res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
@@ -1127,6 +1243,7 @@ wss.on("connection", (ws, req) => {
             const aheadR = await gitAsync(["rev-list", "--count", `${upstream}..HEAD`]);
             const logR = await gitAsync(["log", "--oneline", "--no-decorate", "-n", "10", `HEAD..${upstream}`]);
             const behind = behindR.ok ? Number(behindR.out) || 0 : 0;
+            if (behind > 0) prefetchLatestApk();   // 有新版：后台先把 APK 拉进缓存，用户点更新时直接命中
             await reply({
               branch,
               dirty,

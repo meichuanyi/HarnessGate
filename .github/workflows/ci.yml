@@ -41,6 +41,13 @@ jobs:
           flutter pub get
           flutter analyze
           flutter test
+      - name: 注入固定签名密钥（与本地同一份，保证版本间签名一致可覆盖安装）
+        env:
+          HG_KEYSTORE_BASE64: ${{ secrets.HG_KEYSTORE_BASE64 }}
+          HG_KEYSTORE_PROPERTIES: ${{ secrets.HG_KEYSTORE_PROPERTIES }}
+        run: |
+          echo "$HG_KEYSTORE_BASE64" | base64 -d > app/android/app/harnessgate-release.jks
+          printf '%s' "$HG_KEYSTORE_PROPERTIES" > app/android/app/key.properties
       - name: 构建 Release APK
         working-directory: app
         run: flutter build apk --release
