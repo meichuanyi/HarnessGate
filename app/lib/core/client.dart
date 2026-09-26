@@ -24,6 +24,10 @@ class GateClient {
 
   /// 可用 harness（hello 下发，新建会话时选择）
   final Map<String, HarnessInfo> harnesses = {};
+
+  /// 服务端版本与 commit（hello 下发，「关于」页展示）
+  String serverVersion = '';
+  String serverCommit = '';
   String defaultCwd = '';
 
   bool get connected => _ws != null;
@@ -93,6 +97,8 @@ class GateClient {
             .whereType<Map<String, dynamic>>()
             .map((j) => MapEntry(j['id'] as String, HarnessInfo.fromJson(j))));
       defaultCwd = m['defaultCwd'] as String? ?? '';
+      serverVersion = m['version'] as String? ?? '';
+      serverCommit = m['commit'] as String? ?? '';
       changed = true;
     } else if (m['type'] == 'session' && m['session'] is Map<String, dynamic>) {
       final s = SessionInfo.fromJson(m['session'] as Map<String, dynamic>);

@@ -21,6 +21,38 @@ jobs:
       - name: 前端静态检查
         run: npm test
 
+  apk:
+    # 打 v* tag 时：构建 Android APK 附到 Release（APP 内自更新就是下载这个）。
+    # 在 release job 之后跑：先建好 Release 再追加 APK，避免并行创建竞争。
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: 依赖与分析/测试
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: 构建 Release APK
+        working-directory: app
+        run: flutter build apk --release
+      - name: 重命名并附到 Release
+        run: |
+          mkdir -p dist
+          mv app/build/app/outputs/flutter-apk/app-release.apk dist/harnessgate-${GITHUB_REF_NAME}-android.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+
   release:
     # 打 v* tag 时：打包源码 tarball 并发布 GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
