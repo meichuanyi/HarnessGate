@@ -1,7 +1,7 @@
 name: harnessgate
 description: HarnessGate 移动客户端——远程驱动服务器上的编码 agent
 publish_to: "none"
-version: 0.3.2+5
+version: 0.4.0+6
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -16,6 +16,9 @@ dependencies:
   http: ^1.2.2
   open_filex: ^4.5.0
   package_info_plus: ^8.0.2
+  # 对话附件（选图发送）与改动文件下载
+  image_picker: ^1.1.2
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

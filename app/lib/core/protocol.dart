@@ -38,6 +38,7 @@ class SessionInfo {
   final String lastActiveAt;
   final List<ConfigOption> configOptions;
   final PendingPermission? pendingPermission;
+  final ModesInfo? modes;
 
   SessionInfo({
     required this.id,
@@ -56,6 +57,7 @@ class SessionInfo {
     required this.lastActiveAt,
     this.configOptions = const [],
     this.pendingPermission,
+    this.modes,
   });
 
   factory SessionInfo.fromJson(Map<String, dynamic> j) => SessionInfo(
@@ -80,9 +82,10 @@ class SessionInfo {
         pendingPermission: j['pendingPermission'] == null
             ? null
             : PendingPermission.fromJson(j['pendingPermission'] as Map<String, dynamic>),
+        modes: j['modes'] == null ? null : ModesInfo.fromJson(j['modes'] as Map<String, dynamic>),
       );
 
-  SessionInfo copyWith({String? status, bool? live, bool? inTurn, String? autoApprove, bool? starred, PendingPermission? pendingPermission, String? error, List<ConfigOption>? configOptions}) =>
+  SessionInfo copyWith({String? status, bool? live, bool? inTurn, String? autoApprove, bool? starred, PendingPermission? pendingPermission, String? error, List<ConfigOption>? configOptions, ModesInfo? modes, String? currentModeId}) =>
       SessionInfo(
         id: id, harnessId: harnessId, harnessLabel: harnessLabel, cwd: cwd,
         status: status ?? this.status, live: live ?? this.live, resumable: resumable,
@@ -91,6 +94,9 @@ class SessionInfo {
         error: error ?? this.error, lastActiveAt: lastActiveAt,
         configOptions: configOptions ?? this.configOptions,
         pendingPermission: pendingPermission ?? this.pendingPermission,
+        modes: currentModeId != null && modes == null
+            ? ModesInfo(currentModeId: currentModeId, availableModeIds: this.modes?.availableModeIds ?? const [])
+            : modes ?? this.modes,
       );
 }
 
@@ -159,7 +165,45 @@ class Entry {
   final String? answered; // permission 已答复
   final String? requestId; // 待审批
   final List<({String optionId, String name})>? options;
-  Entry({required this.kind, this.text, this.title, this.status, this.toolCallId, this.message, this.answered, this.requestId, this.options});
+  /// 工具入参/输出详情（tool_call 的 input 与 tool_call_update 的 output，超长截断）
+  final String? detail;
+  final String? output;
+  /// 附件名（user 消息带图时显示气泡缩略提示）
+  final String? attachmentName;
+  Entry({
+    required this.kind,
+    this.text,
+    this.title,
+    this.status,
+    this.toolCallId,
+    this.message,
+    this.answered,
+    this.requestId,
+    this.options,
+    this.detail,
+    this.output,
+    this.attachmentName,
+  });
+  Entry copyWith({String? title, String? status, String? detail, String? output}) => Entry(
+        kind: kind, text: text, title: title ?? this.title, status: status ?? this.status,
+        toolCallId: toolCallId, message: message, answered: answered, requestId: requestId,
+        options: options, detail: detail ?? this.detail, output: output ?? this.output,
+        attachmentName: attachmentName,
+      );
+}
+
+/// 会话权限模式（server SessionInfo.modes）
+class ModesInfo {
+  final String? currentModeId;
+  final List<String> availableModeIds;
+  ModesInfo({this.currentModeId, this.availableModeIds = const []});
+  factory ModesInfo.fromJson(Map<String, dynamic> j) => ModesInfo(
+        currentModeId: j['currentModeId'] as String?,
+        availableModeIds: ((j['availableModes'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((m) => m['id'] as String)
+            .toList(),
+      );
 }
 
 // ---------- 客户端 → 服务端（构造原始 JSON map）----------
@@ -179,6 +223,24 @@ Map<String, dynamic> msgConfig(String sessionId, String configId, String value) 
 Map<String, dynamic> msgStar(String sessionId, bool starred) =>
     {'type': 'star', 'sessionId': sessionId, 'starred': starred};
 Map<String, dynamic> msgDelete(String sessionId) => {'type': 'delete', 'sessionId': sessionId};
+/// 接续：把历史复制进一个新会话继续跑（server 回 handoff_done）
+Map<String, dynamic> msgHandoff(String sessionId) => {'type': 'handoff', 'sessionId': sessionId};
+Map<String, dynamic> msgMode(String sessionId, String modeId) =>
+    {'type': 'mode', 'sessionId': sessionId, 'modeId': modeId};
+/// 带附件发消息：图片走 base64（mimeType: image/png|jpeg…，文本附件直接拼进 text 由调用方处理）
+Map<String, dynamic> msgPromptWithAttachments(String sessionId, String text,
+        {List<({String name, String mimeType, String base64})> attachments = const []}) =>
+    {
+      'type': 'prompt',
+      'sessionId': sessionId,
+      'text': text,
+      if (attachments.isNotEmpty)
+        'attachments': [
+          for (final a in attachments) {'name': a.name, 'mimeType': a.mimeType, 'data': a.base64},
+        ],
+    };
+/// 单会话详情：决策记录 + 改动文件（server 回 session-detail）
+Map<String, dynamic> msgSessionDetail(String sessionId) => {'type': 'session-detail', 'sessionId': sessionId};
 Map<String, dynamic> msgCreate(String harnessId, {String? cwd, bool? isolate, Map<String, String>? vars}) => {
       'type': 'create',
       'harnessId': harnessId,

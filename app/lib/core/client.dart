@@ -63,6 +63,13 @@ class GateClient {
     return '$b/ws$query';
   }
 
+  /// 会话改动文件的下载链接（http 直链，带 token；改动面板点击下载用）
+  String downloadUrl(String sessionId, String path) {
+    final base = _url.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://');
+    final q = _token.isEmpty ? '' : '&token=${Uri.encodeComponent(_token)}';
+    return '$base/download?session=${Uri.encodeComponent(sessionId)}&path=${Uri.encodeComponent(path)}$q';
+  }
+
   void _doConnect() {
     if (_url.isEmpty) return;
     _stateCtrl.add('connecting');

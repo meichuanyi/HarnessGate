@@ -8,16 +8,94 @@ import '../core/update.dart';
 import 'chat_page.dart';
 import 'new_session_page.dart';
 
+/// 会话列表的一个 harness 分组（对齐 web 侧栏的树形结构）
+class SessionGroup {
+  final String harnessId;
+  final String label;
+  final String latestActive;
+  final int liveCount;
+  final List<SessionInfo> sessions;
+  final bool collapsed;
+  const SessionGroup({
+    required this.harnessId,
+    required this.label,
+    required this.latestActive,
+    required this.liveCount,
+    required this.sessions,
+    required this.collapsed,
+  });
+}
+
 /// 会话列表：收藏置顶 → 最近活跃；状态胶囊（运行中/空闲/待审批/已归档/出错）。
+/// 分组/过滤/相对时间做成静态纯函数，单测直接覆盖。
 class SessionsPage extends StatefulWidget {
   final GateClient client;
   const SessionsPage({super.key, required this.client});
+
+  /// 按 harness 分组（对齐 web 侧栏的树）：组间按最近活跃排，组内收藏置顶 → 最近活跃。
+  /// 过滤词命中 标题/cwd/id/harness label 任一即保留。
+  static List<SessionGroup> groupSessions(List<SessionInfo> all,
+      {String filter = '', Set<String> collapsed = const {}}) {
+    final q = filter.trim().toLowerCase();
+    bool hit(SessionInfo s) =>
+        q.isEmpty ||
+        (s.title ?? '').toLowerCase().contains(q) ||
+        s.cwd.toLowerCase().contains(q) ||
+        s.id.toLowerCase().contains(q) ||
+        s.harnessLabel.toLowerCase().contains(q);
+    final byHarness = <String, List<SessionInfo>>{};
+    for (final s in all.where(hit)) {
+      byHarness.putIfAbsent(s.harnessId, () => []).add(s);
+    }
+    String maxActive(List<SessionInfo> l) {
+      var max = '';
+      for (final s in l) {
+        if (s.lastActiveAt.compareTo(max) > 0) max = s.lastActiveAt;
+      }
+      return max;
+    }
+
+    final groups = byHarness.entries.map((e) {
+      final list = e.value.toList()
+        ..sort((a, b) {
+          final as = (a.starred ?? false) ? 1 : 0;
+          final bs = (b.starred ?? false) ? 1 : 0;
+          if (as != bs) return bs - as;
+          return b.lastActiveAt.compareTo(a.lastActiveAt);
+        });
+      return SessionGroup(
+        harnessId: e.key,
+        label: list.first.harnessLabel,
+        latestActive: maxActive(list),
+        liveCount: list.where((s) => s.live).length,
+        sessions: list,
+        collapsed: collapsed.contains(e.key),
+      );
+    }).toList()
+      ..sort((a, b) => b.latestActive.compareTo(a.latestActive));
+    return groups;
+  }
+
+  /// ISO 时间 → 相对时间（列表行展示）
+  static String timeAgo(String iso) {
+    final t = DateTime.tryParse(iso);
+    if (t == null) return '';
+    final d = DateTime.now().difference(t);
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    if (d.inDays < 30) return '${d.inDays} 天前';
+    return '${t.month}/${t.day}';
+  }
 
   @override
   State<SessionsPage> createState() => _SessionsPageState();
 }
 
 class _SessionsPageState extends State<SessionsPage> {
+  final _collapsed = <String>{}; // 折叠起来的 harnessId（内存态，与 web 一致）
+  final _filter = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -161,17 +239,6 @@ class _SessionsPageState extends State<SessionsPage> {
     );
   }
 
-  List<SessionInfo> get _sorted {
-    final list = widget.client.sessions.values.toList();
-    list.sort((a, b) {
-      final as = (a.starred ?? false) ? 1 : 0;
-      final bs = (b.starred ?? false) ? 1 : 0;
-      if (as != bs) return bs - as;
-      return b.lastActiveAt.compareTo(a.lastActiveAt);
-    });
-    return list;
-  }
-
   (Color, String) _pill(SessionInfo s) {
     if (s.status == 'ready') {
       return s.inTurn == true
@@ -214,7 +281,6 @@ class _SessionsPageState extends State<SessionsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final sessions = _sorted;
     return Scaffold(
       appBar: AppBar(
         title: const Text('会话'),
@@ -249,41 +315,109 @@ class _SessionsPageState extends State<SessionsPage> {
         icon: const Icon(Icons.add),
         label: const Text('新建会话'),
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => widget.client.send(msgList()),
-        child: sessions.isEmpty
-            ? ListView(
+      body: Column(
+        children: [
+          // 过滤框：按标题/目录/id/harness 过滤（与 web 侧栏过滤一致）
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+            child: TextField(
+              controller: _filter,
+              decoration: InputDecoration(
+                hintText: '过滤会话（标题 / 目录 / id / harness）…',
+                isDense: true,
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _filter.text.isEmpty
+                    ? null
+                    : IconButton(icon: const Icon(Icons.close, size: 16), onPressed: () { _filter.clear(); setState(() {}); }),
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () async => widget.client.send(msgList()),
+              child: _buildGroupedList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGroupedList() {
+    final all = widget.client.sessions.values.toList();
+    final groups = SessionsPage.groupSessions(all, filter: _filter.text, collapsed: _collapsed);
+    if (groups.isEmpty) {
+      return ListView(children: [
+        const SizedBox(height: 140),
+        Center(child: Text(all.isEmpty ? '还没有会话\n点右下「新建会话」，或在网页端创建后下拉刷新' : '没有匹配的会话', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[500]))),
+      ]);
+    }
+    // 组头 + 组内条目摊平成一个列表（ListView.builder 惰性渲染）
+    final items = <(int, dynamic)>[];
+    for (final g in groups) {
+      items.add((0, g));
+      if (!g.collapsed) {
+        for (final s in g.sessions) {
+          items.add((1, s));
+        }
+      }
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 88),
+      itemCount: items.length,
+      itemBuilder: (_, i) {
+        final (type, data) = items[i];
+        if (type == 0) {
+          final g = data as SessionGroup;
+          return InkWell(
+            onTap: () => setState(() {
+              if (_collapsed.contains(g.harnessId)) {
+                _collapsed.remove(g.harnessId);
+              } else {
+                _collapsed.add(g.harnessId);
+              }
+            }),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 12, 6),
+              child: Row(
                 children: [
-                  const SizedBox(height: 160),
-                  Center(child: Text('还没有会话\n点右下「新建会话」，或在网页端创建后下拉刷新', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[500]))),
+                  Icon(g.collapsed ? Icons.expand_more : Icons.expand_less, size: 20, color: Colors.grey[500]),
+                  const SizedBox(width: 4),
+                  Expanded(child: Text(g.label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5))),
+                  if (g.liveCount > 0)
+                    Padding(padding: const EdgeInsets.only(right: 6), child: Text('${g.liveCount} 活跃', style: const TextStyle(fontSize: 11, color: Color(0xFF3FB950)))),
+                  Text('${g.sessions.length}', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
                 ],
-              )
-            : ListView.builder(
-                padding: const EdgeInsets.only(bottom: 88),
-                itemCount: sessions.length,
-                itemBuilder: (_, i) {
-                  final s = sessions[i];
-                  final (color, label) = _pill(s);
-                  return ListTile(
-                    leading: Container(
-                      width: 10, height: 10,
-                      margin: const EdgeInsets.only(left: 4, top: 6),
-                      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                    ),
-                    title: Row(
-                      children: [
-                        if (s.starred ?? false)
-                          const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.star, size: 15, color: Color(0xFFF5B942))),
-                        Expanded(
-                          child: Text(
-                            s.title?.isNotEmpty == true ? s.title! : '(无标题)',
-                            maxLines: 1, overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    subtitle: Text('${s.harnessLabel} · $label · ${s.cwd.split('/').last}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(client: widget.client, sessionId: s.id))),
+              ),
+            ),
+          );
+        }
+        final s = data as SessionInfo;
+        final (color, label) = _pill(s);
+        return ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          leading: Container(
+            width: 10, height: 10,
+            margin: const EdgeInsets.only(left: 4, top: 6),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          title: Row(
+            children: [
+              if (s.starred ?? false)
+                const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.star, size: 15, color: Color(0xFFF5B942))),
+              Expanded(
+                child: Text(
+                  s.title?.isNotEmpty == true ? s.title! : '(无标题)',
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          subtitle: Text('$label · ${SessionsPage.timeAgo(s.lastActiveAt)} · ${s.cwd.split('/').last.isEmpty ? s.cwd : s.cwd.split('/').last}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(client: widget.client, sessionId: s.id))),
                     trailing: PopupMenuButton<String>(
                       icon: const Icon(Icons.more_vert, size: 20),
                       onSelected: (v) {
@@ -301,10 +435,8 @@ class _SessionsPageState extends State<SessionsPage> {
                         const PopupMenuItem(value: 'delete', child: Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
                       ],
                     ),
-                  );
-                },
-              ),
-      ),
+          );
+      },
     );
   }
 }
