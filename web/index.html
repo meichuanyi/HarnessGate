@@ -2522,6 +2522,12 @@ function renderWorkspace(reports) {
 /* =====================================================================
    收藏抽屉（跨 harness 的收藏会话）
    ===================================================================== */
+function updateStarBtn() {
+  const b = $("starBtn");
+  if (!b) return;
+  const n = [...sessions.values()].filter((s) => s.starred).length;
+  b.textContent = n ? `收藏 ${n}` : "收藏";
+}
 $("starBtn").onclick = () => {
   const p = $("starPanel");
   p.hidden = !p.hidden;
