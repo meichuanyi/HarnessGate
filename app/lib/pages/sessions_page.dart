@@ -200,17 +200,39 @@ class _SessionsPageState extends State<SessionsPage> {
       progress.dispose();
       if (!mounted) return;
       Navigator.of(context).pop(); // 关进度框
-      final msg = await AppUpdate.install(path);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg.isEmpty ? '已交给系统安装器' : '安装器：$msg')),
-      );
+      await _installWithRetry(u.tag, path);
     } catch (e) {
       progress.dispose();
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('下载失败：$e')));
+    }
+  }
+
+  /// 调起安装器；未授权「安装未知应用」等失败场景给重试入口（授权回来点重试即可，不必重新下载）
+  Future<void> _installWithRetry(String tag, String path) async {
+    while (mounted) {
+      final r = await AppUpdate.install(path);
+      if (!mounted) return;
+      if (r.ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已交给系统安装器；若首次安装，请在弹出的页面允许「安装未知应用」')),
+        );
+        return;
+      }
+      final retry = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text('无法调起安装（$tag）'),
+          content: Text('常见原因：未授予「安装未知应用」权限。\n请在系统设置里允许本应用安装应用后，点「重试安装」（已下载的安装包不会重新下载）。\n\n安装器返回：${r.message}'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('稍后')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('重试安装')),
+          ],
+        ),
+      );
+      if (retry != true) return;
     }
   }
 

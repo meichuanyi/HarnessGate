@@ -130,10 +130,11 @@ class AppUpdate {
     }
   }
 
-  /// 调起系统安装器（Android 8+ 首次需要授予「安装未知应用」权限，系统会自行引导）。
-  static Future<String> install(String apkPath) async {
+  /// 调起系统安装器（Android 8+ 首次需要授予「安装未知应用」权限，系统会引导）。
+  /// 返回 ok=false 时通常是未授权，UI 应给出重试入口（授权回来后点重试即可，不必重新下载）。
+  static Future<({bool ok, String message})> install(String apkPath) async {
     final r = await OpenFilex.open(apkPath, type: 'application/vnd.android.package-archive');
-    return r.message;
+    return (ok: r.type == ResultType.done, message: r.message);
   }
 
   /// 版本号数字段比较（忽略 +build/-pre 后缀）：a<b 负、相等 0、a>b 正。
