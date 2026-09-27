@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../core/client.dart';
+import '../core/notify.dart';
 import '../core/protocol.dart';
 import '../core/update.dart';
 import 'chat_page.dart';
@@ -121,13 +122,16 @@ class _SessionsPageState extends State<SessionsPage> {
       builder: (_) => AlertDialog(
         title: Text('发现新版本 ${u.tag}'),
         content: Text(
-          u.notes.trim().isEmpty ? '（这个版本没有更新说明）' : u.notes.trim().split('\n').take(8).join('\n'),
+          u.notes.trim().isEmpty
+              ? '（这个版本没有更新说明）'
+              : u.notes.trim().split('\n').take(8).join('\n'),
           maxLines: 12,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 13),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('稍后')),
+          TextButton(
+              onPressed: () => Navigator.pop(context), child: const Text('稍后')),
           FilledButton(
             onPressed: () {
               Navigator.pop(context);
@@ -141,13 +145,15 @@ class _SessionsPageState extends State<SessionsPage> {
   }
 
   Future<void> _manualCheck() async {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在检查更新…'), duration: Duration(seconds: 1)));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('正在检查更新…'), duration: Duration(seconds: 1)));
     final r = await AppUpdate.check(manual: true);
     if (!mounted) return;
     if (r.update != null) {
       _offerUpdate(r.update!);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r.message ?? '已是最新')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(r.message ?? '已是最新')));
     }
   }
 
@@ -168,7 +174,8 @@ class _SessionsPageState extends State<SessionsPage> {
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    LinearProgressIndicator(value: total > 0 ? done / total : null),
+                    LinearProgressIndicator(
+                        value: total > 0 ? done / total : null),
                     const SizedBox(height: 8),
                     Text(
                       total > 0
@@ -202,7 +209,8 @@ class _SessionsPageState extends State<SessionsPage> {
       progress.dispose();
       if (!mounted) return;
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败：$e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('下载失败：$e')));
     }
   }
 
@@ -211,33 +219,53 @@ class _SessionsPageState extends State<SessionsPage> {
     if (!mounted) return;
     showModalBottomSheet<void>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(leading: Icon(Icons.bolt), title: Text('HarnessGate'), subtitle: Text('远程驱动服务器上的编码 agent')),
-            ListTile(
-              leading: const Icon(Icons.phone_android, size: 20),
-              title: const Text('APP 版本'),
-              subtitle: Text('v${info.version}'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.dns, size: 20),
-              title: const Text('服务器版本'),
-              subtitle: Text(widget.client.serverVersion.isEmpty ? '（未连接）' : 'v${widget.client.serverVersion} · ${widget.client.serverCommit}'),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: FilledButton.tonalIcon(
-                icon: const Icon(Icons.system_update, size: 18),
-                label: const Text('检查更新'),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  _manualCheck();
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                  leading: Icon(Icons.bolt),
+                  title: Text('HarnessGate'),
+                  subtitle: Text('远程驱动服务器上的编码 agent')),
+              ListTile(
+                leading: const Icon(Icons.phone_android, size: 20),
+                title: const Text('APP 版本'),
+                subtitle: Text('v${info.version}'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.dns, size: 20),
+                title: const Text('服务器版本'),
+                subtitle: Text(widget.client.serverVersion.isEmpty
+                    ? '（未连接）'
+                    : 'v${widget.client.serverVersion} · ${widget.client.serverCommit}'),
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.notifications_outlined, size: 20),
+                title: const Text('会话事件通知'),
+                subtitle: const Text('回合完成 / 等待授权时提醒（APP 存活期间）',
+                    style: TextStyle(fontSize: 11)),
+                value: Notifier.enabled,
+                onChanged: (v) async {
+                  await Notifier.setEnabled(v);
+                  setSheet(() {});
+                  // 关了再开要重新走权限请求
+                  if (v) await Notifier.init();
                 },
               ),
-            ),
-          ],
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: FilledButton.tonalIcon(
+                  icon: const Icon(Icons.system_update, size: 18),
+                  label: const Text('检查更新'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _manualCheck();
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -257,11 +285,15 @@ class _SessionsPageState extends State<SessionsPage> {
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('删除会话'),
-        content: Text('删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？\n该操作不可撤销，会话记录与台账将一并清除。'),
+        content: Text(
+            '删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？\n该操作不可撤销，会话记录与台账将一并清除。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF85149)),
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFF85149)),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('删除'),
           ),
@@ -294,7 +326,11 @@ class _SessionsPageState extends State<SessionsPage> {
               final st = snap.data ?? 'idle';
               return Padding(
                 padding: const EdgeInsets.only(right: 12),
-                child: Icon(Icons.circle, size: 10, color: st == 'connected' ? const Color(0xFF3FB950) : const Color(0xFFD29922)),
+                child: Icon(Icons.circle,
+                    size: 10,
+                    color: st == 'connected'
+                        ? const Color(0xFF3FB950)
+                        : const Color(0xFFD29922)),
               );
             },
           ),
@@ -302,7 +338,8 @@ class _SessionsPageState extends State<SessionsPage> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => NewSessionPage(client: widget.client)),
+          MaterialPageRoute(
+              builder: (_) => NewSessionPage(client: widget.client)),
         ),
         icon: const Icon(Icons.add),
         label: const Text('新建会话'),
@@ -320,7 +357,12 @@ class _SessionsPageState extends State<SessionsPage> {
                 prefixIcon: const Icon(Icons.search, size: 18),
                 suffixIcon: _filter.text.isEmpty
                     ? null
-                    : IconButton(icon: const Icon(Icons.close, size: 16), onPressed: () { _filter.clear(); setState(() {}); }),
+                    : IconButton(
+                        icon: const Icon(Icons.close, size: 16),
+                        onPressed: () {
+                          _filter.clear();
+                          setState(() {});
+                        }),
                 border: const OutlineInputBorder(),
               ),
               onChanged: (_) => setState(() {}),
@@ -339,11 +381,16 @@ class _SessionsPageState extends State<SessionsPage> {
 
   Widget _buildGroupedList() {
     final all = widget.client.sessions.values.toList();
-    final groups = SessionsPage.groupSessions(all, filter: _filter.text, collapsed: _collapsed);
+    final groups = SessionsPage.groupSessions(all,
+        filter: _filter.text, collapsed: _collapsed);
     if (groups.isEmpty) {
       return ListView(children: [
         const SizedBox(height: 140),
-        Center(child: Text(all.isEmpty ? '还没有会话\n点右下「新建会话」，或在网页端创建后下拉刷新' : '没有匹配的会话', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[500]))),
+        Center(
+            child: Text(
+                all.isEmpty ? '还没有会话\n点右下「新建会话」，或在网页端创建后下拉刷新' : '没有匹配的会话',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[500]))),
       ]);
     }
     // 组头 + 组内条目摊平成一个列表（ListView.builder 惰性渲染）
@@ -375,12 +422,22 @@ class _SessionsPageState extends State<SessionsPage> {
               padding: const EdgeInsets.fromLTRB(16, 10, 12, 6),
               child: Row(
                 children: [
-                  Icon(g.collapsed ? Icons.expand_more : Icons.expand_less, size: 20, color: Colors.grey[500]),
+                  Icon(g.collapsed ? Icons.expand_more : Icons.expand_less,
+                      size: 20, color: Colors.grey[500]),
                   const SizedBox(width: 4),
-                  Expanded(child: Text(g.label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5))),
+                  Expanded(
+                      child: Text(g.label,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13.5))),
                   if (g.liveCount > 0)
-                    Padding(padding: const EdgeInsets.only(right: 6), child: Text('${g.liveCount} 活跃', style: const TextStyle(fontSize: 11, color: Color(0xFF3FB950)))),
-                  Text('${g.sessions.length}', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+                    Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Text('${g.liveCount} 活跃',
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF3FB950)))),
+                  Text('${g.sessions.length}',
+                      style:
+                          TextStyle(fontSize: 11.5, color: Colors.grey[500])),
                 ],
               ),
             ),
@@ -392,42 +449,68 @@ class _SessionsPageState extends State<SessionsPage> {
           dense: true,
           visualDensity: VisualDensity.compact,
           leading: Container(
-            width: 10, height: 10,
+            width: 10,
+            height: 10,
             margin: const EdgeInsets.only(left: 4, top: 6),
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           title: Row(
             children: [
               if (s.starred ?? false)
-                const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.star, size: 15, color: Color(0xFFF5B942))),
+                const Padding(
+                    padding: EdgeInsets.only(right: 4),
+                    child:
+                        Icon(Icons.star, size: 15, color: Color(0xFFF5B942))),
               Expanded(
                 child: Text(
                   s.title?.isNotEmpty == true ? s.title! : '(无标题)',
-                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
-          subtitle: Text('$label · ${SessionsPage.timeAgo(s.lastActiveAt)} · ${s.cwd.split('/').last.isEmpty ? s.cwd : s.cwd.split('/').last}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(client: widget.client, sessionId: s.id))),
-                    trailing: PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert, size: 20),
-                      onSelected: (v) {
-                        switch (v) {
-                          case 'star': _toggleStar(s); break;
-                          case 'resume': widget.client.send(msgResume(s.id)); break;
-                          case 'stop': widget.client.send(msgClose(s.id)); break;
-                          case 'delete': _confirmDelete(s); break;
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem(value: 'star', child: Text((s.starred ?? false) ? '取消收藏' : '收藏置顶')),
-                        if (!s.live && s.resumable) const PopupMenuItem(value: 'resume', child: Text('恢复会话')),
-                        if (s.live) const PopupMenuItem(value: 'stop', child: Text('停止进程')),
-                        const PopupMenuItem(value: 'delete', child: Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
-                      ],
-                    ),
-          );
+          subtitle: Text(
+              '$label · ${SessionsPage.timeAgo(s.lastActiveAt)} · ${s.cwd.split('/').last.isEmpty ? s.cwd : s.cwd.split('/').last}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12)),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) =>
+                  ChatPage(client: widget.client, sessionId: s.id))),
+          trailing: PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, size: 20),
+            onSelected: (v) {
+              switch (v) {
+                case 'star':
+                  _toggleStar(s);
+                  break;
+                case 'resume':
+                  widget.client.send(msgResume(s.id));
+                  break;
+                case 'stop':
+                  widget.client.send(msgClose(s.id));
+                  break;
+                case 'delete':
+                  _confirmDelete(s);
+                  break;
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                  value: 'star',
+                  child: Text((s.starred ?? false) ? '取消收藏' : '收藏置顶')),
+              if (!s.live && s.resumable)
+                const PopupMenuItem(value: 'resume', child: Text('恢复会话')),
+              if (s.live)
+                const PopupMenuItem(value: 'stop', child: Text('停止进程')),
+              const PopupMenuItem(
+                  value: 'delete',
+                  child:
+                      Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
+            ],
+          ),
+        );
       },
     );
   }

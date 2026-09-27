@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 远程驱动服务器需要联网（release 包不会像 debug 包那样自动加） -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 本地通知：回合完成 / 等待授权提醒（Android 13+ 动态权限，运行时请求） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="HarnessGate"
         android:name="${applicationName}"

@@ -42,6 +42,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    widget.client.viewingSessionId = widget.sessionId; // 正在看的会话不弹通知
     _sub = widget.client.messages.listen(_onMsg);
     // 会话状态变化（运行中/空闲/待审批/收藏/配置）要刷新 AppBar 与配置项
     _sessSub = widget.client.sessionsChanged.listen((_) {
@@ -56,6 +57,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    if (widget.client.viewingSessionId == widget.sessionId) {
+      widget.client.viewingSessionId = null;
+    }
     _sub?.cancel();
     _sessSub?.cancel();
     _highlightTimer?.cancel();

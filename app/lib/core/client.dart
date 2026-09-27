@@ -28,6 +28,9 @@ class GateClient {
   /// 服务端版本与 commit（hello 下发，「关于」页展示）
   String serverVersion = '';
   String serverCommit = '';
+
+  /// 用户当前正在查看的会话 id（ChatPage 维护；通知模块据此跳过同屏打扰）
+  String? viewingSessionId;
   String defaultCwd = '';
 
   bool get connected => _ws != null;
