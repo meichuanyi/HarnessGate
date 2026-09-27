@@ -584,17 +584,66 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  /// 状态胶囊（运行中/空闲/待审批/已存档…）——不用点开任何东西就能看到会话当前状态
+  Widget _statusPill(SessionInfo? s) {
+    if (s == null) return const SizedBox.shrink();
+    final (color, label) = pillOfSession(s);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Text(label, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = _session;
     final inTurn = s?.inTurn == true;
+    // 自动决策档位：图标颜色 + 图标下的文字直接显示当前档位，不用点开菜单猜
+    final aa = s?.autoApprove ?? 'off';
+    final (aaColor, aaIcon, aaLabel) = switch (aa) {
+      'all' => (const Color(0xFF3FB950), Icons.shield, '全自动'),
+      'readonly' => (const Color(0xFFD29922), Icons.shield_outlined, '只读'),
+      _ => (Colors.grey, Icons.shield_outlined, '人工'),
+    };
+    PopupMenuEntry<String> aaItem(String value, String label) => PopupMenuItem<String>(
+          value: value,
+          child: Row(
+            children: [
+              SizedBox(
+                width: 22,
+                child: aa == value ? Icon(Icons.check, size: 15, color: aaColor) : null,
+              ),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: aa == value ? aaColor : null,
+                  fontWeight: aa == value ? FontWeight.w600 : null,
+                ),
+              ),
+            ],
+          ),
+        );
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Text(s?.title?.isNotEmpty == true ? s!.title! : '会话', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16)),
-            Text('${s?.harnessLabel ?? ''} · ${s?.cwd ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400)),
+            _statusPill(s),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(s?.title?.isNotEmpty == true ? s!.title! : '会话', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16)),
+                  Text('${s?.harnessLabel ?? ''} · ${s?.cwd ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w400)),
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
@@ -617,12 +666,19 @@ class _ChatPageState extends State<ChatPage> {
             ),
           PopupMenuButton<String>(
             onSelected: _changeAutoApprove,
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'off', child: Text('自动决策：人工审批')),
-              PopupMenuItem(value: 'readonly', child: Text('自动决策：只读自动')),
-              PopupMenuItem(value: 'all', child: Text('自动决策：全自动')),
+            tooltip: '自动决策档位（当前：$aaLabel）',
+            icon: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(aaIcon, size: 20, color: aaColor),
+                Text(aaLabel, style: TextStyle(fontSize: 8.5, height: 1.1, color: aaColor)),
+              ],
+            ),
+            itemBuilder: (_) => [
+              aaItem('off', '人工审批'),
+              aaItem('readonly', '只读自动'),
+              aaItem('all', '全自动'),
             ],
-            icon: Icon(Icons.shield_outlined, color: s?.autoApprove == 'all' ? const Color(0xFF3FB950) : null),
           ),
           PopupMenuButton<String>(
             onSelected: (v) {

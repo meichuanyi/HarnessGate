@@ -2,7 +2,24 @@
 /// APP 只做手机场景核心：会话列表 + 聊天 + 审批；编排/管理留给网页。
 library;
 
+import 'package:flutter/material.dart';
+
 // ---------- 服务端 → 客户端 ----------
+
+/// 会话状态胶囊（颜色 + 文案）——会话列表与对话页 AppBar 共用（对齐 web 的 pill 语义）
+(Color, String) pillOfSession(SessionInfo s) {
+  if (s.status == 'ready') {
+    return s.inTurn == true
+        ? (const Color(0xFF3FB950), '运行中')
+        : (const Color(0xFF5B9CF8), '空闲');
+  }
+  switch (s.status) {
+    case 'starting': return (const Color(0xFFD29922), '启动中');
+    case 'awaiting': return (const Color(0xFFD29922), '待审批');
+    case 'error': return (const Color(0xFFF85149), '出错');
+    default: return (Colors.grey, '已存档');
+  }
+}
 
 class ConfigOption {
   final String id;

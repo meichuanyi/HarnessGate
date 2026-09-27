@@ -243,19 +243,7 @@ class _SessionsPageState extends State<SessionsPage> {
     );
   }
 
-  (Color, String) _pill(SessionInfo s) {
-    if (s.status == 'ready') {
-      return s.inTurn == true
-          ? (const Color(0xFF3FB950), '运行中')
-          : (const Color(0xFF5B9CF8), '空闲');
-    }
-    switch (s.status) {
-      case 'starting': return (const Color(0xFFD29922), '启动中');
-      case 'awaiting': return (const Color(0xFFD29922), '待审批');
-      case 'error': return (const Color(0xFFF85149), '出错');
-      default: return (Colors.grey, '已存档');
-    }
-  }
+  (Color, String) _pill(SessionInfo s) => pillOfSession(s);
 
   void _toggleStar(SessionInfo s) {
     widget.client.send(msgStar(s.id, !(s.starred ?? false)));
