@@ -1,7 +1,7 @@
 name: harnessgate
 description: HarnessGate 移动客户端——远程驱动服务器上的编码 agent
 publish_to: "none"
-version: 0.5.2+9
+version: 0.5.3+10
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -21,6 +21,8 @@ dependencies:
   url_launcher: ^6.3.1
   # 本地通知：回合完成 / 等待授权时提醒（APP 进程存活期间）
   flutter_local_notifications: ^19.0.0
+  # 语音输入：系统 SpeechRecognizer（国内主流 ROM 内置识别引擎）
+  speech_to_text: ^7.0.0
 
 dev_dependencies:
   flutter_test:

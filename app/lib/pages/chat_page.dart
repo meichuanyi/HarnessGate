@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
 import '../core/protocol.dart';
@@ -34,6 +35,58 @@ class _ChatPageState extends State<ChatPage> {
   /// 待发送附件（选好的图片，base64）
   final _pendingAtt = <({String name, String mimeType, String base64})>[];
 
+  /* ---------- 语音输入（系统 SpeechRecognizer，中文优先） ---------- */
+  final _speech = stt.SpeechToText();
+  bool _speechReady = false;
+  bool _listening = false;
+  String _preVoice = ''; // 开始听之前输入框已有的内容，识别文本接在后面
+
+  Future<void> _toggleVoice() async {
+    if (_listening) {
+      await _speech.stop();
+      if (mounted) setState(() => _listening = false);
+      return;
+    }
+    if (!_speechReady) {
+      bool ok = false;
+      try {
+        ok = await _speech.initialize();
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('此设备不支持语音输入（没有识别引擎或麦克风权限被拒）')),
+          );
+        }
+        return;
+      }
+      _speechReady = true;
+    }
+    _preVoice = _input.text;
+    setState(() => _listening = true);
+    try {
+      final locales = await _speech.locales();
+      final hasZh = locales.any((l) => l.localeId.startsWith('zh'));
+      await _speech.listen(
+        onResult: (r) {
+          if (!mounted) return;
+          setState(() {
+            _input.text = _preVoice + (_preVoice.isEmpty ? '' : ' ') + r.recognizedWords;
+            _input.selection = TextSelection.collapsed(offset: _input.text.length);
+          });
+        },
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          localeId: hasZh ? 'zh_CN' : null,
+        ),
+      );
+    } catch (_) {
+      if (mounted) setState(() => _listening = false);
+    }
+  }
+
   /// session-detail 数据（决策记录/改动文件面板共用，ValueNotifier 驱动 sheet 刷新）
   final _detail = ValueNotifier<Map<String, dynamic>?>(null);
 
@@ -57,6 +110,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    _speech.cancel();
     if (widget.client.viewingSessionId == widget.sessionId) {
       widget.client.viewingSessionId = null;
     }
@@ -779,6 +833,15 @@ class _ChatPageState extends State<ChatPage> {
                     icon: const Icon(Icons.attach_file, size: 20),
                     onPressed: _pickImage,
                   ),
+                  IconButton(
+                    tooltip: _listening ? '停止语音输入' : '语音输入',
+                    icon: Icon(
+                      _listening ? Icons.mic : Icons.mic_none,
+                      size: 22,
+                      color: _listening ? const Color(0xFFF85149) : null,
+                    ),
+                    onPressed: _toggleVoice,
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _input,
@@ -786,7 +849,11 @@ class _ChatPageState extends State<ChatPage> {
                       maxLines: 4,
                       onSubmitted: (_) => _send(),
                       decoration: InputDecoration(
-                        hintText: s?.live == true ? '说点什么…' : '会话未运行（右上可恢复）',
+                        hintText: _listening
+                            ? '🎙 正在听…（点麦克风结束）'
+                            : s?.live == true
+                                ? '说点什么…'
+                                : '会话未运行（右上可恢复）',
                         isDense: true,
                         border: const OutlineInputBorder(),
                       ),

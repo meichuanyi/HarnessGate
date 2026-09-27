@@ -6,6 +6,8 @@
     <!-- 应用内自更新：调起系统安装器安装下载的 APK。缺失时安装 intent 被系统静默吞掉
          （无弹窗无报错），且 APP 不会出现在「安装未知应用」授权列表里 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- 语音输入（SpeechRecognizer 各 ROM 自行处理权限确认，声明以兼容部分设备） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="HarnessGate"
         android:name="${applicationName}"
