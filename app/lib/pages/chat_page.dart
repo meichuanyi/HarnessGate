@@ -721,7 +721,8 @@ class _ChatPageState extends State<ChatPage> {
                 ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  itemCount: _entries.length + (_waiting ? 1 : 0),
+                  // 转圈只在「已发出消息但还没任何输出」时出现；开始流式（思考/正文）即隐藏
+                  itemCount: _entries.length + (_waiting && !_streaming ? 1 : 0),
                   itemBuilder: (_, i) {
                     if (i >= _entries.length) {
                       return const Padding(
@@ -838,6 +839,34 @@ class _ChatPageState extends State<ChatPage> {
           margin: const EdgeInsets.only(bottom: 12, right: 16),
         );
       case 'thought':
+        // 正在思考：实时展开流式内容（对齐 web）；结束后转折叠块省空间
+        final thinking = _streaming && index == _entries.length - 1;
+        if (thinking) {
+          return wrap(
+            Container(
+              margin: const EdgeInsets.only(bottom: 10, right: 16),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.withValues(alpha: 0.25)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('💭 思考中…', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+                  const SizedBox(height: 4),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 260),
+                    child: SingleChildScrollView(
+                      child: Text(e.text ?? '', style: TextStyle(fontSize: 12.5, color: Colors.grey[400])),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         return wrap(
           Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
