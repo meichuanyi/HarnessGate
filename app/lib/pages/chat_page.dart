@@ -53,6 +53,7 @@ class _ChatPageState extends State<ChatPage> {
         ok = await _speech.initialize(
           onError: (e) {
             if (mounted) {
+              if (e.permanent) setState(() => _listening = false);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('语音识别出错：${e.errorMsg}')),
               );
@@ -84,9 +85,26 @@ class _ChatPageState extends State<ChatPage> {
     }
     _preVoice = _input.text;
     setState(() => _listening = true);
+    // 语言包查询在部分 ROM 上会走「广播问 Google」而挂住，绝不能阻塞 listen，
+    // 因此加超时兜底，查不到就用设备默认语言。
+    String? localeId;
     try {
-      final locales = await _speech.locales();
-      final hasZh = locales.any((l) => l.localeId.startsWith('zh'));
+      final locales = await _speech.locales().timeout(const Duration(milliseconds: 1500));
+      final zh = locales
+          .where((l) => l.localeId.toLowerCase().startsWith('zh'))
+          .toList();
+      if (zh.isNotEmpty) {
+        localeId = zh
+            .firstWhere(
+              (l) => l.localeId.toLowerCase().replaceAll('-', '_').startsWith('zh_cn'),
+              orElse: () => zh.first,
+            )
+            .localeId;
+      }
+    } catch (_) {
+      localeId = null;
+    }
+    try {
       await _speech.listen(
         onResult: (r) {
           if (!mounted) return;
@@ -97,7 +115,10 @@ class _ChatPageState extends State<ChatPage> {
         },
         listenOptions: stt.SpeechListenOptions(
           partialResults: true,
-          localeId: hasZh ? 'zh_CN' : null,
+          listenMode: stt.ListenMode.dictation,
+          localeId: localeId,
+          listenFor: const Duration(seconds: 60),
+          pauseFor: const Duration(seconds: 5),
         ),
       );
     } catch (_) {
