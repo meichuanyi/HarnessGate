@@ -493,6 +493,15 @@
     padding:14px; overflow:auto; z-index:30; box-shadow:-12px 0 30px #0007; -webkit-overflow-scrolling:touch; }
   .drawer h3 { font-size:12px; color:var(--dim2); margin:14px 0 6px; text-transform:uppercase; letter-spacing:.05em; }
   .drawer .hd { display:flex; justify-content:space-between; align-items:center; }
+
+  /* ---------- 接续对话框 ---------- */
+  .hdlgMask { position:fixed; inset:0; background:#0009; z-index:120; display:flex; align-items:center; justify-content:center; padding:16px; }
+  .hdlg { width:min(440px,94vw); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; box-shadow:0 14px 44px #000a; max-height:86vh; overflow:auto; }
+  .hdlg h3 { margin:0 0 4px; font-size:14.5px; }
+  .hdlg .row { display:flex; align-items:center; gap:8px; margin:10px 0; }
+  .hdlg .row label { width:60px; flex:none; font-size:12.5px; color:var(--dim); }
+  .hdlg .row select { flex:1; min-width:0; }
+  .hdlg .btns { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
   .wsRow { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; font-size:12.5px; background:var(--panel2); }
   .wsRow.conflict { border-color:#54441a; background:#1c1808; }
   .meta2 { color:var(--dim2); font-size:11.5px; }
@@ -725,6 +734,7 @@
 <div id="wsPanel" class="drawer" hidden></div>
 <div id="starPanel" class="drawer" hidden></div>
 <div id="verPanel" class="drawer" hidden></div>
+<div id="handoffMask" class="hdlgMask" hidden><div class="hdlg" id="handoffDlg"></div></div>
 <div id="crewPanel" class="drawer" hidden></div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
@@ -754,6 +764,8 @@ const state = {
 
 let ws = null;
 let harnesses = new Map();
+/** TTS 请求回调（reqId → (audioDataUrl, error)），朗读按钮用 */
+const ttsPending = new Map();
 let sessions = new Map();
 let rooms = [];
 let schedulesArr = [];   // 定时任务
@@ -1079,6 +1091,9 @@ function handleServer(msg) {
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
         const isNewSession = !sessions.has(msg.session.id);
         sessions.set(msg.session.id, msg.session);
+        // 模型列表按 harness 缓存：接续对话框在探活数据缺位时的兜底来源
+        const mc = (msg.session.configOptions || []).find((o) => o.category === "model" && o.options?.length);
+        if (mc) { try { localStorage.setItem("hg_models_" + msg.session.harnessId, JSON.stringify(mc.options)); } catch {} }
         renderTree();
         refreshPills(msg.session.id);
         if (!$("starPanel").hidden) renderStarPanel();   // 收藏抽屉开着时实时刷新（新收藏/状态变化）
@@ -1260,6 +1275,22 @@ function handleServer(msg) {
     case "handoff_done": /* 2026-09-19 新增：接续完成后跳到新会话 */
       if (msg.to) openSession(msg.to);
       break;
+    case "voice-stt-result":   // 本地识别结果：追加进输入框
+      setVoiceUI("idle");
+      if (msg.error) showToast("🎙 " + msg.error, 6000);
+      else if (msg.text) {
+        const inp = $("input");
+        if (inp) { inp.value = (inp.value ? inp.value + " " : "") + msg.text; inp.focus(); inp.selectionStart = inp.selectionEnd = inp.value.length; }
+      } else showToast("🎙 没听到内容，再试一次？", 3500);
+      break;
+    case "voice-tts-result": {
+      const cb = ttsPending.get(msg.reqId);
+      ttsPending.delete(msg.reqId);
+      if (!cb) break;
+      if (msg.error) cb(null, msg.error);
+      else cb(`data:${msg.mime || "audio/mpeg"};base64,${msg.audio}`);
+      break;
+    }
     case "dirs":
       if (acList?.isConnected && msg.reqId === acList.dataset.req) { acData = msg; paintDirList(); }
       break;
@@ -1522,10 +1553,10 @@ function renderSessionList() {
             <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
           </div>
           <div class="acts">
+            <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
             <button class="mini ghost" data-act="star" title="${s.starred ? "取消收藏" : "收藏会话（置顶显示）"}" style="${s.starred ? "color:#f5b942" : ""}">${s.starred ? "★" : "☆"}</button>
             <button class="mini primary" data-act="open">进入</button>
             ${s.live ? '<button class="mini" data-act="stop">停止</button>' : s.resumable ? '<button class="mini" data-act="resume">恢复</button>' : ""}
-            <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
             <button class="mini ghost" data-act="del" title="删除记录">删除</button>
           </div>
         </div>`).join("") || '<div class="empty"><div class="big">📭</div>还没有会话，在上方输入工作目录启动一个。</div>'}
@@ -1577,12 +1608,61 @@ function renderSessionList() {
         }
         if (act === "stop") send({ type: "close", sessionId: id });
         if (act === "resume") send({ type: "resume", sessionId: id });
-        if (act === "handoff") send({ type: "handoff", sessionId: id });
+        if (act === "handoff") openHandoffDialog(id);
         if (act === "del") { if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: id }); }
       };
     });
     el.onclick = () => openSession(id);
   });
+}
+
+/* =====================================================================
+   接续对话框：选目标 harness / 模型。历史走渐进披露——开场只注入最近记录，
+   完整历史由服务端物化成快照文件放进新会话工作目录，agent 自己按需翻。
+   ===================================================================== */
+/** 某 harness 可选的模型列表：探活 configs 优先，退回会话上报时缓存的 localStorage */
+function modelOptionsOf(hid) {
+  const probeCfg = (harnesses.get(hid)?.configs || []).find((c) => c.category === "model" && c.options?.length);
+  if (probeCfg?.options?.length) return probeCfg.options;
+  try { return JSON.parse(localStorage.getItem("hg_models_" + hid) || "[]") || []; } catch { return []; }
+}
+
+function openHandoffDialog(sid) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  const mask = $("handoffMask"), dlg = $("handoffDlg");
+  const hs = [...harnesses.values()];
+  const hOpts = (hs.some((h) => h.id === s.harnessId) ? "" : `<option value="${esc(s.harnessId)}" selected>${esc(s.harnessLabel || s.harnessId)}（已不在注册表）</option>`)
+    + hs.map((h) => `<option value="${esc(h.id)}" ${h.id === s.harnessId ? "selected" : ""}>${esc(h.label || h.id)}</option>`).join("");
+  dlg.innerHTML = `
+    <h3>⇄ 接续会话 #${esc(s.id)}</h3>
+    <div class="meta2">${esc(s.title || "(无标题)")} · ${esc(s.harnessLabel)} · ${esc(s.cwd)}</div>
+    <div class="meta2" style="margin:8px 0 2px">最近的对话会作为开场背景注入；完整历史存成快照文件放进新会话的工作目录，agent 需要更早背景时自己去翻，不需要你操作。</div>
+    <div class="row"><label>Harness</label><select id="hoHarness" class="sm">${hOpts}</select></div>
+    <div class="row"><label>模型</label><select id="hoModel" class="sm"></select></div>
+    <div class="btns">
+      <button class="mini ghost" id="hoCancel">取消</button>
+      <button class="mini primary" id="hoGo">接续 →</button>
+    </div>`;
+  const modelSel = $("hoModel");
+  const fillModels = () => {
+    const opts = modelOptionsOf($("hoHarness").value);
+    modelSel.innerHTML = `<option value="">跟随 harness 默认</option>` + opts.map((o) => `<option value="${esc(o.value)}">${esc(o.name || o.value)}</option>`).join("");
+    modelSel.title = opts.length ? "" : "这个 harness 的模型列表未知（探活没收集到）；先用默认，进会话后可在顶栏切换";
+  };
+  fillModels();
+  $("hoHarness").onchange = fillModels;
+  const close = () => { mask.hidden = true; };
+  mask.onclick = (ev) => { if (ev.target === mask) close(); };
+  $("hoCancel").onclick = close;
+  $("hoGo").onclick = () => {
+    const target = $("hoHarness").value;
+    const model = modelSel.value;
+    close();
+    send({ type: "handoff", sessionId: sid, targetHarnessId: target, model: model || undefined });
+    showToast("接续中：新会话就绪后会自动跳过去", 3000);
+  };
+  mask.hidden = false;
 }
 
 /* ---------- 目录自动补全 ---------- */
@@ -1665,39 +1745,70 @@ function paintDirList() {
   acList.hidden = false;
 }
 
-/* ---------- 语音输入（Web Speech API：桌面 Chrome/Edge、部分安卓浏览器） ---------- */
-let voiceRec = null, voiceListening = false, voiceBase = "";
-function setVoiceUI(on) {
-  voiceListening = on;
+/* ---------- 语音输入（服务端本地识别：sherpa-onnx 中英混说；浏览器只负责录音转 WAV） ---------- */
+let micRec = null, micStream = null, micChunks = [];
+function setVoiceUI(state) {   // "idle" | "rec" | "busy"
   const b = $("voiceBtn"), inp = $("input");
-  if (b) { b.textContent = on ? "🎙" : "🎤"; b.style.color = on ? "#f85149" : ""; b.title = on ? "停止语音输入" : "语音输入（识别文字追加到输入框）"; }
-  if (inp && on) inp.placeholder = "🎙 正在听…（再点麦克风结束）";
+  if (!b) return;
+  if (state === "rec") { b.textContent = "🎙"; b.style.color = "#f85149"; b.title = "结束录音并转写"; if (inp) inp.placeholder = "🎙 正在听…（再点麦克风结束）"; }
+  else if (state === "busy") { b.textContent = "…"; b.style.color = ""; b.title = "转写中…"; if (inp) inp.placeholder = "🎙 识别中…"; }
+  else { b.textContent = "🎤"; b.style.color = ""; b.title = "语音输入（本地识别，中英混说）"; if (inp) inp.placeholder = "说点什么…（Enter 发送，Shift+Enter 换行）"; }
 }
-function toggleVoice() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { showToast("此浏览器不支持语音输入（推荐桌面 Chrome / Edge）", 4500); return; }
-  if (voiceListening) { try { voiceRec.stop(); } catch {} return; }   // onend 统一复位 UI
-  if (!voiceRec) {
-    voiceRec = new SR();
-    voiceRec.lang = "zh-CN";
-    voiceRec.continuous = true;
-    voiceRec.interimResults = true;
-    voiceRec.onresult = (ev) => {
-      let text = "";
-      for (let i = 0; i < ev.results.length; i++) text += ev.results[i][0].transcript;
-      const inp = $("input");
-      if (!inp) return;
-      inp.value = voiceBase + (voiceBase ? " " : "") + text;
-      inp.selectionStart = inp.selectionEnd = inp.value.length;
-    };
-    voiceRec.onerror = (ev) => {
-      if (ev.error === "not-allowed") showToast("🎤 麦克风权限被拒：请在浏览器地址栏的权限设置里允许麦克风", 6000);
-      else if (ev.error !== "no-speech" && ev.error !== "aborted") showToast("语音识别出错：" + ev.error, 4000);
-    };
-    voiceRec.onend = () => setVoiceUI(false);   // 静默超时/手动停止都收拢到这里
+function bytesToB64(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function encodeWav16k(samples) {
+  const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+  const ws = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  ws(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); ws(8, "WAVE");
+  ws(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, "data"); v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for (let i = 0; i < samples.length; i++, o += 2) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  return new Uint8Array(buf);
+}
+async function blobToWav16k(blob) {
+  const arr = await blob.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  const decoded = await ac.decodeAudioData(arr);
+  await ac.close();
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const rendered = await off.startRendering();
+  return encodeWav16k(rendered.getChannelData(0));
+}
+async function toggleVoice() {
+  if (micRec && micRec.state === "recording") { micRec.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { showToast("此环境不支持录音（页面需经 HTTPS 或 localhost 访问）", 4500); return; }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    showToast(err?.name === "NotAllowedError" ? "🎤 麦克风权限被拒：请在浏览器地址栏的权限设置里允许" : "无法访问麦克风：" + (err?.message || err), 6000);
+    return;
   }
-  voiceBase = $("input")?.value || "";
-  try { voiceRec.start(); setVoiceUI(true); } catch { /* 已在运行 */ }
+  micChunks = [];
+  micRec = new MediaRecorder(micStream);
+  micRec.ondataavailable = (ev) => { if (ev.data?.size) micChunks.push(ev.data); };
+  micRec.onstop = async () => {
+    micStream.getTracks().forEach((t) => t.stop());
+    setVoiceUI("busy");
+    try {
+      const wav = await blobToWav16k(new Blob(micChunks));
+      send({ type: "voice-stt", reqId: "stt-" + Date.now().toString(36), audio: bytesToB64(wav) });
+    } catch (err) {
+      setVoiceUI("idle");
+      showToast("录音处理失败：" + (err?.message || err), 4000);
+    }
+  };
+  micRec.start();
+  setVoiceUI("rec");
 }
 
 /* ---------- 对话视图 ---------- */
@@ -1810,8 +1921,14 @@ function updateChatHeader() {
     ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
     <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>
     <span style="flex:1"></span>
-    <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54441a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
+    ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
+    <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
+    <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
+  const chatSrc = $("chatSrc");
+  if (chatSrc) chatSrc.onclick = () => openSession(s.handoffFrom);
+  const chatHandoff = $("chatHandoff");
+  if (chatHandoff) chatHandoff.onclick = () => openHandoffDialog(s.id);   // 对话框选 harness/模型；handoff_done 到达后自动跳进新会话
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
   const chatStar = $("chatStar");
@@ -2200,6 +2317,34 @@ function paint(el, e) {
   } else if (e.kind === "assistant") {
     b.classList.add("md");
     b.innerHTML = mdToHtml(e.text ?? "");
+    if ((e.text ?? "").trim()) {
+      const spk = document.createElement("button");
+      spk.className = "mini ghost";
+      spk.style.cssText = "margin-top:6px;font-size:11px";
+      spk.textContent = "🔊 朗读";
+      spk.onclick = () => {
+        if (e._ttsUrl) { void new Audio(e._ttsUrl).play(); return; }
+        if (e._ttsBusy) return;
+        e._ttsBusy = true;
+        spk.textContent = "🔊 合成中…";
+        const rid = "tts-" + Math.random().toString(36).slice(2, 8);
+        ttsPending.set(rid, (url, err) => {
+          e._ttsBusy = false;
+          if (err) { spk.textContent = "🔊 朗读"; showToast("TTS 失败：" + err, 4500); return; }
+          e._ttsUrl = url;   // 合成一次后缓存，重复朗读直接播
+          spk.textContent = "🔊 播放";
+          void new Audio(url).play();
+        });
+        send({ type: "voice-tts", reqId: rid, text: e.text ?? "" });
+      };
+      b.appendChild(document.createElement("br"));
+      b.appendChild(spk);
+    }
+  } else if (e.kind === "user" && typeof e.text === "string" && e.text.startsWith("【接续会话】")) {
+    // 接续注入的开场背景：默认折叠，想核对历史再展开（渐进披露的人这一侧）
+    const d = document.createElement("details");
+    d.innerHTML = `<summary style="cursor:pointer;font-size:12px;color:var(--dim2)">▤ 接续背景 — 来自原会话的最近记录（点开查看）</summary><pre style="white-space:pre-wrap;font-size:12px;line-height:1.65;margin:8px 0 0;color:var(--dim)">${esc(e.text)}</pre>`;
+    b.appendChild(d);
   } else if (e.attachments?.length) {
     b.textContent = e.text ?? "";
     const t = document.createElement("div"); t.className = "meta2"; t.style.marginTop = "6px";
@@ -2533,7 +2678,7 @@ function applyUpdate(u) {
       btn.className = "mini primary";
       btn.style.marginTop = "9px";
       btn.textContent = "在新会话里接续";
-      btn.onclick = () => send({ type: "handoff", sessionId: state.sessionId });
+      btn.onclick = () => openHandoffDialog(state.sessionId);
       el.querySelector(".bubble").appendChild(document.createElement("br"));
       el.querySelector(".bubble").appendChild(btn);
     }

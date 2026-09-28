@@ -64,6 +64,8 @@ export type SessionInfo = {
   roomId?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */
   starred?: boolean;
+  /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
+  handoffFrom?: string;
 };
 
 export type TranscriptEntry =
@@ -164,7 +166,13 @@ export type ClientMsg =
   /** 单会话右侧面板：决策记录 + 改动/交付件 */
   | { type: "session-detail"; sessionId: string }
   | { type: "delete"; sessionId: string }
-  | { type: "handoff"; sessionId: string; keep?: number }
+  /** 语音转文字：audio = base64(WAV，16k 单声道最佳)。模型缺失时服务端后台下载并回 downloading */
+  | { type: "voice-stt"; reqId: string; audio: string }
+  /** 文字转语音：provider 缺省 edge；返回 base64 音频 */
+  | { type: "voice-tts"; reqId: string; text: string; provider?: string; voice?: string }
+  /** 接续：把老会话历史带进新会话。targetHarnessId 不填 = 沿用源会话的 harness；
+   *  model 填了且在目标 harness 的探活模型列表里，则作为 chosen 配置在启动时自动重放 */
+  | { type: "handoff"; sessionId: string; targetHarnessId?: string; model?: string }
   | { type: "sync-history"; harnessId?: string; force?: boolean }
   | { type: "transcript"; sessionId: string }
   | { type: "workspace"; cwd?: string }
@@ -291,6 +299,8 @@ export type ServerMsg =
       git: boolean;
     }
   | { type: "handoff_done"; from: string; to: string }
+  | { type: "voice-stt-result"; reqId: string; text?: string; error?: string; downloading?: boolean }
+  | { type: "voice-tts-result"; reqId: string; audio?: string; mime?: string; provider?: string; error?: string }
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
   | { type: "schedules"; schedules: Schedule[] }

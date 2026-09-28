@@ -1,11 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import '../core/client.dart';
-import '../core/notify.dart';
 import '../core/protocol.dart';
-import '../core/update.dart';
 import 'chat_page.dart';
 import 'new_session_page.dart';
 
@@ -104,193 +101,6 @@ class _SessionsPageState extends State<SessionsPage> {
       if (mounted) setState(() {});
     });
     widget.client.send(msgList());
-    // 启动静默检查一次应用更新（GitHub Release），有新版再弹窗
-    Future.delayed(const Duration(seconds: 3), _silentUpdateCheck);
-  }
-
-  /* ---------- 应用自更新（GitHub Release → APK） ---------- */
-
-  Future<void> _silentUpdateCheck() async {
-    final r = await AppUpdate.check();
-    if (!mounted || r.update == null) return;
-    _offerUpdate(r.update!);
-  }
-
-  void _offerUpdate(AppUpdate u) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('发现新版本 ${u.tag}'),
-        content: Text(
-          u.notes.trim().isEmpty
-              ? '（这个版本没有更新说明）'
-              : u.notes.trim().split('\n').take(8).join('\n'),
-          maxLines: 12,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('稍后')),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _downloadAndInstall(u);
-            },
-            child: const Text('下载更新'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _manualCheck() async {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('正在检查更新…'), duration: Duration(seconds: 1)));
-    final r = await AppUpdate.check(manual: true);
-    if (!mounted) return;
-    if (r.update != null) {
-      _offerUpdate(r.update!);
-    } else {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(r.message ?? '已是最新')));
-    }
-  }
-
-  Future<void> _downloadAndInstall(AppUpdate u) async {
-    final progress = ValueNotifier<(int, int)>((0, 0));
-    unawaited(
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => PopScope(
-          canPop: false,
-          child: AlertDialog(
-            title: Text('正在下载 ${u.tag}'),
-            content: ValueListenableBuilder<(int, int)>(
-              valueListenable: progress,
-              builder: (_, v, __) {
-                final (done, total) = v;
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    LinearProgressIndicator(
-                        value: total > 0 ? done / total : null),
-                    const SizedBox(height: 8),
-                    Text(
-                      total > 0
-                          ? '${(done / 1048576).toStringAsFixed(1)} / ${(total / 1048576).toStringAsFixed(1)} MB'
-                          : '连接中…',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        ),
-      ),
-    );
-    try {
-      final path = await AppUpdate.download(
-        u,
-        (done, total) => progress.value = (done, total),
-        relayBaseUrl: widget.client.httpBase, // 服务器中转优先（手机直连 GitHub 慢），失败回退直链
-      );
-      progress.dispose();
-      if (!mounted) return;
-      Navigator.of(context).pop(); // 关进度框
-      await _installWithRetry(u.tag, path);
-    } catch (e) {
-      progress.dispose();
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('下载失败：$e')));
-    }
-  }
-
-  /// 调起安装器；未授权「安装未知应用」等失败场景给重试入口（授权回来点重试即可，不必重新下载）
-  Future<void> _installWithRetry(String tag, String path) async {
-    while (mounted) {
-      final r = await AppUpdate.install(path);
-      if (!mounted) return;
-      if (r.ok) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已交给系统安装器；若首次安装，请在弹出的页面允许「安装未知应用」')),
-        );
-        return;
-      }
-      final retry = await showDialog<bool>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: Text('无法调起安装（$tag）'),
-          content: Text('常见原因：未授予「安装未知应用」权限。\n请在系统设置里允许本应用安装应用后，点「重试安装」（已下载的安装包不会重新下载）。\n\n安装器返回：${r.message}'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('稍后')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('重试安装')),
-          ],
-        ),
-      );
-      if (retry != true) return;
-    }
-  }
-
-  Future<void> _about() async {
-    final info = await PackageInfo.fromPlatform();
-    if (!mounted) return;
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const ListTile(
-                  leading: Icon(Icons.bolt),
-                  title: Text('HarnessGate'),
-                  subtitle: Text('远程驱动服务器上的编码 agent')),
-              ListTile(
-                leading: const Icon(Icons.phone_android, size: 20),
-                title: const Text('APP 版本'),
-                subtitle: Text('v${info.version}'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.dns, size: 20),
-                title: const Text('服务器版本'),
-                subtitle: Text(widget.client.serverVersion.isEmpty
-                    ? '（未连接）'
-                    : 'v${widget.client.serverVersion} · ${widget.client.serverCommit}'),
-              ),
-              SwitchListTile(
-                secondary: const Icon(Icons.notifications_outlined, size: 20),
-                title: const Text('会话事件通知'),
-                subtitle: const Text('回合完成 / 等待授权时提醒（APP 存活期间）',
-                    style: TextStyle(fontSize: 11)),
-                value: Notifier.enabled,
-                onChanged: (v) async {
-                  await Notifier.setEnabled(v);
-                  setSheet(() {});
-                  // 关了再开要重新走权限请求
-                  if (v) await Notifier.init();
-                },
-              ),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: FilledButton.tonalIcon(
-                  icon: const Icon(Icons.system_update, size: 18),
-                  label: const Text('检查更新'),
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _manualCheck();
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   (Color, String) _pill(SessionInfo s) => pillOfSession(s);
@@ -331,11 +141,6 @@ class _SessionsPageState extends State<SessionsPage> {
       appBar: AppBar(
         title: const Text('会话'),
         actions: [
-          IconButton(
-            tooltip: '关于与更新',
-            icon: const Icon(Icons.info_outline, size: 20),
-            onPressed: _about,
-          ),
           IconButton(
             tooltip: '刷新',
             icon: const Icon(Icons.refresh, size: 20),

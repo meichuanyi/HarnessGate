@@ -20,6 +20,7 @@ import { headOf, branchCommits, changedFiles, currentBranch, mergeBaseWith } fro
 import { isInside } from "./audit.ts";
 import { randomUUID } from "node:crypto";
 import { HistorySync } from "./history.ts";
+import * as voice from "./voice.ts";
 import type { ClientMsg, HarnessSpec, ServerMsg, SessionInfo } from "./types.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -196,6 +197,77 @@ const sockets = new Set<WebSocket>();
 
 function specOf(id: string): HarnessSpec | undefined {
   return registry.harnesses.find((h) => h.id === id);
+}
+
+/**
+ * 接续快照：把源会话完整 transcript 物化成工作目录里的一个 Markdown 文件，
+ * 新会话的 agent 用现成的 Grep/Read 按需查阅——渐进式披露，不占开场上下文。
+ * 写失败不阻断接续：返回 undefined，注入词里就不提快照。
+ */
+function writeHandoffSnapshot(src: PersistedSession): string | undefined {
+  try {
+    const dir = join(src.cwd, ".harnessgate");
+    const file = join(dir, `history-${src.id}.md`);
+    mkdirSync(dir, { recursive: true });
+    // 不污染 git status：写进仓库本地的 exclude（不动用户的 .gitignore；worktree 的 .git 是文件，跳过）
+    const dotGit = join(src.cwd, ".git");
+    if (existsSync(dotGit) && statSync(dotGit).isDirectory()) {
+      const exclude = join(dotGit, "info", "exclude");
+      let cur = "";
+      try {
+        cur = readFileSync(exclude, "utf8");
+      } catch {
+        /* 还没有 exclude 文件，新建 */
+      }
+      if (!cur.split("\n").some((l) => l.trim() === ".harnessgate/")) {
+        mkdirSync(dirname(exclude), { recursive: true });
+        writeFileSync(exclude, cur.replace(/\n*$/, "\n") + "# HarnessGate 接续历史快照\n.harnessgate/\n");
+      }
+    }
+    const who = (k: string) =>
+      k === "user" ? "用户" : k === "assistant" ? "助手" : k === "thought" ? "思考" : k === "tool" ? "工具"
+        : k === "permission" ? "授权" : k === "error" ? "错误" : k === "log" ? "日志" : k;
+    const fmt = (ts: string) => {
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime())
+        ? ts
+        : `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+    const out: string[] = [
+      `# 会话 #${src.id}${src.title ? `「${src.title}」` : ""}完整历史（接续快照）`,
+      `源: #${src.id} · ${src.harnessId} · ${src.cwd} · 快照于 ${new Date().toISOString()} · 共 ${src.transcript.length} 条`,
+      `条目按时间正序，每条以 "## [序号] 角色 · 时间" 开头。定位做法：先 Grep "^## \\[" 拿目录，再按行区间 Read 相关条目。`,
+      "",
+    ];
+    src.transcript.forEach((e, i) => {
+      out.push(`## [${String(i + 1).padStart(3, "0")}] ${who(e.kind)} · ${fmt(e.ts)}`);
+      if (e.kind === "tool") {
+        out.push(`状态: ${e.status}`);
+        if (e.detail) out.push(`输入: ${e.detail}`);
+        if (e.output) out.push(`输出: ${e.output}`);
+      } else if (e.kind === "permission") {
+        if (e.title) out.push(e.title);
+        const opts = e.options?.map((o) => `${o.name ?? o.optionId}${o.kind ? `(${o.kind})` : ""}`).join(" / ");
+        if (opts) out.push(`选项: ${opts}`);
+        if (e.answered) out.push(`答复: ${e.answered}${e.auto ? "（自动）" : ""}`);
+        if (e.input) out.push(`入参: ${e.input}`);
+      } else {
+        const a = e as unknown as Record<string, unknown>;
+        const text = String(a.text ?? a.message ?? "");
+        if (text) out.push(String(text));
+        if (e.kind === "user" && e.attachments?.length) out.push(`（附件: ${e.attachments.map((x) => x.name).join(", ")}）`);
+        if (e.kind === "assistant" && e.stopReason && e.stopReason !== "end_turn") out.push(`（结束原因: ${e.stopReason}）`);
+      }
+      out.push("");
+    });
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, out.join("\n"));
+    renameSync(tmp, file);
+    return file;
+  } catch (err) {
+    console.error("[handoff] 历史快照写入失败（接续继续，只是没有快照文件）:", err instanceof Error ? err.message : err);
+    return undefined;
+  }
 }
 
 /**
@@ -1095,19 +1167,29 @@ wss.on("connection", (ws, req) => {
 
         case "handoff": {
           // 老会话（CLI 建的）能在 HarnessGate 里查看，但 ACP 侧跑不了它们的 turn。
-          // 接续 = 新建一个会话，把老对话的最近记录作为背景注入，然后继续聊。
+          // 接续 = 新建一个会话（可换 harness/模型），把老对话的最近记录作为背景注入；
+          // 完整历史物化成快照文件放在工作目录，agent 需要更早背景时自己 Grep/Read（渐进式披露）。
           const src = store.get(msg.sessionId);
           if (!src) {
             ws.send(JSON.stringify({ type: "error", message: "找不到源会话" } satisfies ServerMsg));
             return;
           }
-          const spec = specOf(src.harnessId);
+          const spec = specOf(msg.targetHarnessId ?? src.harnessId);
           if (!spec) {
-            ws.send(JSON.stringify({ type: "error", message: `注册表里没有 harness: ${src.harnessId}` } satisfies ServerMsg));
+            ws.send(JSON.stringify({ type: "error", message: `注册表里没有 harness: ${msg.targetHarnessId ?? src.harnessId}` } satisfies ServerMsg));
             return;
           }
-          const keep = Math.min(Math.max(msg.keep ?? 20, 2), 60);
-          const tail = src.transcript.slice(-keep);
+          // 模型：只认目标 harness 探活配置里真实存在的值，写进 chosen → 启动时经 pendingConfigs 自动重放
+          let modelCfg: { id: string } | undefined;
+          if (msg.model) {
+            modelCfg = currentProbe()[spec.id]?.configs?.find(
+              (c) => c.category === "model" && c.options.some((o) => o.value === msg.model),
+            );
+            if (!modelCfg) {
+              ws.send(JSON.stringify({ type: "error", message: `模型 ${msg.model} 不在 ${spec.label} 的探活配置里，本次接续先用默认模型，进会话后可在顶栏再切` } satisfies ServerMsg));
+            }
+          }
+          const tail = src.transcript.slice(-20);
           const lines: string[] = [];
           let budget = 6000;
           for (const e of tail) {
@@ -1123,12 +1205,15 @@ wss.on("connection", (ws, req) => {
             budget -= cut.length;
             lines.push(`【${who}】${cut}`);
           }
+          const snapshotPath = writeHandoffSnapshot(src);
           const record = HarnessSession.newRecord(spec, src.cwd);
           record.title = `接续：${src.title ?? src.id}`.slice(0, 40);
+          record.handoffFrom = src.id;
+          if (msg.model && modelCfg) record.chosen = { ...(record.chosen ?? {}), [modelCfg.id]: msg.model };
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           live.set(session.id, session);
           store.upsert(session.record());
-          audit.append({ session: session.id, harness: spec.id, op: "session.handoff", from: src.id, cwd: src.cwd });
+          audit.append({ session: session.id, harness: spec.id, op: "session.handoff", from: src.id, cwd: src.cwd, target: spec.id, model: msg.model });
           broadcast({ type: "session", session: session.info() });
           ws.send(JSON.stringify({ type: "handoff_done", from: src.id, to: session.id } satisfies ServerMsg));
           void session.start("new").then(async () => {
@@ -1145,9 +1230,52 @@ wss.on("connection", (ws, req) => {
               "——— 历史记录开始 ———",
               ...lines,
               "——— 历史记录结束 ———",
-            ].join("\n");
-            await session.prompt(intro);
+            ];
+            if (snapshotPath) {
+              intro.push(
+                "",
+                `【更早的历史】该会话的完整历史（共 ${src.transcript.length} 条，含未截断的工具输入输出）已保存为文件：${snapshotPath}`,
+                "需要更早背景（早前的决定、讨论原文等）时再用工具查阅，现在不要读：先 Grep `^## \\[` 拿到条目目录，定位后按行区间 Read 相关几段即可，不要整文件通读。",
+              );
+            }
+            await session.prompt(intro.join("\n"));
           });
+          break;
+        }
+
+        case "voice-stt": {
+          // 本地 STT：模型没下过就开始后台下载并告知；就绪则整段 WAV → 文本
+          if (!voice.sttModelReady()) {
+            void voice.ensureModel().catch((err) => {
+              console.error("[voice] 模型下载失败:", err instanceof Error ? err.message : err);
+            });
+            ws.send(JSON.stringify({
+              type: "voice-stt-result", reqId: msg.reqId, downloading: true,
+              error: "本地识别模型首次使用需下载（约 350MB 一次性），已开始后台下载，完成后重试即可",
+            } satisfies ServerMsg));
+            return;
+          }
+          try {
+            await voice.ensureModel();   // 就绪路径上这是空操作
+            const wav = Buffer.from(msg.audio, "base64");
+            const text = await voice.transcribeWav(wav);
+            ws.send(JSON.stringify({ type: "voice-stt-result", reqId: msg.reqId, text } satisfies ServerMsg));
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "voice-stt-result", reqId: msg.reqId, error: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+
+        case "voice-tts": {
+          try {
+            const r = await voice.tts(msg.provider).synthesize(msg.text, { voice: msg.voice });
+            ws.send(JSON.stringify({
+              type: "voice-tts-result", reqId: msg.reqId,
+              audio: r.audio.toString("base64"), mime: r.mime, provider: r.provider,
+            } satisfies ServerMsg));
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "voice-tts-result", reqId: msg.reqId, error: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
           break;
         }
 

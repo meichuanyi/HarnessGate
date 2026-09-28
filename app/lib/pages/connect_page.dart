@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/config.dart';
 import '../core/client.dart';
-import 'sessions_page.dart';
+import 'home_page.dart';
 
 /// 首启配置页：填服务器地址（https://host:port）与 token，验证通过进入会话列表。
 class ConnectPage extends StatefulWidget {
@@ -32,7 +32,7 @@ class _ConnectPageState extends State<ConnectPage> {
         _stateSub?.cancel();
         ServerConfig.save(_url.text, _token.text);
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => SessionsPage(client: widget.client)),
+          MaterialPageRoute(builder: (_) => HomePage(client: widget.client)),
         );
       }
       if (m['type'] == 'error' && _busy && mounted) {

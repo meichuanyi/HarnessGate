@@ -156,6 +156,8 @@ export class HarnessSession {
   roomId?: string;
   /** 用户收藏（重要/常用会话），列表置顶展示 */
   starred = false;
+  /** 本会话由哪次「接续」分叉而来 */
+  handoffFrom?: string;
   modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] };
   configOptions?: ConfigOption[];
   worktree?: WorktreeInfo;
@@ -221,6 +223,7 @@ export class HarnessSession {
     this.origin = record.origin ?? "new";
     this.roomId = record.roomId;
     this.starred = Boolean(record.starred);
+    this.handoffFrom = record.handoffFrom;
     this.worktree = record.worktree;
     this.transcript = record.transcript;
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
@@ -268,6 +271,7 @@ export class HarnessSession {
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
       autoApprove: this.autoApprove,
       starred: this.starred,
+      handoffFrom: this.handoffFrom,
     };
   }
 
@@ -302,6 +306,7 @@ export class HarnessSession {
       autoApprove: this.autoApprove,
       roomId: this.roomId,
       starred: this.starred,
+      handoffFrom: this.handoffFrom,
     };
   }
 
