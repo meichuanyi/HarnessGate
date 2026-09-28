@@ -31,6 +31,11 @@ class GateClient {
 
   /// 用户当前正在查看的会话 id（ChatPage 维护；通知模块据此跳过同屏打扰）
   String? viewingSessionId;
+
+  /// 圆桌房间快照（hello/room/rooms 消息自动维护）
+  final Map<String, RoomInfo> rooms = {};
+  final _roomsCtrl = StreamController<void>.broadcast();
+  Stream<void> get roomsChanged => _roomsCtrl.stream;
   String defaultCwd = '';
 
   bool get connected => _ws != null;
@@ -137,7 +142,24 @@ class GateClient {
       defaultCwd = m['defaultCwd'] as String? ?? '';
       serverVersion = m['version'] as String? ?? '';
       serverCommit = m['commit'] as String? ?? '';
+      rooms
+        ..clear()
+        ..addEntries(((m['rooms'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((j) => MapEntry(j['id'] as String, RoomInfo.fromJson(j))));
+      _roomsCtrl.add(null);
       changed = true;
+    } else if (m['type'] == 'room' && m['room'] is Map<String, dynamic>) {
+      final r = RoomInfo.fromJson(m['room'] as Map<String, dynamic>);
+      rooms[r.id] = r;
+      _roomsCtrl.add(null);
+    } else if (m['type'] == 'rooms' && m['rooms'] is List) {
+      rooms
+        ..clear()
+        ..addEntries((m['rooms'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map((j) => MapEntry((j)['id'] as String, RoomInfo.fromJson(j))));
+      _roomsCtrl.add(null);
     } else if (m['type'] == 'session' && m['session'] is Map<String, dynamic>) {
       final s = SessionInfo.fromJson(m['session'] as Map<String, dynamic>);
       sessions[s.id] = s;

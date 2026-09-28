@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../core/client.dart';
 import '../core/update.dart';
 import 'profile_page.dart';
+import 'roundtable_page.dart';
 import 'sessions_page.dart';
 import 'starred_page.dart';
 
@@ -62,6 +63,7 @@ class _HomePageState extends State<HomePage> {
         children: [
           SessionsPage(client: widget.client),
           StarredPage(client: widget.client),
+          RoundtablePage(client: widget.client),
           ProfilePage(client: widget.client),
         ],
       ),
@@ -72,6 +74,7 @@ class _HomePageState extends State<HomePage> {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum), label: '会话'),
           NavigationDestination(icon: Icon(Icons.star_outline), selectedIcon: Icon(Icons.star), label: '收藏'),
+          NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: '圆桌'),
           NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: '我的'),
         ],
       ),

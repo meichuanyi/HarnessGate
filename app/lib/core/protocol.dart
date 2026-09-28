@@ -223,6 +223,96 @@ class ModesInfo {
       );
 }
 
+/// 圆桌房间（server Room 的移动端子集：列表/详情/停止够用，建房间仍在网页端）
+class RoomTurnInfo {
+  final int round;
+  final String harnessLabel;
+  final String reply;
+  final String kind; // member/host/review
+  final String? hostRole; // opening/round-summary/final
+  final String? ts;
+  final num? score;
+  final String? crewTaskId;
+  RoomTurnInfo({required this.round, required this.harnessLabel, required this.reply, required this.kind, this.hostRole, this.ts, this.score, this.crewTaskId});
+
+  factory RoomTurnInfo.fromJson(Map<String, dynamic> j) => RoomTurnInfo(
+        round: (j['round'] as num?)?.toInt() ?? 0,
+        harnessLabel: j['harnessLabel'] as String? ?? '',
+        reply: j['reply'] as String? ?? '',
+        kind: j['kind'] as String? ?? 'member',
+        hostRole: j['hostRole'] as String?,
+        ts: j['ts'] as String?,
+        score: j['score'] as num?,
+        crewTaskId: j['crewTaskId'] as String?,
+      );
+}
+
+class RoomMemberInfo {
+  final String sessionId;
+  final String harnessLabel;
+  RoomMemberInfo({required this.sessionId, required this.harnessLabel});
+  factory RoomMemberInfo.fromJson(Map<String, dynamic> j) => RoomMemberInfo(
+        sessionId: j['sessionId'] as String? ?? '',
+        harnessLabel: j['harnessLabel'] as String? ?? j['harnessId'] as String? ?? '',
+      );
+}
+
+class RoomInfo {
+  final String id;
+  final String topic;
+  final String status; // idle/running/done/error/stopped
+  final String mode; // parallel/sequential
+  final int rounds;
+  final bool writeAllowed;
+  final bool isCrew;
+  final String? hostLabel;
+  final String? error;
+  final String updatedAt;
+  final List<RoomMemberInfo> members;
+  final List<RoomTurnInfo> turns;
+
+  RoomInfo({
+    required this.id,
+    required this.topic,
+    required this.status,
+    required this.mode,
+    required this.rounds,
+    required this.writeAllowed,
+    required this.isCrew,
+    this.hostLabel,
+    this.error,
+    required this.updatedAt,
+    this.members = const [],
+    this.turns = const [],
+  });
+
+  factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
+        id: j['id'] as String,
+        topic: j['topic'] as String? ?? '',
+        status: j['status'] as String? ?? 'idle',
+        mode: j['mode'] as String? ?? 'parallel',
+        rounds: (j['rounds'] as num?)?.toInt() ?? 0,
+        writeAllowed: j['writeAllowed'] as bool? ?? false,
+        isCrew: j['crew'] != null,
+        hostLabel: j['host'] == null ? null : (j['host'] as Map<String, dynamic>)['harnessLabel'] as String?,
+        error: j['error'] as String?,
+        updatedAt: j['updatedAt'] as String? ?? '',
+        members: ((j['memberInfo'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(RoomMemberInfo.fromJson).toList(),
+        turns: ((j['turns'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(RoomTurnInfo.fromJson).toList(),
+      );
+
+  /// 状态胶囊（颜色 + 文案，对齐 web ROOM_STATUS）
+  (Color, String) get pill {
+    switch (status) {
+      case 'running': return (const Color(0xFF3FB950), '讨论中');
+      case 'done': return (const Color(0xFF5B9CF8), '已完成');
+      case 'idle': return (const Color(0xFFD29922), '待开始');
+      case 'error': return (const Color(0xFFF85149), '出错');
+      default: return (Colors.grey, '已停止');
+    }
+  }
+}
+
 // ---------- 客户端 → 服务端（构造原始 JSON map）----------
 
 Map<String, dynamic> msgList() => {'type': 'list'};
@@ -258,6 +348,8 @@ Map<String, dynamic> msgPromptWithAttachments(String sessionId, String text,
     };
 /// 单会话详情：决策记录 + 改动文件（server 回 session-detail）
 Map<String, dynamic> msgSessionDetail(String sessionId) => {'type': 'session-detail', 'sessionId': sessionId};
+/// 停止圆桌房间
+Map<String, dynamic> msgRoomStop(String roomId) => {'type': 'room-stop', 'roomId': roomId};
 Map<String, dynamic> msgCreate(String harnessId, {String? cwd, bool? isolate, Map<String, String>? vars}) => {
       'type': 'create',
       'harnessId': harnessId,
