@@ -50,14 +50,32 @@ class _ChatPageState extends State<ChatPage> {
     if (!_speechReady) {
       bool ok = false;
       try {
-        ok = await _speech.initialize();
+        ok = await _speech.initialize(
+          onError: (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('语音识别出错：${e.errorMsg}')),
+              );
+            }
+          },
+          onStatus: (s) {
+            if (s == 'done' || s == 'notListening') {
+              if (mounted && _listening) setState(() => _listening = false);
+            }
+          },
+        );
       } catch (_) {
         ok = false;
       }
       if (!ok) {
+        final denied = !await _speech.hasPermission;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('此设备不支持语音输入（没有识别引擎或麦克风权限被拒）')),
+            SnackBar(
+              content: Text(denied
+                  ? '麦克风权限被拒，请在系统设置中允许本应用使用麦克风'
+                  : '此设备没有可用的语音识别引擎（可在系统设置中安装/启用语音输入服务）'),
+            ),
           );
         }
         return;
