@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
@@ -40,6 +42,44 @@ class _ChatPageState extends State<ChatPage> {
   bool _speechReady = false;
   bool _listening = false;
   String _preVoice = ''; // 开始听之前输入框已有的内容，识别文本接在后面
+  static const _systemCh = MethodChannel('harnessgate/system');
+
+  Future<void> _openSystemSettings(String method) async {
+    try {
+      await _systemCh.invokeMethod(method);
+    } catch (_) {/* 打不开就算了，SnackBar 里已有文字指引 */}
+  }
+
+  /// error_permission 多半不是本应用没权限，而是系统「语音识别服务」自身没有麦克风权限
+  /// （插件官方 issue #641）。这里给出可操作的自救指引。
+  Future<void> _onSpeechError(SpeechRecognitionError e) async {
+    if (!mounted) return;
+    if (e.permanent) setState(() => _listening = false);
+    var hasMic = true;
+    try {
+      hasMic = await _speech.hasPermission;
+    } catch (_) {}
+    if (!mounted) return;
+    final isPerm = e.errorMsg.contains('permission');
+    final msg = isPerm
+        ? (hasMic
+            ? '系统语音识别服务没有麦克风权限：请在设置里给它开启麦克风'
+            : '本应用没有麦克风权限，请在系统设置中允许')
+        : '语音识别出错：${e.errorMsg}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 8),
+        content: Text(msg),
+        action: isPerm
+            ? SnackBarAction(
+                label: '去设置',
+                onPressed: () => _openSystemSettings(
+                    hasMic ? 'openSpeechServiceSettings' : 'openAppSettings'),
+              )
+            : null,
+      ),
+    );
+  }
 
   Future<void> _toggleVoice() async {
     if (_listening) {
@@ -51,14 +91,7 @@ class _ChatPageState extends State<ChatPage> {
       bool ok = false;
       try {
         ok = await _speech.initialize(
-          onError: (e) {
-            if (mounted) {
-              if (e.permanent) setState(() => _listening = false);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('语音识别出错：${e.errorMsg}')),
-              );
-            }
-          },
+          onError: _onSpeechError,
           onStatus: (s) {
             if (s == 'done' || s == 'notListening') {
               if (mounted && _listening) setState(() => _listening = false);
