@@ -1322,6 +1322,11 @@ function handleServer(msg) {
         callShowPartial(msg.text);   // 定格为已提交的一句
         callPartialEl = null;
         callAgentEl = null; callAgentBuf = "";
+        // 通话里用户说的话同样属于这个会话台账：同步进对话时间线，
+        // 否则挂断后只剩 TA 的回复，用户发言得重进会话才看得到。
+        if (state.view === "chat" && state.sessionId === callSid) {
+          pushEntry({ kind: "user", text: msg.text, ts: new Date().toISOString() });
+        }
       }
       break;
     case "voice-live-agent-audio":
@@ -1335,6 +1340,8 @@ function handleServer(msg) {
       if (msg.phase === "error" && msg.note) showToast("📞 " + msg.note, 5000);
       break;
     case "voice-live-ended":
+      // 挂断后与服务器对齐一次台账（含通话期用户发言；callCleanup 会清空 callSid，故先读）
+      if (state.view === "chat" && state.sessionId === callSid) send({ type: "transcript", sessionId: callSid });
       callCleanup();
       break;
     case "dirs":
