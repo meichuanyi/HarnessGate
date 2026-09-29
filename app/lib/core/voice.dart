@@ -90,6 +90,10 @@ class VoiceService {
   final partial = ValueNotifier<String>('');
   final agentBuf = ValueNotifier<String>('');
   final callLines = ValueNotifier<List<String>>(const []);
+  /// 通话开始时间（悬浮条显示时长用；null = 不在通话）
+  final callStartedAt = ValueNotifier<DateTime?>(null);
+  /// 通话页是否在前台（悬浮条据此隐藏，避免同屏两套通话 UI）
+  bool callPageVisible = false;
 
   bool get inCall => callSessionId != null;
 
@@ -105,6 +109,7 @@ class VoiceService {
     partial.value = '';
     agentBuf.value = '';
     callLines.value = const [];
+    callStartedAt.value = DateTime.now();
     phase.value = CallPhase.listening;
     note.value = '连接中…（接通自动切快速模型，挂断还原）';
     _c.send(msgVoiceLiveStart(sessionId));
@@ -129,6 +134,7 @@ class VoiceService {
   Future<void> endCall() async {
     if (callSessionId == null) return;
     callSessionId = null;
+    callStartedAt.value = null;
     try {
       await _recSub?.cancel();
     } catch (_) {}

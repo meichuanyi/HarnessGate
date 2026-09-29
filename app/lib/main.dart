@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'core/client.dart';
 import 'core/notify.dart';
+import 'pages/call_overlay.dart';
 import 'pages/chat_page.dart';
 import 'pages/connect_page.dart';
 
@@ -65,6 +66,8 @@ class _HarnessGateAppState extends State<HarnessGateApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF5B9CF8), brightness: Brightness.dark),
       ),
       home: ConnectPage(client: client),
+      // 全局悬浮通话条：通话中最小化通话页后，任何页面顶部可回通话/挂断
+      builder: (_, child) => CallOverlay(client: client, child: child ?? const SizedBox.shrink()),
     );
   }
 }

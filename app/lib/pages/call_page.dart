@@ -18,13 +18,23 @@ class _CallPageState extends State<CallPage> {
   @override
   void initState() {
     super.initState();
-    widget.client.voice.startCall(widget.sessionId);
+    widget.client.voice.callPageVisible = true; // 通话页在前台：悬浮条隐藏
+    // 同一会话的通话已在后台进行（从悬浮条回来）则不重拨；否则新发起
+    if (widget.client.voice.callSessionId != widget.sessionId) {
+      widget.client.voice.startCall(widget.sessionId);
+    }
   }
 
   @override
   void dispose() {
-    widget.client.voice.endCall();
+    // 离开页面 ≠ 挂断：通话挂在 VoiceService 上继续，悬浮条随时可回本页
+    widget.client.voice.callPageVisible = false;
     super.dispose();
+  }
+
+  void _hangup() {
+    widget.client.voice.endCall();
+    Navigator.of(context).pop();
   }
 
   @override
@@ -104,7 +114,7 @@ class _CallPageState extends State<CallPage> {
               FloatingActionButton.large(
                 heroTag: 'hangup',
                 backgroundColor: const Color(0xFFF85149),
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: _hangup,
                 child: const Icon(Icons.call_end, size: 34),
               ),
               const SizedBox(height: 32),
