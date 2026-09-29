@@ -502,6 +502,19 @@
   .hdlg .row label { width:60px; flex:none; font-size:12.5px; color:var(--dim); }
   .hdlg .row select { flex:1; min-width:0; }
   .hdlg .btns { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+
+  /* ---------- 实时通话舞台 ---------- */
+  .callStage { position:fixed; inset:0; z-index:150; background:#0b0e14f5; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:24px; }
+  .callOrb { width:108px; height:108px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:42px;
+    background:#151a23; border:2px solid var(--line); transition:border-color .25s, box-shadow .25s; user-select:none; }
+  .callOrb.listening { border-color:#2ea04377; animation:callPulse 2.4s infinite; }
+  .callOrb.thinking { border-color:#d2992277; }
+  .callOrb.speaking { border-color:#58a6ff77; box-shadow:0 0 32px #58a6ff2e; }
+  .callOrb.error { border-color:#f8514988; }
+  @keyframes callPulse { 0%{box-shadow:0 0 0 0 #2ea04330} 70%{box-shadow:0 0 0 20px #2ea04300} 100%{box-shadow:0 0 0 0 #2ea04300} }
+  .callSub { max-width:min(680px,94vw); min-height:86px; max-height:34vh; overflow:auto; text-align:center; font-size:15px; line-height:1.8; }
+  .callSub .who { color:var(--dim2); font-size:11px; margin-right:6px; }
+  .callNote { color:var(--dim2); font-size:12.5px; text-align:center; }
   .wsRow { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; font-size:12.5px; background:var(--panel2); }
   .wsRow.conflict { border-color:#54441a; background:#1c1808; }
   .meta2 { color:var(--dim2); font-size:11.5px; }
@@ -735,6 +748,12 @@
 <div id="starPanel" class="drawer" hidden></div>
 <div id="verPanel" class="drawer" hidden></div>
 <div id="handoffMask" class="hdlgMask" hidden><div class="hdlg" id="handoffDlg"></div></div>
+<div id="callStage" class="callStage" hidden>
+  <div class="callOrb listening" id="callOrb">📞</div>
+  <div class="callSub" id="callSub"></div>
+  <div class="callNote" id="callNote">连接中…</div>
+  <button class="primary" id="callEnd">📵 挂断</button>
+</div>
 <div id="crewPanel" class="drawer" hidden></div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
@@ -1110,6 +1129,10 @@ function handleServer(msg) {
       }
       break;
     case "update":
+      if (callActive && msg.sessionId === callSid) {   // 通话字幕：搭车 agent 流式文本
+        const cu = msg.update || {};
+        if (cu.sessionUpdate === "agent_message_chunk" && cu.content?.text) callShowAgent(cu.content.text);
+      }
       if (schedPick && schedPick.aiBusy && msg.sessionId === schedPick.sessionId) {
         const u0 = msg.update || {};
         if (u0.sessionUpdate === "agent_message_chunk" && u0.content?.text) {
@@ -1291,6 +1314,29 @@ function handleServer(msg) {
       else cb(`data:${msg.mime || "audio/mpeg"};base64,${msg.audio}`);
       break;
     }
+    case "voice-live-partial":
+      if (callActive) callShowPartial(msg.text);
+      break;
+    case "voice-live-user":
+      if (callActive) {
+        callShowPartial(msg.text);   // 定格为已提交的一句
+        callPartialEl = null;
+        callAgentEl = null; callAgentBuf = "";
+      }
+      break;
+    case "voice-live-agent-audio":
+      if (callActive) {
+        callPlayQueue.push(`data:${msg.mime || "audio/mpeg"};base64,${msg.audio}`);
+        callPlayNext();
+      }
+      break;
+    case "voice-live-phase":
+      if (callActive) callPhaseUI(msg.phase, msg.note);
+      if (msg.phase === "error" && msg.note) showToast("📞 " + msg.note, 5000);
+      break;
+    case "voice-live-ended":
+      callCleanup();
+      break;
     case "dirs":
       if (acList?.isConnected && msg.reqId === acList.dataset.req) { acData = msg; paintDirList(); }
       break;
@@ -1811,6 +1857,141 @@ async function toggleVoice() {
   setVoiceUI("rec");
 }
 
+/* ---------- 实时通话（voice-live）：全双工管道，服务端流式识别+分句TTS ---------- */
+let callCtx = null, callWorklet = null, callMic = null, callActive = false, callSid = null;
+let callPcmBuf = [], callPlayQueue = [], callPlaying = false, callBargeHot = 0;
+let callPartialEl = null, callAgentEl = null, callAgentBuf = "";
+const CALL_WORKLET_SRC = `
+class HgCapture extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) this.port.postMessage(ch.slice(0));
+    return true;
+  }
+}
+registerProcessor("hg-capture", HgCapture);`;
+
+function callPhaseUI(phase, note) {
+  const orb = $("callOrb");
+  if (orb) {
+    orb.className = "callOrb " + phase;
+    orb.textContent = phase === "listening" ? "🎙" : phase === "thinking" ? "…" : phase === "speaking" ? "🔊" : phase === "error" ? "⚠" : "📞";
+  }
+  if (note) { const n = $("callNote"); if (n) n.textContent = note; }
+}
+function callSubLine(who) {
+  const sub = $("callSub");
+  if (!sub) return null;
+  const div = document.createElement("div");
+  const w = document.createElement("span");
+  w.className = "who";
+  w.textContent = who;
+  div.appendChild(w);
+  div.appendChild(document.createTextNode(""));
+  sub.appendChild(div);
+  sub.scrollTop = sub.scrollHeight;
+  return div;
+}
+function callShowPartial(text) {
+  if (!callPartialEl || !callPartialEl.isConnected) callPartialEl = callSubLine("你");
+  if (callPartialEl) { callPartialEl.lastChild.textContent = text; $("callSub").scrollTop = $("callSub").scrollHeight; }
+}
+function callShowAgent(text) {
+  if (!callAgentEl || !callAgentEl.isConnected) callAgentEl = callSubLine("TA");
+  callAgentBuf += text;
+  if (callAgentEl) { callAgentEl.lastChild.textContent = callAgentBuf; $("callSub").scrollTop = $("callSub").scrollHeight; }
+}
+async function startCall(sid) {
+  if (callActive) { showToast("已在通话中，先挂断当前通话", 3500); return; }
+  const s = sessions.get(sid);
+  if (!s) return;
+  if (!s.live) { showToast("会话不在运行，先进入会话（会自动恢复）再打电话", 4500); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { showToast("此环境不支持录音（需 HTTPS 或 localhost 访问）", 4500); return; }
+  callActive = true; callSid = sid;
+  callPartialEl = null; callAgentEl = null; callAgentBuf = "";
+  $("callStage").hidden = false;
+  $("callSub").innerHTML = "";
+  callPhaseUI("listening", "连接中…（接通自动切快速模型，挂断还原）");
+  try {
+    callMic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+    callCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const url = URL.createObjectURL(new Blob([CALL_WORKLET_SRC], { type: "application/javascript" }));
+    await callCtx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const src = callCtx.createMediaStreamSource(callMic);
+    callWorklet = new AudioWorkletNode(callCtx, "hg-capture");
+    const sink = callCtx.createGain();
+    sink.gain.value = 0;   // 拉动 worklet 用，不出声
+    callWorklet.connect(sink);
+    sink.connect(callCtx.destination);
+    src.connect(callWorklet);
+    callWorklet.port.onmessage = (ev) => callOnPcm(ev.data);
+    send({ type: "voice-live-start", sessionId: sid });
+  } catch (err) {
+    callPhaseUI("error", "无法建立通话：" + (err?.message || err));
+    setTimeout(() => { if (!callActive) return; callCleanup(); }, 1400);
+  }
+}
+function callOnPcm(f32) {
+  if (!callActive) return;
+  callPcmBuf.push(f32);
+  let have = 0;
+  for (const b of callPcmBuf) have += b.length;
+  if (have < 1600) return;   // 攒 ~100ms 再发
+  const merged = new Float32Array(have);
+  let o = 0;
+  for (const b of callPcmBuf) { merged.set(b, o); o += b.length; }
+  callPcmBuf = [];
+  let energy = 0;
+  for (let i = 0; i < merged.length; i++) energy += merged[i] * merged[i];
+  const rms = Math.sqrt(energy / merged.length);
+  // 插话检测：正在播 TA 的语音时，AEC 之后仍有持续高能量 = 用户真在说话
+  if (callPlaying && rms > 0.022) { if (++callBargeHot >= 2) { callBargeHot = 0; callBarge(); return; } }
+  else callBargeHot = 0;
+  const pcm = new Uint8Array(merged.length * 2);
+  const v = new DataView(pcm.buffer);
+  for (let i = 0; i < merged.length; i++) {
+    const x = Math.max(-1, Math.min(1, merged[i]));
+    v.setInt16(i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  send({ type: "voice-live-chunk", pcm: bytesToB64(pcm) });
+}
+function callBarge() {
+  callStopAudio();
+  send({ type: "voice-live-barge" });
+  callPhaseUI("listening", "已打断播放，请讲");
+}
+function callPlayNext() {
+  if (!callActive || callPlaying || !callPlayQueue.length) return;
+  callPlaying = true;
+  const a = new Audio(callPlayQueue.shift());
+  window.__callAudio = a;
+  a.onended = () => { callPlaying = false; callPlayNext(); };
+  a.onerror = () => { callPlaying = false; callPlayNext(); };
+  a.play().catch(() => { callPlaying = false; });
+}
+function callStopAudio() {
+  callPlayQueue = [];
+  callPlaying = false;
+  if (window.__callAudio) { try { window.__callAudio.pause(); window.__callAudio.src = ""; } catch {} window.__callAudio = null; }
+}
+function callCleanup() {
+  callActive = false;
+  callStopAudio();
+  try { callMic?.getTracks().forEach((t) => t.stop()); } catch {}
+  try { callCtx?.close(); } catch {}
+  callMic = null; callCtx = null; callWorklet = null; callPcmBuf = [];
+  $("callStage").hidden = true;
+  callSid = null;
+}
+async function endCall() {
+  if (!callActive) return;
+  send({ type: "voice-live-stop" });
+  callCleanup();   // 服务端会还原模型配置
+}
+
 /* ---------- 对话视图 ---------- */
 function openSession(id, push = true) {
   const s = sessions.get(id);
@@ -1871,6 +2052,8 @@ function renderChat() {
 
   $("attachBtn").onclick = () => $("fileInput").click();
   $("voiceBtn").onclick = toggleVoice;
+  const callEndBtn = $("callEnd");
+  if (callEndBtn) callEndBtn.onclick = () => endCall();
   $("sendBtn").onclick = doSend;
   $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
   $("stopBtn").onclick = () => send({ type: "interrupt", sessionId: state.sessionId });
@@ -1921,10 +2104,13 @@ function updateChatHeader() {
     ${s.worktree ? `<span class="badge">隔离分支 ${esc(s.worktree.branch)}</span>` : ""}
     <span class="meta2">#${esc(s.id)} · ${new Date(s.lastActiveAt).toLocaleString()}</span>
     <span style="flex:1"></span>
+    <button class="mini ghost" id="chatCall" title="实时语音通话：全双工、可插话；接通自动切快速模型，挂断还原">📞 通话</button>
     ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
     <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
+  const chatCall = $("chatCall");
+  if (chatCall) chatCall.onclick = () => startCall(s.id);
   const chatSrc = $("chatSrc");
   if (chatSrc) chatSrc.onclick = () => openSession(s.handoffFrom);
   const chatHandoff = $("chatHandoff");

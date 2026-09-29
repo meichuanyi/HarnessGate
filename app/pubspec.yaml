@@ -1,7 +1,7 @@
 name: harnessgate
 description: HarnessGate 移动客户端——远程驱动服务器上的编码 agent
 publish_to: "none"
-version: 0.5.6+13
+version: 0.6.2+13
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -23,6 +23,10 @@ dependencies:
   flutter_local_notifications: ^19.0.0
   # 语音输入：系统 SpeechRecognizer（国内主流 ROM 内置识别引擎）
   speech_to_text: ^7.0.0
+  # 语音：服务端本地识别/TTS 的配套——流式 PCM 采集（通话）与音频播放（朗读/通话回传）
+  # 7.x：5.x 的 linux 实现与 platform_interface 版本求解会打架（上游问题），直接上 7
+  record: ^7.1.1
+  just_audio: ^0.9.40
 
 dev_dependencies:
   flutter_test:

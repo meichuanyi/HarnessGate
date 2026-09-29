@@ -10,6 +10,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
 import '../core/protocol.dart';
+import 'call_page.dart';
 
 /// 聊天页：流式输出、Markdown、工具时间线（含入参/输出详情）、思考折叠、权限审批、
 /// 打断、自动决策切换、附件发送、模型/模式下拉、对话内搜索与定位、我的发言索引、
@@ -777,6 +778,15 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
+          if (s?.live == true)
+            IconButton(
+              tooltip: '实时语音通话（可插话；挂断自动还原模型）',
+              icon: const Icon(Icons.phone_in_talk, size: 21, color: Color(0xFF3FB950)),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => CallPage(client: widget.client, sessionId: widget.sessionId)),
+              ),
+            ),
           IconButton(
             tooltip: '搜索对话内容',
             icon: const Icon(Icons.search, size: 20),
@@ -977,7 +987,28 @@ class _ChatPageState extends State<ChatPage> {
             margin: const EdgeInsets.only(right: 16),
             padding: const EdgeInsets.symmetric(horizontal: 4),
             alignment: Alignment.centerLeft,
-            child: MarkdownBody(data: e.text ?? '', selectable: true),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                MarkdownBody(data: e.text ?? '', selectable: true),
+                if ((e.text ?? '').trim().isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => widget.client.voice.speak(e.text ?? ''),
+                      icon: const Icon(Icons.volume_up, size: 14),
+                      label: const Text('朗读', style: TextStyle(fontSize: 12)),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        foregroundColor: Colors.grey[500],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
           margin: const EdgeInsets.only(bottom: 12, right: 16),
         );

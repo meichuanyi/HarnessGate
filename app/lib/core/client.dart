@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'protocol.dart';
+import 'voice.dart';
 
 /// HarnessGate WS 客户端：自动重连 + 消息分发（broadcast 流，页面各自监听）。
 class GateClient {
@@ -10,6 +11,9 @@ class GateClient {
   bool _closedByUs = false;
   String _url = '';
   String _token = '';
+
+  /// 语音服务（朗读 + 实时通话）：跟着客户端走，识别/TTS 都在服务端
+  late final VoiceService voice = VoiceService(this);
 
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;
@@ -36,6 +40,16 @@ class GateClient {
   final Map<String, RoomInfo> rooms = {};
   final _roomsCtrl = StreamController<void>.broadcast();
   Stream<void> get roomsChanged => _roomsCtrl.stream;
+
+  /// 定时任务快照（schedules 消息维护；schedules-list 主动拉取）
+  List<ScheduleInfo> schedules = [];
+  final _schedulesCtrl = StreamController<void>.broadcast();
+  Stream<void> get schedulesChanged => _schedulesCtrl.stream;
+
+  /// 最近一次工作区报告（workspace 请求/响应）
+  List<WorkspaceReport>? workspaceReports;
+  final _workspaceCtrl = StreamController<void>.broadcast();
+  Stream<void> get workspaceChanged => _workspaceCtrl.stream;
   String defaultCwd = '';
 
   bool get connected => _ws != null;
@@ -153,6 +167,18 @@ class GateClient {
       final r = RoomInfo.fromJson(m['room'] as Map<String, dynamic>);
       rooms[r.id] = r;
       _roomsCtrl.add(null);
+    } else if (m['type'] == 'schedules' && m['schedules'] is List) {
+      schedules = (m['schedules'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map(ScheduleInfo.fromJson)
+          .toList();
+      _schedulesCtrl.add(null);
+    } else if (m['type'] == 'workspace' && m['reports'] is List) {
+      workspaceReports = (m['reports'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map(WorkspaceReport.fromJson)
+          .toList();
+      _workspaceCtrl.add(null);
     } else if (m['type'] == 'rooms' && m['rooms'] is List) {
       rooms
         ..clear()
@@ -186,6 +212,7 @@ class GateClient {
     _closedByUs = true;
     _retry?.cancel();
     _ws?.sink.close();
+    voice.dispose();
     _messages.close();
     _stateCtrl.close();
     _sessionsCtrl.close();

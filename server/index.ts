@@ -21,6 +21,7 @@ import { isInside } from "./audit.ts";
 import { randomUUID } from "node:crypto";
 import { HistorySync } from "./history.ts";
 import * as voice from "./voice.ts";
+import { VoiceLive } from "./voice-live.ts";
 import type { ClientMsg, HarnessSpec, ServerMsg, SessionInfo } from "./types.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -193,6 +194,8 @@ const rooms = new RoomManager(join(DATA_DIR, "rooms.json"), audit, {
 const defaultCwd = process.env.HG_DEFAULT_CWD ?? registry.defaults?.cwd ?? homedir();
 /** 只有"活着"的会话在这里；落盘的会话在 store 里 */
 const live = new Map<string, HarnessSession>();
+/** 每个客户端连接最多一路实时通话（VoiceLive tap 本连接 WS 推音频/字幕） */
+const voiceLives = new Map<WebSocket, VoiceLive>();
 const sockets = new Set<WebSocket>();
 
 function specOf(id: string): HarnessSpec | undefined {
@@ -381,10 +384,18 @@ function broadcast(msg: ServerMsg): void {
 function makeHooks() {
   return {
     onStatus: (info: SessionInfo) => broadcast({ type: "session", session: info }),
-    onUpdate: (sessionId: string, update: unknown) =>
-      broadcast({ type: "update", sessionId, update }),
-    onTurnEnd: (sessionId: string, stopReason: string) =>
-      broadcast({ type: "turn_end", sessionId, stopReason }),
+    onUpdate: (sessionId: string, update: unknown) => {
+      broadcast({ type: "update", sessionId, update });
+      for (const vl of voiceLives.values()) {
+        if (vl.sessionId === sessionId) vl.onUpdate(update as { sessionUpdate?: string; content?: { type?: string; text?: string } });
+      }
+    },
+    onTurnEnd: (sessionId: string, stopReason: string) => {
+      broadcast({ type: "turn_end", sessionId, stopReason });
+      for (const vl of voiceLives.values()) {
+        if (vl.sessionId === sessionId) vl.onTurnEnd();
+      }
+    },
     onPermission: (
       sessionId: string,
       requestId: string,
@@ -1279,6 +1290,61 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "voice-live-start": {
+          const session = live.get(msg.sessionId);
+          if (!session) {
+            ws.send(JSON.stringify({ type: "voice-live-phase", phase: "error", note: "会话不在运行，先进会话（必要时恢复）再打语音电话" } satisfies ServerMsg));
+            return;
+          }
+          if (!voice.sttModelReady()) {
+            void voice.ensureModel().catch((err) => console.error("[voice] 模型下载失败:", err instanceof Error ? err.message : err));
+            ws.send(JSON.stringify({ type: "voice-live-phase", phase: "error", note: "本地识别模型还没就绪（首次需下载），稍后再拨" } satisfies ServerMsg));
+            return;
+          }
+          const prev = voiceLives.get(ws);
+          if (prev) void prev.stop();   // 同连接重拨：先挂旧电话
+          const vl = new VoiceLive(
+            session,
+            {
+              partial: (text) => ws.send(JSON.stringify({ type: "voice-live-partial", text } satisfies ServerMsg)),
+              user: (text) => ws.send(JSON.stringify({ type: "voice-live-user", text } satisfies ServerMsg)),
+              audio: (seq, audio, mime) => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "voice-live-agent-audio", seq, audio, mime } satisfies ServerMsg));
+              },
+              phase: (phase, note) => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "voice-live-phase", phase, note } satisfies ServerMsg));
+              },
+            },
+            { model: msg.model, cancelOnBarge: msg.cancelOnBarge },
+          );
+          voiceLives.set(ws, vl);
+          try {
+            await vl.start();
+          } catch (err) {
+            voiceLives.delete(ws);
+            ws.send(JSON.stringify({ type: "voice-live-phase", phase: "error", note: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+
+        case "voice-live-chunk": {
+          voiceLives.get(ws)?.feedChunk(Buffer.from(msg.pcm, "base64"));
+          break;
+        }
+
+        case "voice-live-barge": {
+          voiceLives.get(ws)?.barge();
+          break;
+        }
+
+        case "voice-live-stop": {
+          const vl = voiceLives.get(ws);
+          voiceLives.delete(ws);
+          if (vl) await vl.stop();
+          ws.send(JSON.stringify({ type: "voice-live-ended" } satisfies ServerMsg));
+          break;
+        }
+
         case "delete": {
           const session = live.get(msg.sessionId);
           if (session) {
@@ -1707,7 +1773,14 @@ ${users.join("\n")}`;
     }
   });
 
-  ws.on("close", () => sockets.delete(ws));
+  ws.on("close", () => {
+    sockets.delete(ws);
+    const vl = voiceLives.get(ws);
+    if (vl) {
+      voiceLives.delete(ws);
+      void vl.stop();   // 客户端消失也要还原模型配置
+    }
+  });
 });
 
 function lanAddress(): string {

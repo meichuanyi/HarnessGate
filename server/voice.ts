@@ -89,7 +89,8 @@ export function ensureModel(): Promise<void> {
   return ensuring;
 }
 
-function getRecognizer() {
+/** 供 voice-live 复用的识别器单例（模型必须已就位） */
+export function getRecognizer() {
   if (recognizer) return recognizer;
   const files = modelFiles();
   if (!files) throw new Error("STT 模型未就绪");
@@ -152,7 +153,7 @@ export interface TtsProvider {
 }
 
 /** 朗读前清理：markdown 语法念出来很难听，代码块整块跳过 */
-function cleanForSpeech(text: string): string {
+export function cleanForSpeech(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, "（代码略）")
     .replace(/`([^`]+)`/g, "$1")

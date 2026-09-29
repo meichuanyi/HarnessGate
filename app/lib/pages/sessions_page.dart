@@ -93,6 +93,7 @@ class SessionsPage extends StatefulWidget {
 class _SessionsPageState extends State<SessionsPage> {
   final _collapsed = <String>{}; // 折叠起来的 harnessId（内存态，与 web 一致）
   final _filter = TextEditingController();
+  bool _starredOnly = false; // 只看收藏（原独立收藏页收编为过滤开关）
 
   @override
   void initState() {
@@ -141,6 +142,15 @@ class _SessionsPageState extends State<SessionsPage> {
       appBar: AppBar(
         title: const Text('会话'),
         actions: [
+          IconButton(
+            tooltip: _starredOnly ? '显示全部会话' : '只看收藏',
+            icon: Icon(
+              _starredOnly ? Icons.star : Icons.star_outline,
+              size: 20,
+              color: _starredOnly ? const Color(0xFFF5B942) : null,
+            ),
+            onPressed: () => setState(() => _starredOnly = !_starredOnly),
+          ),
           IconButton(
             tooltip: '刷新',
             icon: const Icon(Icons.refresh, size: 20),
@@ -207,7 +217,9 @@ class _SessionsPageState extends State<SessionsPage> {
   }
 
   Widget _buildGroupedList() {
-    final all = widget.client.sessions.values.toList();
+    final all = widget.client.sessions.values
+        .where((s) => !_starredOnly || (s.starred ?? false))
+        .toList();
     final groups = SessionsPage.groupSessions(all,
         filter: _filter.text, collapsed: _collapsed);
     if (groups.isEmpty) {

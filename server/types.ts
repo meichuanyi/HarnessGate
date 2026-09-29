@@ -170,6 +170,12 @@ export type ClientMsg =
   | { type: "voice-stt"; reqId: string; audio: string }
   /** 文字转语音：provider 缺省 edge；返回 base64 音频 */
   | { type: "voice-tts"; reqId: string; text: string; provider?: string; voice?: string }
+  /** 实时通话：绑定一个会话，麦克风 PCM（s16le/16k/单声道，~100ms 帧）持续上行 */
+  | { type: "voice-live-start"; sessionId: string; model?: string; cancelOnBarge?: boolean }
+  | { type: "voice-live-chunk"; pcm: string }
+  /** 插话：客户端检测到（AEC 后）说话能量，要求立即停播 */
+  | { type: "voice-live-barge" }
+  | { type: "voice-live-stop" }
   /** 接续：把老会话历史带进新会话。targetHarnessId 不填 = 沿用源会话的 harness；
    *  model 填了且在目标 harness 的探活模型列表里，则作为 chosen 配置在启动时自动重放 */
   | { type: "handoff"; sessionId: string; targetHarnessId?: string; model?: string }
@@ -301,6 +307,11 @@ export type ServerMsg =
   | { type: "handoff_done"; from: string; to: string }
   | { type: "voice-stt-result"; reqId: string; text?: string; error?: string; downloading?: boolean }
   | { type: "voice-tts-result"; reqId: string; audio?: string; mime?: string; provider?: string; error?: string }
+  | { type: "voice-live-partial"; text: string }
+  | { type: "voice-live-user"; text: string }
+  | { type: "voice-live-agent-audio"; seq: number; audio: string; mime: string }
+  | { type: "voice-live-phase"; phase: "listening" | "thinking" | "speaking" | "done" | "error"; note?: string }
+  | { type: "voice-live-ended" }
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
   | { type: "schedules"; schedules: Schedule[] }

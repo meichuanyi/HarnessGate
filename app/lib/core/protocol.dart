@@ -350,6 +350,164 @@ Map<String, dynamic> msgPromptWithAttachments(String sessionId, String text,
 Map<String, dynamic> msgSessionDetail(String sessionId) => {'type': 'session-detail', 'sessionId': sessionId};
 /// 停止圆桌房间
 Map<String, dynamic> msgRoomStop(String roomId) => {'type': 'room-stop', 'roomId': roomId};
+
+/// 定时任务：列表 / 立即运行 / 删除（创建与编辑在网页端）
+Map<String, dynamic> msgSchedulesList() => {'type': 'schedules-list'};
+Map<String, dynamic> msgScheduleRun(String id) => {'type': 'schedule-run', 'id': id};
+Map<String, dynamic> msgScheduleDelete(String id) => {'type': 'schedule-delete', 'id': id};
+/// 工作区报告（跨 harness 会话与文件改动归因）
+Map<String, dynamic> msgWorkspace() => {'type': 'workspace'};
+
+/// 定时任务（server Schedule 的移动端子集）
+class ScheduleInfo {
+  final String id;
+  final String name;
+  final bool enabled;
+  final String harnessId;
+  final String cadenceDesc;
+  final String? cwd;
+  final String promptTemplate;
+  final String? outputFile;
+  final bool running;
+  final String? nextFireAt;
+  final String? lastRunAt;
+  final String? lastStatus;
+  final String? lastSessionId;
+  final int consecutiveFailures;
+  final String? lastError;
+
+  ScheduleInfo({
+    required this.id,
+    required this.name,
+    required this.enabled,
+    required this.harnessId,
+    required this.cadenceDesc,
+    this.cwd,
+    required this.promptTemplate,
+    this.outputFile,
+    required this.running,
+    this.nextFireAt,
+    this.lastRunAt,
+    this.lastStatus,
+    this.lastSessionId,
+    required this.consecutiveFailures,
+    this.lastError,
+  });
+
+  static String cadenceDescOf(Map<String, dynamic> c) {
+    String wd(List<dynamic> days) => days.map((d) => "日一二三四五六"[d as int]).join("/");
+    switch (c['type']) {
+      case 'daily': return '每天 ${c['at']}';
+      case 'interval': return '每 ${c['everyMinutes']} 分钟';
+      case 'weekly': return '每周${wd((c['days'] as List<dynamic>?) ?? [])} ${c['at']}';
+      case 'cron': return 'cron: ${c['expr']}';
+    }
+    return '?';
+  }
+
+  /// 上次运行状态文案（对齐 web LAST_STATUS）
+  String? get lastStatusLabel => switch (lastStatus) {
+        'ok' => '✓ 成功',
+        'error' => '✕ 出错',
+        'contract-fail' => '✕ 契约未满足',
+        'timeout' => '⏱ 超时',
+        'skipped-running' => '跳过（上次仍在跑）',
+        'missing-files' => '✕ 缺前置文件',
+        _ => null,
+      };
+
+  factory ScheduleInfo.fromJson(Map<String, dynamic> j) {
+    final st = (j['state'] as Map<String, dynamic>?) ?? const {};
+    final contract = (j['contract'] as Map<String, dynamic>?);
+    return ScheduleInfo(
+      id: j['id'] as String,
+      name: j['name'] as String? ?? '(未命名)',
+      enabled: j['enabled'] as bool? ?? false,
+      harnessId: j['harnessId'] as String? ?? '',
+      cadenceDesc: j['cadence'] is Map<String, dynamic> ? cadenceDescOf(j['cadence'] as Map<String, dynamic>) : '?',
+      cwd: j['cwd'] as String?,
+      promptTemplate: j['promptTemplate'] as String? ?? '',
+      outputFile: contract?['outputFile'] as String?,
+      running: st['running'] as bool? ?? false,
+      nextFireAt: st['nextFireAt'] as String?,
+      lastRunAt: st['lastRunAt'] as String?,
+      lastStatus: st['lastStatus'] as String?,
+      lastSessionId: st['lastSessionId'] as String?,
+      consecutiveFailures: (st['consecutiveFailures'] as num?)?.toInt() ?? 0,
+      lastError: st['lastError'] as String?,
+    );
+  }
+}
+
+/// 工作区报告（server WorkspaceReport 子集）
+class WsSession {
+  final String id;
+  final String harnessLabel;
+  final bool live;
+  final bool inTurn;
+  final String mode; // shared/worktree
+  final String? branch;
+  final int changedCount;
+  final String? diffStat;
+  WsSession({required this.id, required this.harnessLabel, required this.live, required this.inTurn, required this.mode, this.branch, required this.changedCount, this.diffStat});
+
+  factory WsSession.fromJson(Map<String, dynamic> j) => WsSession(
+        id: j['id'] as String? ?? '',
+        harnessLabel: j['harnessLabel'] as String? ?? '',
+        live: j['live'] as bool? ?? false,
+        inTurn: j['inTurn'] as bool? ?? false,
+        mode: j['mode'] as String? ?? 'shared',
+        branch: j['branch'] as String?,
+        changedCount: ((j['changedFiles'] as List<dynamic>?) ?? []).length,
+        diffStat: j['diffStat'] as String?,
+      );
+}
+
+class WsFile {
+  final String rel;
+  final String lastTs;
+  final bool conflict;
+  final List<String> who;
+  WsFile({required this.rel, required this.lastTs, required this.conflict, required this.who});
+
+  factory WsFile.fromJson(Map<String, dynamic> j) => WsFile(
+        rel: j['rel'] as String? ?? '',
+        lastTs: j['lastTs'] as String? ?? '',
+        conflict: j['conflict'] as bool? ?? false,
+        who: ((j['touches'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((t) => t['harnessId'] as String? ?? '')
+            .where((x) => x.isNotEmpty)
+            .toSet()
+            .toList(),
+      );
+}
+
+class WorkspaceReport {
+  final String cwd;
+  final String note;
+  final int conflicts;
+  final List<WsSession> sessions;
+  final List<WsFile> files;
+  WorkspaceReport({required this.cwd, required this.note, required this.conflicts, required this.sessions, required this.files});
+
+  factory WorkspaceReport.fromJson(Map<String, dynamic> j) => WorkspaceReport(
+        cwd: j['cwd'] as String? ?? '',
+        note: j['note'] as String? ?? '',
+        conflicts: (j['conflicts'] as num?)?.toInt() ?? 0,
+        sessions: ((j['sessions'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(WsSession.fromJson).toList(),
+        files: ((j['files'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().map(WsFile.fromJson).toList(),
+      );
+}
+
+// ---------- 语音（识别与合成都在服务端，app 只采集/播放） ----------
+/// 文字转语音（server 回 voice-tts-result）
+Map<String, dynamic> msgVoiceTts(String reqId, String text) => {'type': 'voice-tts', 'reqId': reqId, 'text': text};
+/// 实时通话四件套：start 绑定会话；chunk = base64(PCM s16le/16k/单声道 ~100ms)
+Map<String, dynamic> msgVoiceLiveStart(String sessionId) => {'type': 'voice-live-start', 'sessionId': sessionId};
+Map<String, dynamic> msgVoiceLiveChunk(String pcmBase64) => {'type': 'voice-live-chunk', 'pcm': pcmBase64};
+Map<String, dynamic> msgVoiceLiveBarge() => {'type': 'voice-live-barge'};
+Map<String, dynamic> msgVoiceLiveStop() => {'type': 'voice-live-stop'};
 Map<String, dynamic> msgCreate(String harnessId, {String? cwd, bool? isolate, Map<String, String>? vars}) => {
       'type': 'create',
       'harnessId': harnessId,
