@@ -1,6 +1,11 @@
 {
  "overrides": {
-  "antigravity": {},
+  "antigravity": {
+   "proxy": "http://127.0.0.1:7899"
+  },
+  "gemini": {
+   "proxy": "http://127.0.0.1:7899"
+  },
   "opencode": {}
  }
 }

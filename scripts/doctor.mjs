@@ -21,6 +21,11 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const args = process.argv.slice(2);
 const PROBE = args.includes("--probe");
 const DEEP = args.includes("--deep");   // 连"发一句话能不能回"都验，才算真可用
+const AUDIO = args.includes("--audio"); // 对声明了 promptCapabilities.audio 的 harness，真发一段音频试
+const afIdx = args.indexOf("--audio-file");
+const AUDIO_FILE = afIdx >= 0 ? String(args[afIdx + 1] ?? "") : null; // 用真实音频（mp3/wav…）代替静音样本
+const apIdx = args.indexOf("--audio-prompt");
+const AUDIO_PROMPT = apIdx >= 0 ? String(args[apIdx + 1] ?? "") : "请回答音频里说的话（一句话即可）";
 const JSON_OUT = args.includes("--json");
 const onlyIdx = args.indexOf("--only");
 const ONLY = onlyIdx >= 0 ? new Set(String(args[onlyIdx + 1] ?? "").split(",").filter(Boolean)) : null;
@@ -64,9 +69,10 @@ async function probe(spec) {
   );
   const env = { ...process.env, ...specEnv };
   if (spec.proxy) {
-    env.HTTPS_PROXY = env.HTTPS_PROXY ?? spec.proxy;
-    env.HTTP_PROXY = env.HTTP_PROXY ?? spec.proxy;
-    env.ALL_PROXY = env.ALL_PROXY ?? spec.proxy;
+    // harness 显式配的代理优先（覆盖环境全局代理），与运行时 session.ts 保持一致
+    env.HTTPS_PROXY = spec.proxy;
+    env.HTTP_PROXY = spec.proxy;
+    env.ALL_PROXY = spec.proxy;
     env.NO_PROXY = env.NO_PROXY ?? "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,100.64.0.0/10";
   }
   const child = spawn(spec.cmd, spec.args, {
@@ -76,6 +82,7 @@ async function probe(spec) {
   });
   let stderr = "";
   let gotReply = "";        // 收集 agent 真正吐出来的文本（比 usage 可靠：很多适配器不上报 usage）
+  let caps = null;          // initialize 声明的能力（含 promptCapabilities.audio）
   child.stderr.on("data", (d) => {
     stderr = (stderr + d.toString()).slice(-3000);
   });
@@ -84,7 +91,20 @@ async function probe(spec) {
     detail: String(detail ?? "").replace(/\s+/g, " ").slice(0, 140),
     ms: Date.now() - started,
     ...(extra ?? {}),
+    ...(caps ? { caps } : {}),
   });
+
+  /** 极简 WAV（16k 单声道 16bit PCM，静音）——用于音频 prompt 实测 */
+  const silentWav = (seconds = 0.3, sampleRate = 16000) => {
+    const n = Math.round(seconds * sampleRate);
+    const data = Buffer.alloc(n * 2);
+    const h = Buffer.alloc(44);
+    h.write("RIFF", 0); h.writeUInt32LE(36 + data.length, 4); h.write("WAVE", 8);
+    h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(sampleRate, 24); h.writeUInt32LE(sampleRate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+    h.write("data", 36); h.writeUInt32LE(data.length, 40);
+    return Buffer.concat([h, data]);
+  };
 
   /** 从 session/new 的返回里抽出可切换的配置项（含模型列表），供 UI 在建会话前展示 */
   const configsOf = (res) => {
@@ -126,9 +146,49 @@ async function probe(spec) {
         }
       }
       const who = `${init.agentInfo?.name ?? "agent"} ${init.agentInfo?.version ?? ""}`.trim();
+      const pc = init.agentCapabilities?.promptCapabilities ?? {};
+      caps = {
+        audio: Boolean(pc.audio),
+        image: Boolean(pc.image),
+        embeddedContext: Boolean(pc.embeddedContext),
+        loadSession: Boolean(init.agentCapabilities?.loadSession),
+      };
       try {
         const s = await ctx.request(acp.methods.agent.session.new, { cwd: CWD, mcpServers: [] });
         const configs = configsOf(s);
+
+        // --audio：对声明支持音频的 harness 真发一段音频 prompt，看它接不接受
+        if (AUDIO) {
+          if (!caps.audio) return done("ok", `${who} · 未声明 promptCapabilities.audio，跳过音频实测`, { configs });
+          gotReply = "";
+          const mimeFor = (p) =>
+            /\.mp3$/i.test(p) ? "audio/mpeg" : /\.wav$/i.test(p) ? "audio/wav"
+            : /\.m4a$/i.test(p) ? "audio/mp4" : /\.ogg$/i.test(p) ? "audio/ogg" : "audio/wav";
+          const src = AUDIO_FILE && existsSync(AUDIO_FILE) ? AUDIO_FILE : null;
+          const audioBlock = src
+            ? { type: "audio", data: readFileSync(src).toString("base64"), mimeType: mimeFor(src) }
+            : { type: "audio", data: silentWav().toString("base64"), mimeType: "audio/wav" };
+          try {
+            const r = await Promise.race([
+              ctx.request(acp.methods.agent.session.prompt, {
+                sessionId: s.sessionId,
+                prompt: [audioBlock, { type: "text", text: AUDIO_PROMPT }],
+              }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("__turn_timeout__")), 60_000).unref?.()),
+            ]);
+            const reply = gotReply.trim();
+            const extra = { configs, audioAccepted: true, audioSource: src ?? "silent", audioReply: reply.slice(0, 600) };
+            // 音频块被接受 ≠ 模型真处理：有的 CLI 把上游错误当"回复"吐回来
+            if (reply && /agent execution error|location is not supported|request failed \(code|terminated due to error|unauthor|api key|not allowed/i.test(reply)) {
+              return done("failed", `${who} · 音频被接受但模型报错：${reply.slice(0, 110)}`, extra);
+            }
+            return done("ok", `${who} · 音频 prompt 被接受并处理（${src ? "真实音频 " + src : "静音样本"}）`, extra);
+          } catch (err) {
+            const m = err instanceof Error ? err.message : String(err);
+            return done("failed", `${who} · 音频 prompt 被拒：${m.slice(0, 110)}`, { configs, audioAccepted: false });
+          }
+        }
+
         if (!DEEP) return done("ok", `${who} · session ${String(s.sessionId).slice(0, 12)}（未试对话）`, { configs });
 
         // 真发一句，捕捉"能建会话但发消息就报没 API key / 起不来"的情况。
@@ -162,7 +222,7 @@ async function probe(spec) {
           if (
             reply &&
             reply.length < 200 &&
-            /(HTTP\s*[45]\d\d|unauthor|not allowed|api key|rate limit|forbidden|^retrying\b|^retry\b|no (on-device )?model|no model (is )?available|not configured)/i.test(reply)
+            /(HTTP\s*[45]\d\d|unauthor|not allowed|api key|rate limit|forbidden|^retrying\b|^retry\b|no (on-device )?model|no model (is )?available|not configured|agent execution error|location is not supported|request failed \(code|terminated due to error)/i.test(reply)
           ) return { state: "failed", why: `模型接入有问题：${reply.slice(0, 90)}` };
           if (reply) return { state: "ok", why: `回复「${reply.slice(0, 20)}」` };
           const errLine = stderr.split("\n").find((l) => /error|api key|unauthor|not found/i.test(l)) || "";
@@ -254,7 +314,7 @@ async function main() {
     } else {
       detail = h._bin ?? "";
     }
-    rows.push({ id: h.id, name: h.label, state, detail, ms: h._ms, source: h.source ?? "curated", version: h.version, note: h.note, _result: result });
+    rows.push({ id: h.id, name: h.label, state, detail, ms: h._ms, source: h.source ?? "curated", version: h.version, note: h.note, caps: result?.caps, _result: result });
   }
 
   // 持久化探活结果：服务端据此把"已验证可用/需登录/起不来"显示在界面上
@@ -266,13 +326,14 @@ async function main() {
       if (["ok", "auth", "failed", "timeout"].includes(r.state)) {
         // 探活顺手把可切换的配置项（模型列表等）存下来，UI 建会话前就能展示
         const configs = r._result?.configs;
+        const caps = r._result?.caps;
         const prevEntry = prev[r.id];
         const ts = new Date().toISOString();
         // 浅探不能覆盖深探结论：
         //  - 深探通过过的，浅探 ok 只刷新 configs/ts，绿灯保留（浅探证明不了对话可用）
         //  - lastDeep（最近一次深度验证的结论）只有深探能改
         if (!DEEP && prevEntry?.deep && prevEntry.state === "ok" && r.state === "ok") {
-          prev[r.id] = { ...prevEntry, ...(configs?.length ? { configs } : {}), ts };
+          prev[r.id] = { ...prevEntry, ...(configs?.length ? { configs } : {}), ...(caps ? { caps } : {}), ts };
         } else {
           prev[r.id] = {
             state: r.state,
@@ -281,6 +342,7 @@ async function main() {
             ...(DEEP ? { lastDeep: r.state } : { lastDeep: prevEntry?.lastDeep }),
             ...(configs?.length ? { configs } : {}),
             ...(r._result?.deepModel ? { deepModel: r._result.deepModel } : {}),
+            ...(caps ? { caps } : {}),
             ts,
           };
         }
@@ -298,8 +360,13 @@ async function main() {
     const w = Math.max(6, ...rows.map((r) => r.id.length));
     for (const r of rows) {
       const t = r.ms ? `${(r.ms / 1000).toFixed(1)}s` : "";
-      console.log(`${(ICON[r.state] ?? "?").padEnd(3)} ${r.id.padEnd(w)}  ${r.name.slice(0, 22).padEnd(22)} ${t.padStart(6)}  ${r.detail}`);
+      const capTags = r.caps
+        ? [r.caps.audio && "🎧audio", r.caps.image && "🖼image", r.caps.embeddedContext && "ctx"].filter(Boolean).join(",")
+        : "";
+      console.log(`${(ICON[r.state] ?? "?").padEnd(3)} ${r.id.padEnd(w)}  ${r.name.slice(0, 22).padEnd(22)} ${t.padStart(6)}  ${r.detail}${capTags ? `  [${capTags}]` : ""}`);
     }
+    const audioCapable = rows.filter((r) => r.caps?.audio).map((r) => r.id);
+    if (PROBE && audioCapable.length) console.log(`\n🎧 声明支持音频 prompt（promptCapabilities.audio）的 harness：${audioCapable.join(", ")}`);
     const c = (s) => rows.filter((r) => r.state === s).length;
     console.log(
       `\n合计 ${rows.length}：` +

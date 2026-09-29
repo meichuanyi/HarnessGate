@@ -382,9 +382,11 @@ export class HarnessSession {
     );
     const env: NodeJS.ProcessEnv = { ...process.env, ...specEnv };
     if (this.spec.proxy) {
-      env.HTTPS_PROXY = env.HTTPS_PROXY ?? this.spec.proxy;
-      env.HTTP_PROXY = env.HTTP_PROXY ?? this.spec.proxy;
-      env.ALL_PROXY = env.ALL_PROXY ?? this.spec.proxy;
+      // harness 显式配了代理就用它（覆盖环境里的全局代理）——例如 Google 系需要美国出口；
+      // 旧实现用 `??`，环境已有 HTTPS_PROXY 时这里的配置永远不生效。
+      env.HTTPS_PROXY = this.spec.proxy;
+      env.HTTP_PROXY = this.spec.proxy;
+      env.ALL_PROXY = this.spec.proxy;
       env.NO_PROXY = env.NO_PROXY ?? "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,100.64.0.0/10";
     }
     const child = spawn(this.spec.cmd, this.spec.args, {
