@@ -17,20 +17,31 @@ class Notifier {
   /// 点击通知 → 跳转对应会话（main 里注入导航回调）
   static void Function(String sessionId)? onTap;
 
+  /// 点击「新版本已就绪」通知 → 调起安装（main 里注入）
+  static void Function(String apkPath)? onUpdateReady;
+
   static bool get enabled => _enabled;
+
+  /// 应用更新通知的固定 id（同一条通知复用/覆盖）
+  static const _updateId = 0x484701;
 
   static Future<void> init() async {
     final p = await SharedPreferences.getInstance();
     _enabled = p.getBool(_prefKey) ?? true;
-    if (!_enabled) return;
     try {
       const android = AndroidInitializationSettings('@mipmap/ic_launcher');
       const darwin = DarwinInitializationSettings();
       await _plugin.initialize(
         const InitializationSettings(android: android, iOS: darwin, macOS: darwin),
         onDidReceiveNotificationResponse: (resp) {
-          final sid = resp.payload;
-          if (sid != null && sid.isNotEmpty) onTap?.call(sid);
+          final payload = resp.payload;
+          if (payload == null || payload.isEmpty) return;
+          // 应用更新通知的 payload 形如 "update:<apk路径>"
+          if (payload.startsWith('update:')) {
+            onUpdateReady?.call(payload.substring('update:'.length));
+          } else {
+            onTap?.call(payload);
+          }
         },
       );
       // Android 13+ 需要运行时请求通知权限（低版本自动授予）
@@ -68,6 +79,60 @@ class Notifier {
         ),
       ),
       payload: sessionId,
+    );
+  }
+
+  /* ---------- 应用更新：后台下载进度 / 下载完成提醒 ---------- */
+
+  /// 后台下载进度常驻通知；[percent] 为 null 表示大小未知（转圈）
+  static Future<void> showUpdateProgress(int? percent, String tag) async {
+    if (!_ready) return;
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'harnessgate_update',
+        '应用更新',
+        channelDescription: '应用内更新的后台下载与安装提醒',
+        importance: Importance.low,
+        priority: Priority.low,
+        showProgress: percent != null,
+        maxProgress: 100,
+        progress: percent ?? 0,
+        ongoing: true,
+        onlyAlertOnce: true,
+        autoCancel: false,
+      ),
+    );
+    await _plugin.show(
+      _updateId,
+      '正在下载更新 $tag',
+      percent == null ? '准备中…' : '$percent%',
+      details,
+    );
+  }
+
+  static Future<void> cancelUpdateProgress() async {
+    if (!_ready) return;
+    await _plugin.cancel(_updateId);
+  }
+
+  /// 下载完成、app 不在前台时的高优先级提醒；点它调起安装器
+  static Future<void> showUpdateReady(String tag, String apkPath) async {
+    if (!_ready) return;
+    await _plugin.show(
+      _updateId,
+      '新版本 $tag 已就绪',
+      '点此安装（需在系统弹窗里确认）',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'harnessgate_update',
+          '应用更新',
+          channelDescription: '应用内更新的后台下载与安装提醒',
+          importance: Importance.high,
+          priority: Priority.high,
+          autoCancel: true,
+        ),
+      ),
+      payload: 'update:$apkPath',
     );
   }
 }

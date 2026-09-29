@@ -240,7 +240,7 @@ class CallOverlayService : Service() {
         row.addView(hangup)
 
         row.setOnClickListener {
-            // 回前台：拉起 MainActivity；到前台后 Dart 会隐藏本悬浮条
+            // 回前台：拉起 MainActivity；并通知 Dart 直接跳到通话页（回前台后再隐藏本悬浮条）
             try {
                 startActivity(
                     packageManager.getLaunchIntentForPackage(packageName)?.apply {
@@ -249,6 +249,7 @@ class CallOverlayService : Service() {
                 )
             } catch (_: Exception) {
             }
+            SystemOverlayBridge.notify("onCallOverlayTap")
         }
         // 拖动定位
         row.setOnTouchListener(object : android.view.View.OnTouchListener {

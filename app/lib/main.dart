@@ -4,8 +4,11 @@ import 'package:flutter/material.dart';
 import 'core/client.dart';
 import 'core/notify.dart';
 import 'core/system_overlay.dart';
+import 'core/update.dart';
+import 'core/update_manager.dart';
 import 'core/voice.dart';
 import 'pages/call_overlay.dart';
+import 'pages/call_page.dart';
 import 'pages/chat_page.dart';
 import 'pages/connect_page.dart';
 
@@ -31,6 +34,8 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
   bool _overlayVisible = false;
   String _lastTitle = '';
   String _lastPhase = '';
+  bool _pendingOpenCall = false; // 点了系统悬浮条：回到前台后跳到通话页
+  bool _pendingInstall = false; // 点了「新版本已就绪」通知：回到前台后弹安装
 
   @override
   void initState() {
@@ -39,7 +44,8 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     SystemOverlay.bind(
       onHangup: () => client.voice.endCall(),
-      onTap: () {}, // 原生已把 app 拉回前台，回前台后由 didChangeAppLifecycleState 收起悬浮条
+      // 原生已把 app 拉回前台；这里标记一下，回前台后跳到通话页（正开着通话页则不重复压栈）
+      onTap: () => _pendingOpenCall = true,
     );
     client.voice.callStartedAt.addListener(_syncSystemOverlay);
     client.voice.phase.addListener(_syncSystemOverlay);
@@ -51,6 +57,9 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
       );
     };
     Notifier.init();
+    // 后台下载的更新包就绪：前台直接弹安装；点「已就绪」通知则回前台再弹
+    UpdateManager.onReadyInForeground = _showInstallDialog;
+    Notifier.onUpdateReady = (_) => _pendingInstall = true;
     // 会话事件 → 本地通知：回合完成 / 等待授权（正在看的会话由 Notifier 内部跳过）
     _notifySub = client.messages.listen((m) {
       final sid = m['sessionId'] as String?;
@@ -82,7 +91,57 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
     } else {
       return; // inactive（权限弹窗/下拉通知栏等）：不切换悬浮条，避免闪烁
     }
+    UpdateManager.foreground = _foreground;
     _syncSystemOverlay();
+    if (s == AppLifecycleState.resumed) {
+      _openCallIfNeeded();
+      if (_pendingInstall) {
+        _pendingInstall = false;
+        UpdateManager.installLast();
+      }
+    }
+  }
+
+  /// 「新版本已下载」：前台弹确认，确认后调起系统安装器
+  Future<void> _showInstallDialog(AppUpdate u, String path) async {
+    final ctx = navigatorKey.currentState?.overlay?.context;
+    if (ctx == null || !ctx.mounted) return;
+    final go = await showDialog<bool>(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        title: Text('新版本 ${u.tag} 已下载'),
+        content: Text(
+          '点「安装」调起系统安装器（Android 必须由你在系统弹窗里确认，无法静默安装）。'
+          '${u.notes.trim().isEmpty ? '' : '\n\n${u.notes.trim().split('\n').take(6).join('\n')}'}',
+          maxLines: 10,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('稍后')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('安装')),
+        ],
+      ),
+    );
+    if (go == true) {
+      final r = await AppUpdate.install(path);
+      if (!r.ok && ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('无法调起安装：${r.message}（若未授权「安装未知应用」，可到「我的」页重试）')),
+        );
+      }
+    }
+  }
+
+  /// 点系统悬浮条回到前台后，跳到通话页（已经在通话页则不重复压栈）
+  void _openCallIfNeeded() {
+    if (!_pendingOpenCall) return;
+    _pendingOpenCall = false;
+    final sid = client.voice.callSessionId;
+    if (sid == null || client.voice.callPageVisible.value) return;
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(builder: (_) => CallPage(client: client, sessionId: sid)),
+    );
   }
 
   static String _phaseName(CallPhase p) => switch (p) {

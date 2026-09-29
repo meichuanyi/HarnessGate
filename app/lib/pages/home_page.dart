@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/client.dart';
 import '../core/update.dart';
+import '../core/update_manager.dart';
 import 'profile_page.dart';
 import 'roundtable_page.dart';
 import 'schedules_page.dart';
@@ -24,36 +25,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    // 启动静默检查一次应用更新（GitHub Release），有新版再弹窗
+    // 启动静默检查一次应用更新（GitHub Release）；有新版直接后台下载，不弹阻塞对话框
     Timer(const Duration(seconds: 3), () async {
       final r = await AppUpdate.check();
-      if (r.update != null && mounted) _offerUpdate(r.update!);
+      if (r.update != null) await UpdateManager.autoDownload(widget.client, r.update!);
     });
-  }
-
-  void _offerUpdate(AppUpdate u) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('发现新版本 ${u.tag}'),
-        content: Text(
-          u.notes.trim().isEmpty ? '（这个版本没有更新说明）' : u.notes.trim().split('\n').take(8).join('\n'),
-          maxLines: 12,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 13),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('稍后')),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              runUpdateFlow(context, widget.client, u);
-            },
-            child: const Text('下载更新'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
