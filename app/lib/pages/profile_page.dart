@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../core/client.dart';
 import '../core/notify.dart';
+import '../core/system_overlay.dart';
 import '../core/update.dart';
 
 /// 更新下载+安装完整流程（HomePage 更新弹窗与「我的」页共用）
@@ -90,15 +91,34 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   String _appVersion = '…';
+  bool _canOverlay = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     PackageInfo.fromPlatform().then((i) {
       if (mounted) setState(() => _appVersion = 'v${i.version}');
     });
+    _refreshOverlayPerm();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) _refreshOverlayPerm(); // 从系统设置页回来重新判定
+  }
+
+  Future<void> _refreshOverlayPerm() async {
+    final v = await SystemOverlay.canOverlay();
+    if (mounted) setState(() => _canOverlay = v);
   }
 
   Future<void> _manualCheck() async {
@@ -194,6 +214,24 @@ class _ProfilePageState extends State<ProfilePage> {
                 setState(() {});
                 if (v) await Notifier.init();
               },
+            ),
+          ),
+          // 通话系统悬浮窗权限
+          Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              leading: const Icon(Icons.picture_in_picture_alt_outlined),
+              title: const Text('通话系统悬浮窗', style: TextStyle(fontSize: 14)),
+              subtitle: Text(
+                _canOverlay
+                    ? '已授权：通话退到后台/其他应用时也能看到悬浮条'
+                    : '未授权：通话退到后台不显示悬浮条（前台内的悬浮条不受影响）',
+                style: const TextStyle(fontSize: 11.5),
+              ),
+              trailing: _canOverlay
+                  ? const Icon(Icons.check_circle, color: Color(0xFF2EA043), size: 20)
+                  : const TextButton(onPressed: SystemOverlay.requestOverlay, child: Text('去授权')),
+              onTap: _canOverlay ? null : () => SystemOverlay.requestOverlay(),
             ),
           ),
           // 更新

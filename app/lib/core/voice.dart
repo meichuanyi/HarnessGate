@@ -93,7 +93,9 @@ class VoiceService {
   /// 通话开始时间（悬浮条显示时长用；null = 不在通话）
   final callStartedAt = ValueNotifier<DateTime?>(null);
   /// 通话页是否在前台（悬浮条据此隐藏，避免同屏两套通话 UI）
-  bool callPageVisible = false;
+  /// 用 ValueNotifier：离开/回到通话页要让悬浮条立即响应。曾是不可观察的普通 bool，
+  /// 导致最小化后悬浮条不出现、从悬浮条回通话页后悬浮条不消失。
+  final callPageVisible = ValueNotifier<bool>(false);
 
   bool get inCall => callSessionId != null;
 

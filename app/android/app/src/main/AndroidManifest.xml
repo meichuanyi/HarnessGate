@@ -8,6 +8,11 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- 语音输入（SpeechRecognizer 各 ROM 自行处理权限确认，声明以兼容部分设备） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- 通话系统悬浮窗：退到后台/其他应用时也能显示悬浮通话条（需用户在系统设置里授权） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <!-- 通话前台服务：保活 + 满足 Android 14+ 后台使用麦克风的前台服务要求 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <application
         android:label="HarnessGate"
         android:name="${applicationName}"
@@ -35,6 +40,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 通话系统悬浮条 + 前台服务（microphone 类型：后台通话保活） -->
+        <service
+            android:name=".CallOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

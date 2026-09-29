@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/client.dart';
+import '../core/system_overlay.dart';
 import '../core/voice.dart';
 
 /// 实时通话页：全屏舞台——状态呼吸灯、实时字幕（你的部分识别 + TA 流式文本）、
@@ -18,17 +19,28 @@ class _CallPageState extends State<CallPage> {
   @override
   void initState() {
     super.initState();
-    widget.client.voice.callPageVisible = true; // 通话页在前台：悬浮条隐藏
+    widget.client.voice.callPageVisible.value = true; // 通话页在前台：悬浮条隐藏
     // 同一会话的通话已在后台进行（从悬浮条回来）则不重拨；否则新发起
     if (widget.client.voice.callSessionId != widget.sessionId) {
       widget.client.voice.startCall(widget.sessionId);
     }
+    // 没授悬浮窗权限时提示一次（退到后台就看不到悬浮条了）
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      if (!await SystemOverlay.canOverlay() && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('退到后台想继续看到通话悬浮条？需开启「显示在其他应用上层」'),
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(label: '去开启', onPressed: () => SystemOverlay.requestOverlay()),
+        ));
+      }
+    });
   }
 
   @override
   void dispose() {
     // 离开页面 ≠ 挂断：通话挂在 VoiceService 上继续，悬浮条随时可回本页
-    widget.client.voice.callPageVisible = false;
+    widget.client.voice.callPageVisible.value = false;
     super.dispose();
   }
 

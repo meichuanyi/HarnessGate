@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'core/client.dart';
 import 'core/notify.dart';
+import 'core/system_overlay.dart';
+import 'core/voice.dart';
 import 'pages/call_overlay.dart';
 import 'pages/chat_page.dart';
 import 'pages/connect_page.dart';
@@ -19,14 +21,29 @@ class HarnessGateApp extends StatefulWidget {
   State<HarnessGateApp> createState() => _HarnessGateAppState();
 }
 
-class _HarnessGateAppState extends State<HarnessGateApp> {
+class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObserver {
   late final GateClient client;
   StreamSubscription? _notifySub;
+
+  // 系统悬浮条状态：通话中退到后台时显示原生悬浮条；回前台/挂断时收起
+  bool _foreground = true;
+  bool _overlayService = false;
+  bool _overlayVisible = false;
+  String _lastTitle = '';
+  String _lastPhase = '';
 
   @override
   void initState() {
     super.initState();
     client = GateClient();
+    WidgetsBinding.instance.addObserver(this);
+    SystemOverlay.bind(
+      onHangup: () => client.voice.endCall(),
+      onTap: () {}, // 原生已把 app 拉回前台，回前台后由 didChangeAppLifecycleState 收起悬浮条
+    );
+    client.voice.callStartedAt.addListener(_syncSystemOverlay);
+    client.voice.phase.addListener(_syncSystemOverlay);
+    client.sessionsChanged.listen((_) => _syncSystemOverlay()); // 标题可能稍后才回来
     Notifier.onTap = (sid) {
       // 点通知直达对应会话
       navigatorKey.currentState?.push(
@@ -49,8 +66,76 @@ class _HarnessGateAppState extends State<HarnessGateApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    client.voice.callStartedAt.removeListener(_syncSystemOverlay);
+    client.voice.phase.removeListener(_syncSystemOverlay);
     _notifySub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) {
+      _foreground = true;
+    } else if (s == AppLifecycleState.paused || s == AppLifecycleState.hidden) {
+      _foreground = false;
+    } else {
+      return; // inactive（权限弹窗/下拉通知栏等）：不切换悬浮条，避免闪烁
+    }
+    _syncSystemOverlay();
+  }
+
+  static String _phaseName(CallPhase p) => switch (p) {
+        CallPhase.listening => 'listening',
+        CallPhase.thinking => 'thinking',
+        CallPhase.speaking => 'speaking',
+        CallPhase.error => 'error',
+        CallPhase.idle => 'idle',
+      };
+
+  String _callTitle(String sid) {
+    final t = client.sessions[sid]?.title;
+    return (t != null && t.isNotEmpty) ? t : (sid.isEmpty ? '会话' : sid);
+  }
+
+  /// 把「是否在通话 / 是否前台」同步到原生系统悬浮条
+  Future<void> _syncSystemOverlay() async {
+    final v = client.voice;
+    final started = v.callStartedAt.value;
+    if (started == null) {
+      if (_overlayVisible) {
+        _overlayVisible = false;
+        await SystemOverlay.setVisible(false);
+      }
+      if (_overlayService) {
+        _overlayService = false;
+        _lastTitle = '';
+        _lastPhase = '';
+        await SystemOverlay.stopService();
+      }
+      return;
+    }
+    final title = _callTitle(v.callSessionId ?? '');
+    final phase = _phaseName(v.phase.value);
+    if (!_overlayService) {
+      _overlayService = true;
+      _lastTitle = title;
+      _lastPhase = phase;
+      await SystemOverlay.startService(
+        title: title,
+        phase: phase,
+        startedAtMs: started.millisecondsSinceEpoch,
+      );
+    } else if (title != _lastTitle || phase != _lastPhase) {
+      _lastTitle = title;
+      _lastPhase = phase;
+      await SystemOverlay.update(title: title, phase: phase);
+    }
+    final wantVisible = !_foreground;
+    if (wantVisible != _overlayVisible) {
+      _overlayVisible = wantVisible;
+      await SystemOverlay.setVisible(wantVisible);
+    }
   }
 
   @override

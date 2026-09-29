@@ -41,12 +41,14 @@ class _CallOverlayState extends State<CallOverlay> {
   @override
   Widget build(BuildContext context) {
     final v = widget.client.voice;
-    return ValueListenableBuilder<DateTime?>(
-      valueListenable: v.callStartedAt,
-      builder: (_, started, __) {
-        final show = started != null && !v.callPageVisible;
+    // 同时监听「是否在通话」与「通话页是否在前台」：两者任一变化都要立即显隐悬浮条
+    return ListenableBuilder(
+      listenable: Listenable.merge([v.callStartedAt, v.callPageVisible]),
+      builder: (_, __) {
+        final started = v.callStartedAt.value;
+        final show = started != null && !v.callPageVisible.value;
         _ensureTicker(show);
-        if (!show) return widget.child;
+        if (started == null || !show) return widget.child;
         final dur = DateTime.now().difference(started);
         final mm = (dur.inMinutes % 60).toString().padLeft(2, '0');
         final ss = (dur.inSeconds % 60).toString().padLeft(2, '0');
