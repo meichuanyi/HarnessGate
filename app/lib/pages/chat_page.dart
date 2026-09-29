@@ -170,15 +170,19 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     widget.client.viewingSessionId = widget.sessionId; // 正在看的会话不弹通知
     _sub = widget.client.messages.listen(_onMsg);
-    // 会话状态变化（运行中/空闲/待审批/收藏/配置）要刷新 AppBar 与配置项
+    // 会话状态变化（运行中/空闲/待审批/收藏/配置）要刷新 AppBar 与配置项。
+    // 注意：不再发 msgList()——hello 已带会话快照，更新由广播驱动；转场期间一次全量
+    // session 广播会触发整页重建，正是「内容先出现又闪没」的元凶之一。
     _sessSub = widget.client.sessionsChanged.listen((_) {
       if (mounted) setState(() {});
     });
+    // 回底按钮可见性走 ValueNotifier 局部刷新——滚动监听里整页 setState 会把
+    // 大列表的每次滚动都变成全量重建（转场期掉帧/闪白的另一元凶）
     _scroll.addListener(() {
-      if (mounted) setState(() {}); // 只为刷新「回到底部」按钮可见性
+      _showBackBtn.value = _scroll.hasClients &&
+          (_scroll.position.maxScrollExtent - _scroll.position.pixels) > 400;
     });
     widget.client.send(msgTranscript(widget.sessionId));
-    widget.client.send(msgList());
   }
 
   @override
@@ -191,16 +195,19 @@ class _ChatPageState extends State<ChatPage> {
     _sessSub?.cancel();
     _highlightTimer?.cancel();
     _detail.dispose();
+    _showBackBtn.dispose();
     super.dispose();
   }
+
+  /// 回底按钮可见性（ValueNotifier：滚动时局部刷新，不整页 setState）
+  final _showBackBtn = ValueNotifier<bool>(false);
+  bool _transcriptLoaded = false;
 
   /* ---------- 滚动：智能跟随 + 回到底部 ---------- */
 
   /// 贴底判定：用于流式输出时自动跟随——用户上翻历史时不打扰
   bool get _nearBottom =>
       !_scroll.hasClients || (_scroll.position.maxScrollExtent - _scroll.position.pixels) < 220;
-  bool get _showBackToBottom =>
-      _scroll.hasClients && (_scroll.position.maxScrollExtent - _scroll.position.pixels) > 400;
 
   void _jumpBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -238,12 +245,23 @@ class _ChatPageState extends State<ChatPage> {
     switch (m['type']) {
       case 'transcript':
         if (sid == widget.sessionId && m['entries'] is List) {
+          final fresh = (m['entries'] as List).whereType<Map<String, dynamic>>().map(_entryFrom).toList();
+          // 重复 transcript（重连/重进）防护：条目没变就不重灌——重灌会闪屏且打断滚动位置
+          if (_transcriptLoaded &&
+              fresh.length == _entries.length &&
+              (fresh.isEmpty || fresh.last.text == _entries.last.text)) {
+            break;
+          }
           setState(() {
             _entries
               ..clear()
-              ..addAll((m['entries'] as List).whereType<Map<String, dynamic>>().map(_entryFrom));
+              ..addAll(fresh);
+            _transcriptLoaded = true;
           });
-          _jumpBottom();
+          // 首次加载直接落底（animateTo 会与页面转场/手势竞争，表现为"划一下才出现"）
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+          });
         }
         break;
       case 'update':
@@ -873,17 +891,22 @@ class _ChatPageState extends State<ChatPage> {
                     return _bubble(_entries[i], i);
                   },
                 ),
-                if (_showBackToBottom)
-                  Positioned(
-                    right: 12,
-                    bottom: 12,
-                    child: FloatingActionButton.small(
-                      heroTag: 'toBottom',
-                      tooltip: '回到底部（最新消息）',
-                      onPressed: _jumpBottom,
-                      child: const Icon(Icons.arrow_downward, size: 18),
-                    ),
-                  ),
+                // 局部刷新：滚动不触发整页 setState（修转场闪白/掉帧）
+                ValueListenableBuilder<bool>(
+                  valueListenable: _showBackBtn,
+                  builder: (_, show, __) => show
+                      ? Positioned(
+                          right: 12,
+                          bottom: 12,
+                          child: FloatingActionButton.small(
+                            heroTag: 'toBottom',
+                            tooltip: '回到底部（最新消息）',
+                            onPressed: _jumpBottom,
+                            child: const Icon(Icons.arrow_downward, size: 18),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
               ],
             ),
           ),
