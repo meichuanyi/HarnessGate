@@ -270,6 +270,18 @@ class _ChatPageState extends State<ChatPage> {
       case 'turn_end':
         if (sid == widget.sessionId) setState(() { _waiting = false; _streaming = false; });
         break;
+      case 'voice-live-user':
+        // 通话里用户说的话同样属于该会话台账：同步进对话时间线，
+        // 否则通话期间会话页只剩 TA 的回复，要退出重进才看得到自己说的。
+        // 该消息不带 sessionId，用当前通话的 callSessionId 判断归属于哪个会话。
+        if (widget.client.voice.callSessionId == widget.sessionId) {
+          final text = m['text'] as String? ?? '';
+          if (text.isNotEmpty) {
+            setState(() => _entries.add(Entry(kind: 'user', text: text)));
+            _autoFollow();
+          }
+        }
+        break;
       case 'permission':
         if (sid == widget.sessionId) {
           setState(() => _entries.add(Entry(
