@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import '../core/client.dart';
+import '../core/md_style.dart';
 import '../core/protocol.dart';
 
 /// 圆桌房间详情：头部状态卡 + 发言时间线（主持人横跨整行、成员逐条、评分徽标），实时刷新。
@@ -198,9 +199,7 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
           MarkdownBody(
             data: t.reply.isEmpty ? '（无输出）' : t.reply,
             selectable: true,
-            styleSheet: MarkdownStyleSheet(
-              p: const TextStyle(fontSize: 13),
-            ),
+            styleSheet: hgMarkdownStyle(context).copyWith(p: const TextStyle(fontSize: 13)),
           ),
         ],
       ),

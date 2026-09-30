@@ -133,7 +133,10 @@ class _SessionsPageState extends State<SessionsPage> {
         ],
       ),
     );
-    if (ok == true) widget.client.send(msgDelete(s.id));
+    if (ok == true) {
+      widget.client.transcriptCache.remove(s.id);
+      widget.client.send(msgDelete(s.id));
+    }
   }
 
   @override

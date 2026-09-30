@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'protocol.dart';
+import 'transcript_cache.dart';
 import 'voice.dart';
 
 /// HarnessGate WS 客户端：自动重连 + 消息分发（broadcast 流，页面各自监听）。
@@ -14,6 +15,9 @@ class GateClient {
 
   /// 语音服务（朗读 + 实时通话）：跟着客户端走，识别/TTS 都在服务端
   late final VoiceService voice = VoiceService(this);
+
+  /// 会话台账进程内缓存：重进会话先秒显，后台再刷新
+  final transcriptCache = TranscriptCache();
 
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;

@@ -1158,11 +1158,24 @@ wss.on("connection", (ws, req) => {
         }
 
         case "transcript": {
+          const all = transcriptOf(msg.sessionId);
+          const limit = typeof msg.limit === "number" && msg.limit > 0 ? Math.floor(msg.limit) : 0;
+          if (!limit) {
+            // 不给窗口：整份（web 端沿用旧行为）
+            ws.send(
+              JSON.stringify({ type: "transcript", sessionId: msg.sessionId, entries: all, total: all.length, start: 0 } satisfies ServerMsg),
+            );
+            break;
+          }
+          const end = typeof msg.before === "number" ? Math.max(0, Math.min(all.length, Math.floor(msg.before))) : all.length;
+          const start = Math.max(0, end - limit);
           ws.send(
             JSON.stringify({
               type: "transcript",
               sessionId: msg.sessionId,
-              entries: transcriptOf(msg.sessionId),
+              entries: all.slice(start, end),
+              total: all.length,
+              start,
             } satisfies ServerMsg),
           );
           break;
@@ -1301,6 +1314,11 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "voice-live-phase", phase: "error", note: "本地识别模型还没就绪（首次需下载），稍后再拨" } satisfies ServerMsg));
             return;
           }
+          const wantAudio = msg.mode === "audio";
+          const mode: "stt" | "audio" = wantAudio && session.canPromptAudio() ? "audio" : "stt";
+          if (wantAudio && !session.canPromptAudio()) {
+            ws.send(JSON.stringify({ type: "voice-live-phase", phase: "listening", note: "该 harness 不支持直传音频，已改用本地识别" } satisfies ServerMsg));
+          }
           const prev = voiceLives.get(ws);
           if (prev) void prev.stop();   // 同连接重拨：先挂旧电话
           const vl = new VoiceLive(
@@ -1315,7 +1333,7 @@ wss.on("connection", (ws, req) => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "voice-live-phase", phase, note } satisfies ServerMsg));
               },
             },
-            { model: msg.model, cancelOnBarge: msg.cancelOnBarge },
+            { model: msg.model, cancelOnBarge: msg.cancelOnBarge, mode, transcribe: msg.transcribe },
           );
           voiceLives.set(ws, vl);
           try {

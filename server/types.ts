@@ -64,6 +64,8 @@ export type SessionInfo = {
   roomId?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */
   starred?: boolean;
+  /** 该会话的 harness 是否声明支持音频 prompt（promptCapabilities.audio）——决定通话能否「直传音频」 */
+  promptAudio?: boolean;
   /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
   handoffFrom?: string;
 };
@@ -171,7 +173,16 @@ export type ClientMsg =
   /** 文字转语音：provider 缺省 edge；返回 base64 音频 */
   | { type: "voice-tts"; reqId: string; text: string; provider?: string; voice?: string }
   /** 实时通话：绑定一个会话，麦克风 PCM（s16le/16k/单声道，~100ms 帧）持续上行 */
-  | { type: "voice-live-start"; sessionId: string; model?: string; cancelOnBarge?: boolean }
+  | {
+      type: "voice-live-start";
+      sessionId: string;
+      model?: string;
+      cancelOnBarge?: boolean;
+      /** 语音模式：stt=本地识别成文字再发给 harness（默认）；audio=把整句音频直传 harness（需其支持 promptCapabilities.audio） */
+      mode?: "stt" | "audio";
+      /** audio 模式下：是否仍本地转写并把文字记进会话台账（默认 false，只把音频当输入） */
+      transcribe?: boolean;
+    }
   | { type: "voice-live-chunk"; pcm: string }
   /** 插话：客户端检测到（AEC 后）说话能量，要求立即停播 */
   | { type: "voice-live-barge" }
@@ -180,7 +191,8 @@ export type ClientMsg =
    *  model 填了且在目标 harness 的探活模型列表里，则作为 chosen 配置在启动时自动重放 */
   | { type: "handoff"; sessionId: string; targetHarnessId?: string; model?: string }
   | { type: "sync-history"; harnessId?: string; force?: boolean }
-  | { type: "transcript"; sessionId: string }
+  /** 取台账；limit 给定时只回「最近 limit 条」窗口，before 用于向前翻更早一窗（端点是绝对下标） */
+  | { type: "transcript"; sessionId: string; limit?: number; before?: number }
   | { type: "workspace"; cwd?: string }
   | { type: "dirs"; reqId: string; input: string; base?: string }
   | { type: "room-create"; topic: string; members: string[]; rounds: number; writeAllowed?: boolean }
@@ -259,7 +271,15 @@ export type ServerMsg =
       title: string;
       options: PermissionOption[];
     }
-  | { type: "transcript"; sessionId: string; entries: TranscriptEntry[] }
+  | {
+      type: "transcript";
+      sessionId: string;
+      entries: TranscriptEntry[];
+      /** 台账总条数（窗口模式下用于显示「还有 N 条更早」） */
+      total?: number;
+      /** 本次 entries[0] 在整份台账中的绝对下标（0=从头；>0 表示前面还有更早的） */
+      start?: number;
+    }
   | { type: "workspace"; reports: WorkspaceReport[] }
   | {
       type: "dirs";

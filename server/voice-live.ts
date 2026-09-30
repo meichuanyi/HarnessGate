@@ -22,6 +22,36 @@ const MURMUR_AFTER_MS = 12_000;
 const FAST_MODEL = /flash|haiku|mini|air|nano|instant|lite|speed/i;
 const LOW_EFFORT = /low|min|off|none|fast|quick/i;
 
+/** 把一段 16k 单声道 Float32 PCM 编成 WAV（audio 直传模式下发给 harness） */
+function encodeWav(chunks: Float32Array[], sampleRate: number): Buffer {
+  let n = 0;
+  for (const c of chunks) n += c.length;
+  const data = Buffer.alloc(n * 2);
+  let o = 0;
+  for (const c of chunks) {
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i] ?? 0));
+      data.writeInt16LE(s < 0 ? s * 0x8000 : s * 0x7fff, o);
+      o += 2;
+    }
+  }
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0);
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write("WAVE", 8);
+  h.write("fmt ", 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(sampleRate, 24);
+  h.writeUInt32LE(sampleRate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write("data", 36);
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
+
 const SETUP_PROMPT = [
   "【语音通话模式】接下来的对话会被直接朗读给用户：每轮先给一句话结论，最多再补充两句；",
   "不使用 markdown 列表、标题和代码块；不要输出思考过程；用户打断后就停下等新指令。",
@@ -44,6 +74,8 @@ export class VoiceLive {
   private lastVoiceAt = 0;
   private segStartAt = 0;
   private lastPartial = "";
+  /** 当前这句的原始 PCM 片段（audio 直传模式用；按静音断句累积、提交后清空） */
+  private segChunks: Float32Array[] = [];
   /** TTS 分句队列 */
   private buf = "";
   private nextSeq = 1;
@@ -59,7 +91,7 @@ export class VoiceLive {
   constructor(
     readonly session: HarnessSession,
     private readonly ev: VoiceLiveEvents,
-    private readonly opts: { model?: string; cancelOnBarge?: boolean } = {},
+    private readonly opts: { model?: string; cancelOnBarge?: boolean; mode?: "stt" | "audio"; transcribe?: boolean } = {},
   ) {}
 
   get sessionId(): string {
@@ -100,6 +132,7 @@ export class VoiceLive {
         this.segStartAt = now;
       }
     }
+    if (this.speechStarted) this.segChunks.push(samples.slice()); // 累积整句 PCM（audio 直传用）
     if (text && text !== this.lastPartial) {
       this.lastPartial = text;
       if (!this.muted) this.ev.partial(text);
@@ -113,6 +146,8 @@ export class VoiceLive {
   /** 用户静音收尾 → 提交整句并驱动会话 */
   private commit(): void {
     const text = this.lastPartial.trim();
+    const chunks = this.segChunks;
+    this.segChunks = [];
     this.stream = this.rec.createStream();
     this.speechStarted = false;
     this.lastPartial = "";
@@ -122,12 +157,22 @@ export class VoiceLive {
     this.ev.phase("thinking");
     this.turnActive = true;
     this.armMurmur();
+    // 直传音频：harness 声明支持且本句有 PCM 时，把整句音频作为 audio ContentBlock 发过去；
+    // 否则退回文本（本地识别结果）。本地识别始终在跑（断句 + 字幕 + 可选记账）。
+    const useAudio = this.opts.mode === "audio" && this.session.canPromptAudio() && chunks.length > 0;
     const send = async () => {
       // 自然轮转：上一回合还没跑完时，用户又说了一句——先取消旧的再发新的
       if (this.session.info().inTurn) {
         try { await this.session.cancelTurn("voice-turn-taking"); } catch { /* 取消失败也照发 */ }
       }
-      await this.session.prompt(text).catch(() => this.ev.phase("error", "发送失败"));
+      if (useAudio) {
+        const wav = encodeWav(chunks, SAMPLE_RATE);
+        await this.session
+          .promptAudio(wav, "audio/wav", this.opts.transcribe ? text : undefined)
+          .catch(() => this.ev.phase("error", "发送失败"));
+      } else {
+        await this.session.prompt(text).catch(() => this.ev.phase("error", "发送失败"));
+      }
     };
     void send();
   }

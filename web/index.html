@@ -748,6 +748,7 @@
 <div id="starPanel" class="drawer" hidden></div>
 <div id="verPanel" class="drawer" hidden></div>
 <div id="handoffMask" class="hdlgMask" hidden><div class="hdlg" id="handoffDlg"></div></div>
+<div id="callMask" class="hdlgMask" hidden><div class="hdlg" id="callDlg"></div></div>
 <div id="callStage" class="callStage" hidden>
   <div class="callOrb listening" id="callOrb">📞</div>
   <div class="callSub" id="callSub"></div>
@@ -1908,7 +1909,49 @@ function callShowAgent(text) {
   callAgentBuf += text;
   if (callAgentEl) { callAgentEl.lastChild.textContent = callAgentBuf; $("callSub").scrollTop = $("callSub").scrollHeight; }
 }
-async function startCall(sid) {
+/** 拨号前选语音模式：转文字（默认）/ 直传音频（仅 harness 支持时可选）+ 是否本地记账 */
+function openCallDialog(sid) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  const canAudio = Boolean(s.promptAudio);
+  const mask = $("callMask"), dlg = $("callDlg");
+  dlg.innerHTML = `
+    <h3>📞 语音通话</h3>
+    <div class="meta2">${esc(s.title || "(无标题)")} · ${esc(s.harnessLabel)}</div>
+    <div class="meta2" style="margin:12px 0 4px">语音模式</div>
+    <label style="display:flex;gap:8px;align-items:center;margin:7px 0;cursor:pointer">
+      <input type="radio" name="callMode" value="stt" checked>
+      <span>转文字 — 本地识别成文字再发给它</span>
+    </label>
+    <label style="display:flex;gap:8px;align-items:center;margin:7px 0;cursor:${canAudio ? "pointer" : "not-allowed"};opacity:${canAudio ? 1 : 0.45}">
+      <input type="radio" name="callMode" value="audio" ${canAudio ? "" : "disabled"}>
+      <span>直传音频 — 把这句音频原样发给它${canAudio ? "" : "（当前 harness 不支持）"}</span>
+    </label>
+    <label id="callTranscribeRow" style="display:none;gap:8px;align-items:center;margin:7px 0 0 26px;cursor:pointer">
+      <input type="checkbox" id="callTranscribe">
+      <span class="meta2">仍本地转写并记进会话台账</span>
+    </label>
+    <div class="btns">
+      <button class="mini ghost" id="callCancel">取消</button>
+      <button class="mini primary" id="callGo">开始通话</button>
+    </div>`;
+  const modeOf = () => dlg.querySelector('input[name=callMode]:checked')?.value || "stt";
+  const sync = () => { $("callTranscribeRow").style.display = modeOf() === "audio" ? "flex" : "none"; };
+  dlg.querySelectorAll('input[name=callMode]').forEach((el) => el.addEventListener("change", sync));
+  sync();
+  const close = () => { mask.hidden = true; };
+  mask.onclick = (ev) => { if (ev.target === mask) close(); };
+  $("callCancel").onclick = close;
+  $("callGo").onclick = () => {
+    const mode = modeOf();
+    const transcribe = mode === "audio" && Boolean($("callTranscribe")?.checked);
+    close();
+    startCall(sid, mode, transcribe);
+  };
+  mask.hidden = false;
+}
+
+async function startCall(sid, mode = "stt", transcribe = false) {
   if (callActive) { showToast("已在通话中，先挂断当前通话", 3500); return; }
   const s = sessions.get(sid);
   if (!s) return;
@@ -1935,7 +1978,7 @@ async function startCall(sid) {
     sink.connect(callCtx.destination);
     src.connect(callWorklet);
     callWorklet.port.onmessage = (ev) => callOnPcm(ev.data);
-    send({ type: "voice-live-start", sessionId: sid });
+    send({ type: "voice-live-start", sessionId: sid, mode, transcribe });
   } catch (err) {
     callPhaseUI("error", "无法建立通话：" + (err?.message || err));
     setTimeout(() => { if (!callActive) return; callCleanup(); }, 1400);
@@ -2117,7 +2160,7 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
   const chatCall = $("chatCall");
-  if (chatCall) chatCall.onclick = () => startCall(s.id);
+  if (chatCall) chatCall.onclick = () => openCallDialog(s.id);
   const chatSrc = $("chatSrc");
   if (chatSrc) chatSrc.onclick = () => openSession(s.handoffFrom);
   const chatHandoff = $("chatHandoff");

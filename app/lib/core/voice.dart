@@ -100,7 +100,7 @@ class VoiceService {
   bool get inCall => callSessionId != null;
 
   /// 发起通话。麦克风权限由 record 插件顺带申请。
-  Future<bool> startCall(String sessionId) async {
+  Future<bool> startCall(String sessionId, {String mode = 'stt', bool transcribe = false}) async {
     if (inCall) return false;
     try {
       if (!await rec.hasPermission()) return false;
@@ -114,7 +114,7 @@ class VoiceService {
     callStartedAt.value = DateTime.now();
     phase.value = CallPhase.listening;
     note.value = '连接中…（接通自动切快速模型，挂断还原）';
-    _c.send(msgVoiceLiveStart(sessionId));
+    _c.send(msgVoiceLiveStart(sessionId, mode: mode, transcribe: transcribe));
     _callPlayer ??= AudioPlayer();
     _callPlayer!.processingStateStream.listen((st) {
       if (st == ProcessingState.completed) {

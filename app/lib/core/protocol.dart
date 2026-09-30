@@ -48,6 +48,8 @@ class SessionInfo {
   final bool resumable;
   final bool? inTurn;
   final bool? starred;
+  /// 该 harness 是否支持音频 prompt（通话「直传音频」模式的前提）
+  final bool? promptAudio;
   final String? title;
   final String? autoApprove; // off/readonly/all
   final String? roomId;
@@ -67,6 +69,7 @@ class SessionInfo {
     required this.resumable,
     this.inTurn,
     this.starred,
+    this.promptAudio,
     this.title,
     this.autoApprove,
     this.roomId,
@@ -87,6 +90,7 @@ class SessionInfo {
         resumable: j['resumable'] as bool? ?? false,
         inTurn: j['inTurn'] as bool?,
         starred: j['starred'] as bool?,
+        promptAudio: j['promptAudio'] as bool?,
         title: j['title'] as String?,
         autoApprove: j['autoApprove'] as String?,
         roomId: j['roomId'] as String?,
@@ -102,11 +106,12 @@ class SessionInfo {
         modes: j['modes'] == null ? null : ModesInfo.fromJson(j['modes'] as Map<String, dynamic>),
       );
 
-  SessionInfo copyWith({String? status, bool? live, bool? inTurn, String? autoApprove, bool? starred, PendingPermission? pendingPermission, String? error, List<ConfigOption>? configOptions, ModesInfo? modes, String? currentModeId}) =>
+  SessionInfo copyWith({String? status, bool? live, bool? inTurn, String? autoApprove, bool? starred, bool? promptAudio, PendingPermission? pendingPermission, String? error, List<ConfigOption>? configOptions, ModesInfo? modes, String? currentModeId}) =>
       SessionInfo(
         id: id, harnessId: harnessId, harnessLabel: harnessLabel, cwd: cwd,
         status: status ?? this.status, live: live ?? this.live, resumable: resumable,
         inTurn: inTurn ?? this.inTurn, starred: starred ?? this.starred,
+        promptAudio: promptAudio ?? this.promptAudio,
         title: title, autoApprove: autoApprove ?? this.autoApprove, roomId: roomId,
         error: error ?? this.error, lastActiveAt: lastActiveAt,
         configOptions: configOptions ?? this.configOptions,
@@ -317,7 +322,12 @@ class RoomInfo {
 
 Map<String, dynamic> msgList() => {'type': 'list'};
 Map<String, dynamic> msgPrompt(String sessionId, String text) => {'type': 'prompt', 'sessionId': sessionId, 'text': text};
-Map<String, dynamic> msgTranscript(String sessionId) => {'type': 'transcript', 'sessionId': sessionId};
+Map<String, dynamic> msgTranscript(String sessionId, {int? limit, int? before}) => {
+      'type': 'transcript',
+      'sessionId': sessionId,
+      if (limit != null) 'limit': limit,
+      if (before != null) 'before': before,
+    };
 Map<String, dynamic> msgPermission(String sessionId, String requestId, String optionId) =>
     {'type': 'permission', 'sessionId': sessionId, 'requestId': requestId, 'optionId': optionId};
 Map<String, dynamic> msgInterrupt(String sessionId) => {'type': 'interrupt', 'sessionId': sessionId};
@@ -504,7 +514,12 @@ class WorkspaceReport {
 /// 文字转语音（server 回 voice-tts-result）
 Map<String, dynamic> msgVoiceTts(String reqId, String text) => {'type': 'voice-tts', 'reqId': reqId, 'text': text};
 /// 实时通话四件套：start 绑定会话；chunk = base64(PCM s16le/16k/单声道 ~100ms)
-Map<String, dynamic> msgVoiceLiveStart(String sessionId) => {'type': 'voice-live-start', 'sessionId': sessionId};
+Map<String, dynamic> msgVoiceLiveStart(String sessionId, {String mode = 'stt', bool transcribe = false}) => {
+      'type': 'voice-live-start',
+      'sessionId': sessionId,
+      'mode': mode,
+      if (transcribe) 'transcribe': transcribe,
+    };
 Map<String, dynamic> msgVoiceLiveChunk(String pcmBase64) => {'type': 'voice-live-chunk', 'pcm': pcmBase64};
 Map<String, dynamic> msgVoiceLiveBarge() => {'type': 'voice-live-barge'};
 Map<String, dynamic> msgVoiceLiveStop() => {'type': 'voice-live-stop'};

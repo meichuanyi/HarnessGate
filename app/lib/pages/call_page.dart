@@ -9,7 +9,11 @@ import '../core/voice.dart';
 class CallPage extends StatefulWidget {
   final GateClient client;
   final String sessionId;
-  const CallPage({super.key, required this.client, required this.sessionId});
+  /// 语音模式：stt=转文字（默认）；audio=直传音频（harness 需支持）
+  final String mode;
+  /// audio 模式下是否仍本地转写并记进会话台账
+  final bool transcribe;
+  const CallPage({super.key, required this.client, required this.sessionId, this.mode = 'stt', this.transcribe = false});
 
   @override
   State<CallPage> createState() => _CallPageState();
@@ -22,7 +26,7 @@ class _CallPageState extends State<CallPage> {
     widget.client.voice.callPageVisible.value = true; // 通话页在前台：悬浮条隐藏
     // 同一会话的通话已在后台进行（从悬浮条回来）则不重拨；否则新发起
     if (widget.client.voice.callSessionId != widget.sessionId) {
-      widget.client.voice.startCall(widget.sessionId);
+      widget.client.voice.startCall(widget.sessionId, mode: widget.mode, transcribe: widget.transcribe);
     }
     // 没授悬浮窗权限时提示一次（退到后台就看不到悬浮条了）
     WidgetsBinding.instance.addPostFrameCallback((_) async {

@@ -9,6 +9,7 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
+import '../core/md_style.dart';
 import '../core/protocol.dart';
 import 'call_page.dart';
 
@@ -182,7 +183,25 @@ class _ChatPageState extends State<ChatPage> {
       _showBackBtn.value = _scroll.hasClients &&
           (_scroll.position.maxScrollExtent - _scroll.position.pixels) > 400;
     });
-    widget.client.send(msgTranscript(widget.sessionId));
+    // 进程内缓存：先把上次渲染的台账秒显出来，再向服务端拉最新覆盖——不必每次点会话都从头加载
+    final cached = widget.client.transcriptCache.get(widget.sessionId);
+    if (cached != null && cached.isNotEmpty) {
+      _entries
+        ..clear()
+        ..addAll(cached);
+      _transcriptLoaded = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      });
+    }
+    widget.client.send(msgTranscript(widget.sessionId, limit: _windowSize));
+  }
+
+  /// 向上翻更早一窗（在顶部按钮/滚动到顶时调用）
+  void _loadEarlier() {
+    if (_loadingEarlier || _windowStart <= 0) return;
+    setState(() => _loadingEarlier = true);
+    widget.client.send(msgTranscript(widget.sessionId, before: _windowStart, limit: _windowSize));
   }
 
   @override
@@ -196,12 +215,20 @@ class _ChatPageState extends State<ChatPage> {
     _highlightTimer?.cancel();
     _detail.dispose();
     _showBackBtn.dispose();
+    // 把当前渲染的台账写回缓存（下次进这个会话秒显）。空列表不覆盖已有缓存。
+    if (_entries.isNotEmpty) widget.client.transcriptCache.put(widget.sessionId, _entries);
     super.dispose();
   }
 
   /// 回底按钮可见性（ValueNotifier：滚动时局部刷新，不整页 setState）
   final _showBackBtn = ValueNotifier<bool>(false);
   bool _transcriptLoaded = false;
+  /// 台账窗口：只拉最近 N 条，进入大会话不再一次性解析 1.5MB；上滑可「加载更早」
+  static const _windowSize = 80;
+  int _windowStart = 0; // entries[0] 在整份台账中的下标
+  int _total = 0; // 台账总条数
+  bool _loadingEarlier = false;
+  bool get _hasEarlier => _windowStart > 0;
 
   /* ---------- 滚动：智能跟随 + 回到底部 ---------- */
 
@@ -246,10 +273,25 @@ class _ChatPageState extends State<ChatPage> {
       case 'transcript':
         if (sid == widget.sessionId && m['entries'] is List) {
           final fresh = (m['entries'] as List).whereType<Map<String, dynamic>>().map(_entryFrom).toList();
+          final start = (m['start'] as num?)?.toInt() ?? 0;
+          final total = (m['total'] as num?)?.toInt() ?? fresh.length;
+          // 更早的一窗（前插）：返回窗口正好接到当前窗口前面
+          if (_loadingEarlier && _windowStart > 0 && start + fresh.length == _windowStart && start < _windowStart) {
+            setState(() {
+              _entries.insertAll(0, fresh);
+              _windowStart = start;
+              _total = total;
+              _loadingEarlier = false;
+            });
+            break;
+          }
           // 重复 transcript（重连/重进）防护：条目没变就不重灌——重灌会闪屏且打断滚动位置
           if (_transcriptLoaded &&
               fresh.length == _entries.length &&
               (fresh.isEmpty || fresh.last.text == _entries.last.text)) {
+            _windowStart = start;
+            _total = total;
+            if (_loadingEarlier) setState(() => _loadingEarlier = false);
             break;
           }
           setState(() {
@@ -257,7 +299,11 @@ class _ChatPageState extends State<ChatPage> {
               ..clear()
               ..addAll(fresh);
             _transcriptLoaded = true;
+            _windowStart = start;
+            _total = total;
+            _loadingEarlier = false;
           });
+          widget.client.transcriptCache.put(widget.sessionId, _entries);
           // 首次加载直接落底（animateTo 会与页面转场/手势竞争，表现为"划一下才出现"）
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
@@ -740,6 +786,7 @@ class _ChatPageState extends State<ChatPage> {
       ),
     );
     if (ok == true) {
+      widget.client.transcriptCache.remove(widget.sessionId);
       widget.client.send(msgDelete(widget.sessionId));
       if (mounted) Navigator.of(context).pop();
     }
@@ -758,6 +805,66 @@ class _ChatPageState extends State<ChatPage> {
       ),
       child: Text(label, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
     );
+  }
+
+  /// 拨号前选语音模式：转文字（默认）/ 直传音频（仅 harness 支持时可选）+ 是否本地记账
+  Future<void> _openCallDialog() async {
+    final canAudio = _session?.promptAudio == true;
+    var mode = 'stt';
+    var transcribe = false;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Widget opt(String val, String title, String sub, {bool enabled = true}) {
+            final sel = mode == val;
+            return ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              enabled: enabled,
+              leading: Icon(sel ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                  color: enabled ? const Color(0xFF5B9CF8) : Colors.grey),
+              title: Text(title, style: const TextStyle(fontSize: 14)),
+              subtitle: Text(sub, style: const TextStyle(fontSize: 11.5)),
+              onTap: enabled ? () => setLocal(() => mode = val) : null,
+            );
+          }
+
+          return AlertDialog(
+            title: const Text('📞 语音通话'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                opt('stt', '转文字', '本地识别成文字再发给它'),
+                opt('audio', '直传音频', canAudio ? '把这句音频原样发给它' : '当前 harness 不支持', enabled: canAudio),
+                if (mode == 'audio')
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.only(left: 24),
+                    controlAffinity: ListTileControlAffinity.leading,
+                    value: transcribe,
+                    title: const Text('仍本地转写并记进会话台账', style: TextStyle(fontSize: 13)),
+                    onChanged: (v) => setLocal(() => transcribe = v ?? false),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('开始通话')),
+            ],
+          );
+        },
+      ),
+    );
+    if (go == true && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CallPage(client: widget.client, sessionId: widget.sessionId, mode: mode, transcribe: transcribe),
+        ),
+      );
+    }
   }
 
   @override
@@ -812,10 +919,7 @@ class _ChatPageState extends State<ChatPage> {
             IconButton(
               tooltip: '实时语音通话（可插话；挂断自动还原模型）',
               icon: const Icon(Icons.phone_in_talk, size: 21, color: Color(0xFF3FB950)),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => CallPage(client: widget.client, sessionId: widget.sessionId)),
-              ),
+              onPressed: _openCallDialog,
             ),
           IconButton(
             tooltip: '搜索对话内容',
@@ -892,15 +996,17 @@ class _ChatPageState extends State<ChatPage> {
                   controller: _scroll,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   // 转圈只在「已发出消息但还没任何输出」时出现；开始流式（思考/正文）即隐藏
-                  itemCount: _entries.length + (_waiting && !_streaming ? 1 : 0),
+                  itemCount: (_hasEarlier ? 1 : 0) + _entries.length + (_waiting && !_streaming ? 1 : 0),
                   itemBuilder: (_, i) {
-                    if (i >= _entries.length) {
+                    if (_hasEarlier && i == 0) return _loadEarlierRow();
+                    final idx = i - (_hasEarlier ? 1 : 0);
+                    if (idx >= _entries.length) {
                       return const Padding(
                         padding: EdgeInsets.all(10),
                         child: Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
                       );
                     }
-                    return _bubble(_entries[i], i);
+                    return _bubble(_entries[idx], idx);
                   },
                 ),
                 // 局部刷新：滚动不触发整页 setState（修转场闪白/掉帧）
@@ -990,6 +1096,23 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// 列表顶部的「加载更早」入口（窗口模式下前面还有更早的台账）
+  Widget _loadEarlierRow() {
+    final remain = (_total - _entries.length).clamp(0, 1 << 30);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Center(
+        child: _loadingEarlier
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            : TextButton.icon(
+                onPressed: _loadEarlier,
+                icon: const Icon(Icons.history, size: 16),
+                label: Text('加载更早的对话${remain > 0 ? "（还有 $remain 条）" : ""}', style: const TextStyle(fontSize: 12.5)),
+              ),
+      ),
+    );
+  }
+
   Widget _bubble(Entry e, int index) {
     final highlighted = _highlightIndex == index;
     Widget wrap(Widget child, {EdgeInsetsGeometry margin = const EdgeInsets.only(bottom: 10)}) => Container(
@@ -1026,7 +1149,7 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                MarkdownBody(data: e.text ?? '', selectable: true),
+                MarkdownBody(data: e.text ?? '', selectable: true, styleSheet: hgMarkdownStyle(context)),
                 if ((e.text ?? '').trim().isNotEmpty)
                   Align(
                     alignment: Alignment.centerLeft,

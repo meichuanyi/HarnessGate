@@ -149,6 +149,8 @@ export class HarnessSession {
   resumable = false;
   /** agent 是否声明 loadSession 能力——只决定恢复三选一里的 load 这条路，与 resumable 分离 */
   private canLoadSession = false;
+  /** agent 是否声明支持音频 prompt（promptCapabilities.audio）——通话「直传音频」模式的前提 */
+  private promptAudioSupported = false;
   acpSessionId?: string;
   title?: string;
   origin: "new" | "imported" = "new";
@@ -306,8 +308,14 @@ export class HarnessSession {
       autoApprove: this.autoApprove,
       roomId: this.roomId,
       starred: this.starred,
+      promptAudio: this.promptAudioSupported,
       handoffFrom: this.handoffFrom,
     };
+  }
+
+  /** 通话「直传音频」模式是否可用（harness 声明了 promptCapabilities.audio） */
+  canPromptAudio(): boolean {
+    return this.promptAudioSupported;
   }
 
   transcriptEntries(): TranscriptEntry[] {
@@ -437,8 +445,9 @@ export class HarnessSession {
           `initialized: protocol v${init.protocolVersion} agent=${JSON.stringify(init.agentInfo ?? {})}`,
         );
         this.canLoadSession = Boolean(init.agentCapabilities?.loadSession);
+        this.promptAudioSupported = Boolean(init.agentCapabilities?.promptCapabilities?.audio);
         this.resumable = Boolean(this.acpSessionId) || this.canLoadSession;
-        this.log(`会话可恢复=${this.resumable}（loadSession=${this.canLoadSession}）`);
+        this.log(`会话可恢复=${this.resumable}（loadSession=${this.canLoadSession}） 音频prompt=${this.promptAudioSupported}`);
         if (init.authMethods?.length) {
           const ids = init.authMethods.map((m: { id: string }) => m.id);
           this.log(`agent 声明了认证方式: ${ids.join(", ")}`);
@@ -634,6 +643,13 @@ export class HarnessSession {
     await this.sendNow(text, attachments);
   }
 
+  /** 通话「直传音频」：把这句音频作为 audio ContentBlock 发给 harness。
+   *  [transcript] 非空时同时把它记进会话台账（本地转写记账）；为空则只在台账留空（只把音频当输入）。 */
+  async promptAudio(wav: Buffer, mime: string, transcript?: string): Promise<void> {
+    const text = (transcript ?? "").trim();
+    await this.sendNow(text, [], false, { data: wav, mime }, text ? text : null);
+  }
+
   private async flushQueue(): Promise<void> {
     while (this.queued.length) {
       const item = this.queued.shift()!;
@@ -685,7 +701,13 @@ export class HarnessSession {
     }
   }
 
-  private async sendNow(text: string, attachments: Attachment[] = [], skipUserPush = false): Promise<void> {
+  private async sendNow(
+    text: string,
+    attachments: Attachment[] = [],
+    skipUserPush = false,
+    audio?: { data: Buffer; mime: string },
+    recordUserText?: string | null,
+  ): Promise<void> {
     // 自愈后的首次发送：把重建前的进度摘要拼在请求前面，接续中断的工作
     if (this.healContext) {
       const bg = this.healContext;
@@ -712,18 +734,21 @@ export class HarnessSession {
     this.replaying = false;
     this.markInTurn(true);
     // skipUserPush：排队分支已在入队时记录过用户消息，实际发送时不再重复推（否则台账里同一条发言出现两次）
-    if (!skipUserPush) {
+    // recordUserText：音频模式下用它决定台账里写什么——string=写这句（本地转写），null=不写（只把音频当输入）
+    if (!skipUserPush && recordUserText !== null) {
+      const userText = recordUserText ?? text;
       this.push({
         kind: "user",
         ts: now(),
-        text,
+        text: userText,
         attachments: attachments.length
           ? attachments.map((a) => ({ name: a.name, mimeType: a.mimeType }))
           : undefined,
       });
     }
-    if (!this.title) {
-      this.title = text.slice(0, 40);
+    const titleSource = recordUserText ?? text;
+    if (!this.title && titleSource) {
+      this.title = titleSource.slice(0, 40);
       this.hooks.onStatus(this.info());
     }
     const marks = this.transcript.length;
@@ -732,10 +757,12 @@ export class HarnessSession {
       harness: this.harnessId,
       op: "prompt",
       chars: text.length,
+      ...(audio ? { audio: true, audioBytes: audio.data.length } : {}),
     });
 
     try {
       const blocks: Record<string, unknown>[] = [];
+      if (audio) blocks.push({ type: "audio", mimeType: audio.mime, data: audio.data.toString("base64") });
       if (text) blocks.push({ type: "text", text });
       for (const a of attachments) {
         if (a.mimeType.startsWith("image/")) {
