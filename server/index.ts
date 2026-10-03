@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -127,29 +127,44 @@ function prefetchLatestApk(): void {
   })();
 }
 setTimeout(() => prefetchLatestApk(), 60_000).unref?.();
+/** curl -C - 断点续传下载：服务重启/预取被杀后，下次从 .tmp 半截继续，不再从零爬
+ *  （gh release download 不支持续传——一天连发多版时缓存永远追不上，实测踩坑）。
+ *  续传失败（文件损坏/服务端不支持 Range）自动删 .tmp 从头再来一次。 */
 function ghDownloadApk(tag: string, name: string): Promise<boolean> {
   const dest = join(APK_CACHE_DIR, name);
   const tmp = `${dest}.tmp`;
-  return new Promise((resolve) => {
-    const child = spawn("gh", ["release", "download", tag, "--pattern", name, "--output", tmp, "--clobber"], { cwd: ROOT });
-    let err = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), 1_200_000);
-    child.stderr.on("data", (c) => { err += c; });
-    child.on("error", () => { clearTimeout(timer); resolve(false); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        console.log(`[release-apk] gh release download 失败: ${err.slice(0, 300)}`);
-        resolve(false);
-        return;
-      }
-      try {
-        renameSync(tmp, dest);
-        resolve(true);
-      } catch {
-        resolve(false);
-      }
+  const url = `https://github.com/meichuanyi/HarnessGate/releases/download/${tag}/${name}`;
+  const run = (resume: boolean): Promise<boolean> =>
+    new Promise((resolve) => {
+      const args = ["-sL", "-m", "3600", "-o", tmp, url];
+      if (resume) args.unshift("-C", "-");
+      const child = spawn("curl", args);
+      let err = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 3_600_000);
+      child.stderr.on("data", (c) => { err += c; });
+      child.on("error", () => { clearTimeout(timer); resolve(false); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.log(`[release-apk] curl 下载失败(resume=${resume}): ${err.slice(0, 200)}`);
+          resolve(false);
+          return;
+        }
+        try {
+          renameSync(tmp, dest);
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      });
     });
+  return run(true).then((ok) => {
+    if (ok) return true;
+    console.log(`[release-apk] 续传失败，清 .tmp 从头重试: ${name}`);
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {}
+    return run(false);
   });
 }
 // UI 里按 harness 配置的运行时覆盖（代理等）：对手写与导入条目都生效，持久化在 harness.overrides.json
