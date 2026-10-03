@@ -867,6 +867,31 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  /// 当前模型 chip：AppBar 一眼可见（对齐 web 顶栏模型选择器），点按打开模型/配置面板
+  Widget _modelChip(SessionInfo? s) {
+    final hasModes = (s?.modes?.availableModeIds ?? []).isNotEmpty;
+    ConfigOption? modelCfg;
+    for (final o in s?.configOptions ?? const <ConfigOption>[]) {
+      if (o.options.isEmpty) continue;
+      if (hasModes && (o.name ?? '').toLowerCase().contains('mode')) continue;
+      modelCfg = o;
+      break;
+    }
+    if (modelCfg == null) return const SizedBox.shrink();
+    String curName = modelCfg.currentValue ?? modelCfg.id;
+    for (final o in modelCfg.options) {
+      if (o.value == modelCfg.currentValue) curName = o.name ?? o.value;
+    }
+    final short = curName.length > 10 ? '${curName.substring(0, 10)}…' : curName;
+    return ActionChip(
+      tooltip: '模型：$curName（点按切换）',
+      visualDensity: VisualDensity.compact,
+      avatar: const Icon(Icons.memory, size: 14, color: Color(0xFF5B9CF8)),
+      label: Text(short, style: const TextStyle(fontSize: 11)),
+      onPressed: _openConfig,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = _session;
@@ -921,6 +946,7 @@ class _ChatPageState extends State<ChatPage> {
               icon: const Icon(Icons.phone_in_talk, size: 21, color: Color(0xFF3FB950)),
               onPressed: _openCallDialog,
             ),
+          _modelChip(s),
           IconButton(
             tooltip: '搜索对话内容',
             icon: const Icon(Icons.search, size: 20),
