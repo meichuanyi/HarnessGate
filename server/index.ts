@@ -15,6 +15,7 @@ import { HarnessSession, deriveTitle } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
+import { UtilitySessions } from "./utility-session.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
@@ -665,23 +666,30 @@ function authorized(req: {
 
 autoTagger = new AutoTagger(
   store,
-  audit,
-  hub,
-  makeHooks(),
-  (id) => specOf(id),
-  () => {
-    const s = registry.harnesses.find((h) => availability(h, trust, currentProbe()).available);
-    return s ? specOf(s.id) : undefined;
-  },
-  (harnessId) => {
-    const h = registry.harnesses.find((x) => x.id === harnessId);
-    if (!h) return undefined;
-    const cfgs = availability(h, trust, currentProbe()).configs ?? [];
-    return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
-  },
+  new UtilitySessions({
+    store,
+    audit,
+    hub,
+    makeHooks,
+    resolveHarness: (explicit?: string) => {
+      const wanted = explicit || settingsStore.get().taggerHarnessId;
+      if (wanted) {
+        const w = specOf(wanted);
+        if (w) return w;
+      }
+      const s = registry.harnesses.find((h) => availability(h, trust, currentProbe()).available);
+      return s ? specOf(s.id) : undefined;
+    },
+    modelConfigIdOf: (harnessId: string) => {
+      const h = registry.harnesses.find((x) => x.id === harnessId);
+      if (!h) return undefined;
+      const cfgs = availability(h, trust, currentProbe()).configs ?? [];
+      return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
+    },
+    dataDir: DATA_DIR,
+  }),
   () => settingsStore.get(),
-  DATA_DIR,
-  (sid, tags) => {
+  (sid: string, tags: string[]) => {
     // live 实例同步（否则实例下次 persist 会用旧 tags 盖掉 store）；存档会话直接广播
     const liveSess = live.get(sid);
     if (liveSess) {
