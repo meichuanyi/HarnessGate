@@ -724,6 +724,7 @@
   <button id="pwaInstall" class="mini ghost" style="display:none" title="安装为独立应用">📲 安装APP</button>
   <button id="starBtn" class="mini ghost" title="查看所有收藏的会话（跨 harness）">收藏</button>
   <button id="verBtn" class="mini ghost" title="版本与更新">v?</button>
+  <button id="setBtn" class="mini ghost" title="运行时设置（自动标签等）">⚙</button>
   <button id="wsBtn" class="mini ghost" title="查看跨 harness 共享工作区状态与文件改动归因">工作区</button>
   <button id="syncBtn" class="mini ghost" title="从各 harness 本地存储扫描历史并导入">历史同步</button>
   <button id="devModeBtn" class="mini ghost" title="点击切换：自动 / 📱手机版 / 💻电脑版" style="font-size:11px">⚡ 自动</button>
@@ -749,6 +750,7 @@
 <div id="wsPanel" class="drawer" hidden></div>
 <div id="starPanel" class="drawer" hidden></div>
 <div id="verPanel" class="drawer" hidden></div>
+<div id="setPanel" class="drawer" hidden></div>
 <div id="handoffMask" class="hdlgMask" hidden><div class="hdlg" id="handoffDlg"></div></div>
 <div id="callMask" class="hdlgMask" hidden><div class="hdlg" id="callDlg"></div></div>
 <div id="callStage" class="callStage" hidden>
@@ -1065,7 +1067,7 @@ function pushNav(drawer) {
 }
 function collapseOverlays() {
   closeSide();
-  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "setPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
 }
 function applyNav(n) {
@@ -1104,6 +1106,7 @@ function handleServer(msg) {
       schedulesArr = msg.schedules || [];
       serverVersion = msg.version || "";
       serverCommit = msg.commit || "";
+      appSettings = msg.settings || null;
       { const vb = $("verBtn"); if (vb) vb.textContent = serverVersion ? `v${serverVersion}` : "v?"; }
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
       render();
@@ -1276,6 +1279,10 @@ function handleServer(msg) {
       /* 服务端的各类拒绝（圆桌前置校验、会话操作失败…）必须可见——吞掉就会表现为"点了没反应" */
       showToast("⚠ " + (msg.message || "操作失败"), 6000);
       console.warn("服务端错误:", msg.message, msg.sessionId || "");
+      break;
+    case "settings":
+      appSettings = msg.settings || appSettings;
+      renderSetPanel();
       break;
     case "update-check":
       updateInfo = msg;
@@ -3143,6 +3150,54 @@ function renderVerPanel() {
     if (!confirm("应用更新？服务会自动重启（运行中的会话转为已存档，可恢复），页面稍后自动重连。")) return;
     upd.disabled = true; upd.textContent = "更新中…";
     send({ type: "apply-update" });
+  };
+}
+
+/* =====================================================================
+   设置抽屉（运行时配置：自动标签）
+   ===================================================================== */
+let appSettings = null;   // hello/settings 消息维护
+$("setBtn").onclick = () => {
+  const p = $("setPanel");
+  p.hidden = !p.hidden;
+  if (!p.hidden) { renderSetPanel(); send({ type: "settings-get" }); pushNav("setPanel"); }
+};
+function renderSetPanel() {
+  const p = $("setPanel");
+  if (p.hidden) return;
+  const st = appSettings || {};
+  const hs = [...harnesses.values()].filter((h) => h.available);
+  const cur = st.taggerHarnessId || "";
+  p.innerHTML = `
+    <div class="hd"><b>⚙ 设置</b><button class="mini ghost" onclick="document.getElementById('setPanel').hidden=true">关闭</button></div>
+    <div class="wsRow">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">自动标签</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:6px 0">
+        <input type="checkbox" id="setProjTags" style="width:auto" ${st.autoProjectTags !== false ? "checked" : ""} />
+        创建会话时打「项目目录」标签（目录最后一段）
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:6px 0">
+        <input type="checkbox" id="setSemTags" style="width:auto" ${st.autoSemanticTags !== false ? "checked" : ""} />
+        首轮对话后语义打标（用临时 harness 会话，1-3 个短标签；手动编辑过标签的会话不碰）
+      </label>
+      <div class="cfgl" style="margin-top:8px">打标用 harness</div>
+      <select id="setTagger" class="sm" style="width:100%">
+        <option value="" ${cur ? "" : "selected"}>自动（探活可用的第一个）</option>
+        ${hs.map((h) => `<option value="${esc(h.id)}" ${cur === h.id ? "selected" : ""}>${esc(h.label)}</option>`).join("")}
+      </select>
+      <button class="mini primary" id="setSave" style="margin-top:10px">保存</button>
+    </div>
+    <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>`;
+  $("setSave").onclick = () => {
+    send({
+      type: "settings-set",
+      patch: {
+        autoProjectTags: $("setProjTags").checked,
+        autoSemanticTags: $("setSemTags").checked,
+        taggerHarnessId: $("setTagger").value,
+      },
+    });
+    showToast("设置已保存（即时生效）", 2500);
   };
 }
 

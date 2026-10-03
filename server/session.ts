@@ -158,8 +158,14 @@ export class HarnessSession {
   roomId?: string;
   /** 用户收藏（重要/常用会话），列表置顶展示 */
   starred = false;
+  /** 内部工具会话（自动打标等）：不进列表、不广播、不参与回收 */
+  utility = false;
   /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
   tags: string[] = [];
+  /** 用户手动编辑过标签：自动打标永不覆盖 */
+  tagsManual = false;
+  /** 语义标签已打过（避免重复触发） */
+  semanticTagged = false;
   /** 本会话由哪次「接续」分叉而来 */
   handoffFrom?: string;
   modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] };
@@ -229,7 +235,10 @@ export class HarnessSession {
     this.origin = record.origin ?? "new";
     this.roomId = record.roomId;
     this.starred = Boolean(record.starred);
+    this.utility = Boolean(record.utility);
     this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
+    this.tagsManual = Boolean(record.tagsManual);
+    this.semanticTagged = Boolean(record.semanticTagged);
     this.handoffFrom = record.handoffFrom;
     this.worktree = record.worktree;
     this.transcript = record.transcript;
@@ -279,6 +288,8 @@ export class HarnessSession {
       autoApprove: this.autoApprove,
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
+      tagsManual: this.tagsManual || undefined,
+      semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,
     };
   }
@@ -330,9 +341,12 @@ export class HarnessSession {
   }
 
   /** 收藏/取消收藏：落盘并广播（列表据 starred 置顶） */
-  /** 设置标签（整体替换；空数组=清空）。落盘并广播 */
-  setTags(tags: string[]): void {
+  /** 设置标签（整体替换；空数组=清空）。manual=用户手动编辑（自动打标此后永不覆盖）；
+   *  semantic=标记语义标签已打过（防重复触发）。落盘并广播。 */
+  setTags(tags: string[], opts?: { manual?: boolean; semantic?: boolean }): void {
     this.tags = tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+    if (opts?.manual !== undefined) this.tagsManual = opts.manual;
+    if (opts?.semantic) this.semanticTagged = true;
     this.hooks.onStatus(this.info());
     this.persist();
   }

@@ -13,6 +13,8 @@ import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
+import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
+import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
@@ -183,6 +185,7 @@ function mtimeOf(file: string): number {
 }
 const audit = new AuditLog(join(DATA_DIR, "fs-audit.log"));
 const store = new SessionStore(join(DATA_DIR, "sessions.json"));
+const settingsStore = new SettingsStore(settingsFileOf(DATA_DIR));
 const hub = new WorkspaceHub(audit);
 const history = new HistorySync(store, join(DATA_DIR, "history-index.json"), undefined, (line) => console.log(`[history] ${line}`));
 hub.onTouch = (sid, path) => live.get(sid)?.recordChange(path);
@@ -358,7 +361,7 @@ function savedInfo(rec: PersistedSession): SessionInfo {
 }
 
 function sessionList(): SessionInfo[] {
-  const list: SessionInfo[] = [...live.values()].map((s) => s.info());
+  const list: SessionInfo[] = [...live.values()].filter((s) => !s.utility).map((s) => s.info());
   const liveIds = new Set(list.map((s) => s.id));
   for (const rec of store.all()) {
     if (!liveIds.has(rec.id)) list.push(savedInfo(rec));
@@ -382,9 +385,15 @@ function broadcast(msg: ServerMsg): void {
   }
 }
 
+/** 自动打标器（registry/availability 就绪后初始化，见下方赋值） */
+let autoTagger: AutoTagger | null = null;
+
 function makeHooks() {
   return {
-    onStatus: (info: SessionInfo) => broadcast({ type: "session", session: info }),
+    onStatus: (info: SessionInfo) => {
+      if (info.utility) return; // 打标器临时会话不进任何客户端视野
+      broadcast({ type: "session", session: info });
+    },
     onUpdate: (sessionId: string, update: unknown) => {
       broadcast({ type: "update", sessionId, update });
       for (const vl of voiceLives.values()) {
@@ -392,6 +401,7 @@ function makeHooks() {
       }
     },
     onTurnEnd: (sessionId: string, stopReason: string) => {
+      void autoTagger?.maybeEnqueue(sessionId); // 首轮结束后异步语义打标（内部自判条件）
       broadcast({ type: "turn_end", sessionId, stopReason });
       for (const vl of voiceLives.values()) {
         if (vl.sessionId === sessionId) vl.onTurnEnd();
@@ -653,9 +663,34 @@ function authorized(req: {
   return typeof auth === "string" && auth === `Bearer ${TOKEN}`;
 }
 
+autoTagger = new AutoTagger(
+  store,
+  audit,
+  hub,
+  makeHooks(),
+  (id) => specOf(id),
+  () => {
+    const s = registry.harnesses.find((h) => availability(h, trust, currentProbe()).available);
+    return s ? specOf(s.id) : undefined;
+  },
+  () => settingsStore.get(),
+  DATA_DIR,
+  (sid, tags) => {
+    // live 实例同步（否则实例下次 persist 会用旧 tags 盖掉 store）；存档会话直接广播
+    const liveSess = live.get(sid);
+    if (liveSess) {
+      liveSess.setTags(tags, { semantic: true });
+    } else {
+      const rec = store.get(sid);
+      if (rec) broadcast({ type: "session", session: savedInfo(rec) });
+    }
+  },
+);
+
 function helloPayload(): ServerMsg {
   return {
     type: "hello",
+    settings: settingsStore.get() as Record<string, unknown>,
     providers: history.availableProviders(),
     version: VERSION,
     commit: GIT_COMMIT,
@@ -719,6 +754,7 @@ wss.on("connection", (ws, req) => {
               ws.send(JSON.stringify({ type: "error", message: `创建 worktree 失败，已退回原目录: ${message}` } satisfies ServerMsg));
             }
           }
+          autoTagger?.applyProjectTags(record);   // 必须在构造实例前改 record（实例构造时快照 tags）
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           if (msg.vars) session.vars = msg.vars;
           live.set(session.id, session);
@@ -1403,11 +1439,22 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "settings-get": {
+          ws.send(JSON.stringify({ type: "settings", settings: settingsStore.get() } satisfies ServerMsg));
+          break;
+        }
+
+        case "settings-set": {
+          const next = settingsStore.update(msg.patch as Partial<AppSettings>);
+          broadcast({ type: "settings", settings: next } satisfies ServerMsg);
+          break;
+        }
+
         case "set-tags": {
           // 标签整体替换：live 会话走实例（落盘+广播）；仅存档的记录直接改 store 后广播
           const session = live.get(msg.sessionId);
           if (session) {
-            session.setTags(Array.isArray(msg.tags) ? msg.tags : []);
+            session.setTags(Array.isArray(msg.tags) ? msg.tags : [], { manual: true });
           } else {
             const rec = store.get(msg.sessionId);
             if (rec) {

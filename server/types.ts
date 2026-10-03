@@ -66,6 +66,8 @@ export type SessionInfo = {
   starred?: boolean;
   /** 用户自定义标签（筛选用） */
   tags?: string[];
+  /** 内部工具会话（自动打标等），客户端应忽略 */
+  utility?: boolean;
   /** 该会话的 harness 是否声明支持音频 prompt（promptCapabilities.audio）——决定通话能否「直传音频」 */
   promptAudio?: boolean;
   /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
@@ -163,6 +165,8 @@ export type ClientMsg =
   | { type: "star"; sessionId: string; starred: boolean }
   /** 设置标签（整体替换；空数组=清空） */
   | { type: "set-tags"; sessionId: string; tags: string[] }
+  | { type: "settings-get" }
+  | { type: "settings-set"; patch: Record<string, unknown> }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
   /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */
@@ -264,6 +268,8 @@ export type ServerMsg =
       /** 服务版本（package.json）与 git 短 commit——前端据此显示/检查更新 */
       version?: string;
       commit?: string;
+      /** 运行时用户配置（自动标签等） */
+      settings?: Record<string, unknown>;
     }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: unknown }
@@ -370,5 +376,7 @@ export type ServerMsg =
       error?: string;
     }
   | { type: "update-applied"; version: string; message: string }
+  /** 运行时配置（自动标签等）；settings-get/变更时推送 */
+  | { type: "settings"; settings: Record<string, unknown> }
   | { type: "log"; sessionId: string; line: string }
   | { type: "error"; sessionId?: string; message: string };

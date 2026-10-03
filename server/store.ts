@@ -25,6 +25,12 @@ export type PersistedSession = {
   starred?: boolean;
   /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
   tags?: string[];
+  /** 用户手动编辑过标签：语义自动打标永不碰（用户意图优先） */
+  tagsManual?: boolean;
+  /** 内部工具会话（自动打标等）：不进列表、不广播、用完即删 */
+  utility?: boolean;
+  /** 语义标签已打过（避免重复触发；与 tagsManual 互不影响） */
+  semanticTagged?: boolean;
   /** 本会话由哪次「接续」分叉而来（快照文件名也用它定位） */
   handoffFrom?: string;
   /** 本会话碰过的文件（hub 实时回填，上限 500） */
