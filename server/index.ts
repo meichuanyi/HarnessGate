@@ -353,6 +353,7 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     title: rec.title ?? deriveTitle(rec.transcript),
     autoApprove: rec.autoApprove,
     starred: rec.starred,
+    tags: rec.tags,
   };
 }
 
@@ -1399,6 +1400,22 @@ wss.on("connection", (ws, req) => {
         case "set-auto-approve": {
           const session = live.get(msg.sessionId);
           if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "set-tags": {
+          // 标签整体替换：live 会话走实例（落盘+广播）；仅存档的记录直接改 store 后广播
+          const session = live.get(msg.sessionId);
+          if (session) {
+            session.setTags(Array.isArray(msg.tags) ? msg.tags : []);
+          } else {
+            const rec = store.get(msg.sessionId);
+            if (rec) {
+              const updated = { ...rec, tags: (Array.isArray(msg.tags) ? msg.tags : []).map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) };
+              store.upsert(updated);
+              broadcast({ type: "session", session: savedInfo(updated) });
+            }
+          }
           break;
         }
 

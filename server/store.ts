@@ -23,6 +23,8 @@ export type PersistedSession = {
   autoApprove?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */
   starred?: boolean;
+  /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
+  tags?: string[];
   /** 本会话由哪次「接续」分叉而来（快照文件名也用它定位） */
   handoffFrom?: string;
   /** 本会话碰过的文件（hub 实时回填，上限 500） */

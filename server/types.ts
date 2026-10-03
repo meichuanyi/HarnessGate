@@ -64,6 +64,8 @@ export type SessionInfo = {
   roomId?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */
   starred?: boolean;
+  /** 用户自定义标签（筛选用） */
+  tags?: string[];
   /** 该会话的 harness 是否声明支持音频 prompt（promptCapabilities.audio）——决定通话能否「直传音频」 */
   promptAudio?: boolean;
   /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
@@ -159,6 +161,8 @@ export type ClientMsg =
   | { type: "close"; sessionId: string }
   /** 收藏/取消收藏会话（列表置顶展示；对已存档未运行的会话也生效） */
   | { type: "star"; sessionId: string; starred: boolean }
+  /** 设置标签（整体替换；空数组=清空） */
+  | { type: "set-tags"; sessionId: string; tags: string[] }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
   /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */

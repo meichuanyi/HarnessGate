@@ -40,7 +40,8 @@ class SessionsPage extends StatefulWidget {
         (s.title ?? '').toLowerCase().contains(q) ||
         s.cwd.toLowerCase().contains(q) ||
         s.id.toLowerCase().contains(q) ||
-        s.harnessLabel.toLowerCase().contains(q);
+        s.harnessLabel.toLowerCase().contains(q) ||
+        s.tags.any((t) => t.toLowerCase().contains(q));
     final byHarness = <String, List<SessionInfo>>{};
     for (final s in all.where(hit)) {
       byHarness.putIfAbsent(s.harnessId, () => []).add(s);
@@ -110,6 +111,45 @@ class _SessionsPageState extends State<SessionsPage> {
     widget.client.send(msgStar(s.id, !(s.starred ?? false)));
     // 乐观更新：服务端广播到达后 sessionsChanged 会再刷一次
     widget.client.sessions[s.id] = s.copyWith(starred: !(s.starred ?? false));
+    setState(() {});
+  }
+
+  Future<void> _editTags(SessionInfo s) async {
+    final ctrl = TextEditingController(text: s.tags.join(', '));
+    final tags = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('编辑标签'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '标签（逗号分隔，留空清空）',
+            hintText: '如: 重构, anki, 长期任务',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              final list = ctrl.text
+                  .split(RegExp(r'[,，]'))
+                  .map((t) => t.trim())
+                  .where((t) => t.isNotEmpty)
+                  .take(20)
+                  .toList();
+              Navigator.pop(context, list);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (tags == null) return;
+    widget.client.send(msgSetTags(s.id, tags));
+    widget.client.sessions[s.id] = s.copyWith(tags: tags);
     setState(() {});
   }
 
@@ -310,6 +350,26 @@ class _SessionsPageState extends State<SessionsPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              for (final t in s.tags.take(3))
+                GestureDetector(
+                  onTap: () {
+                    _filter.text = t;
+                    setState(() {});
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(left: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      border:
+                          Border.all(color: Colors.grey.withValues(alpha: 0.4)),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(t,
+                        style:
+                            TextStyle(fontSize: 9.5, color: Colors.grey[500])),
+                  ),
+                ),
             ],
           ),
           subtitle: Text(
@@ -327,6 +387,9 @@ class _SessionsPageState extends State<SessionsPage> {
                 case 'star':
                   _toggleStar(s);
                   break;
+                case 'tags':
+                  _editTags(s);
+                  break;
                 case 'resume':
                   widget.client.send(msgResume(s.id));
                   break;
@@ -339,6 +402,7 @@ class _SessionsPageState extends State<SessionsPage> {
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'tags', child: Text('🏷 编辑标签')),
               PopupMenuItem(
                   value: 'star',
                   child: Text((s.starred ?? false) ? '取消收藏' : '收藏置顶')),

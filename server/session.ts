@@ -158,6 +158,8 @@ export class HarnessSession {
   roomId?: string;
   /** 用户收藏（重要/常用会话），列表置顶展示 */
   starred = false;
+  /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
+  tags: string[] = [];
   /** 本会话由哪次「接续」分叉而来 */
   handoffFrom?: string;
   modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] };
@@ -186,6 +188,8 @@ export class HarnessSession {
   private readonly transcript: TranscriptEntry[];
   private assistantOpen = false;
   private turnWaiter?: { from: number; resolve: (r: { text: string; stopReason: string }) => void };
+  /** 上一个还没落地的 prompt 请求：ACP 同一连接不允许并发 prompt，发新请求前先等它结束 */
+  private promptInFlight?: Promise<unknown>;
   /** 一个 turn 正在跑（前端据此显示「停止」按钮；随 SessionInfo 广播） */
   private inTurnFlag = false;
   /** 连续 prompt 失败计数；达到阈值触发自愈（底层对话已损坏：全新重建 + 注入进度摘要） */
@@ -225,6 +229,7 @@ export class HarnessSession {
     this.origin = record.origin ?? "new";
     this.roomId = record.roomId;
     this.starred = Boolean(record.starred);
+    this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
     this.handoffFrom = record.handoffFrom;
     this.worktree = record.worktree;
     this.transcript = record.transcript;
@@ -273,6 +278,7 @@ export class HarnessSession {
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
       autoApprove: this.autoApprove,
       starred: this.starred,
+      tags: this.tags.length ? this.tags : undefined,
       handoffFrom: this.handoffFrom,
     };
   }
@@ -308,6 +314,7 @@ export class HarnessSession {
       autoApprove: this.autoApprove,
       roomId: this.roomId,
       starred: this.starred,
+      tags: this.tags.length ? this.tags : undefined,
       promptAudio: this.promptAudioSupported,
       handoffFrom: this.handoffFrom,
     };
@@ -323,6 +330,13 @@ export class HarnessSession {
   }
 
   /** 收藏/取消收藏：落盘并广播（列表据 starred 置顶） */
+  /** 设置标签（整体替换；空数组=清空）。落盘并广播 */
+  setTags(tags: string[]): void {
+    this.tags = tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+    this.hooks.onStatus(this.info());
+    this.persist();
+  }
+
   setStarred(v: boolean): void {
     if (this.starred === v) return;
     this.starred = v;
@@ -406,7 +420,11 @@ export class HarnessSession {
 
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trimEnd();
-      if (text) this.log(`stderr: ${text.slice(0, 2000)}`);
+      if (!text) return;
+      // antigravity 等每次处理 session/cancel 都会往 stderr 打 "The request was cancelled by the client."
+      // ——这是预期噪声，别转发进会话台账/界面（否则语音打断时界面上不停冒这句）。
+      if (/cancell?ed by the client/i.test(text)) return;
+      this.log(`stderr: ${text.slice(0, 2000)}`);
     });
     child.on("exit", (code, signal) => {
       this.log(`harness 进程退出 code=${code ?? "null"} signal=${signal ?? "null"}`);
@@ -730,6 +748,14 @@ export class HarnessSession {
       this.hooks.onTurnEnd(this.id, "error");
       return;
     }
+    // 串行化：同一 ACP 连接不支持并发 prompt（agent 会报 "Concurrent receive_steps()"）。
+    // 语音通话「打断当前回合后立刻发新句」正好会撞上——先等上一个请求落地（最多 10s，防 agent 挂死时无限等）。
+    if (this.promptInFlight) {
+      await Promise.race([
+        this.promptInFlight.catch(() => {}),
+        new Promise((r) => setTimeout(r, 10_000)),
+      ]);
+    }
     this.assistantOpen = false;
     this.replaying = false;
     this.markInTurn(true);
@@ -776,10 +802,18 @@ export class HarnessSession {
       }
       if (!blocks.length) blocks.push({ type: "text", text: "" });
       const t0 = Date.now();
-      const res = await this.ctx.request(acp.methods.agent.session.prompt, {
+      const req = this.ctx.request(acp.methods.agent.session.prompt, {
         sessionId: this.acpSessionId,
         prompt: blocks as never,
       });
+      const tracked = req as unknown as Promise<unknown>;
+      this.promptInFlight = tracked;
+      let res;
+      try {
+        res = await req;
+      } finally {
+        if (this.promptInFlight === tracked) this.promptInFlight = undefined;
+      }
       const elapsed = Date.now() - t0;
       const produced = this.transcript.length > marks;
       const usage = (res as { usage?: { outputTokens?: number } }).usage;
@@ -798,6 +832,19 @@ export class HarnessSession {
       this.hooks.onTurnEnd(this.id, res.stopReason);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // 客户端主动取消（语音打断/停止按钮发 session/cancel）：agent 会把在途 prompt 以
+      // "cancelled by the client" 拒绝——这是预期结果，不是故障，别记错误条目、别计入失败自愈。
+      if (/cancell?ed|abort(ed)?/i.test(message)) {
+        // 只进服务端日志，不写会话台账（打断是常态，别在界面上冒错误/日志）
+        console.log(`[hg ${this.id}] prompt 被取消（预期，客户端打断）: ${message}`);
+        if (this.inTurnFlag) {
+          this.markInTurn(false);
+          this.closeAssistant("cancelled");
+          this.finishTurn("cancelled");
+          this.hooks.onTurnEnd(this.id, "cancelled");
+        }
+        return;
+      }
       this.log(`prompt 失败: ${message}`);
       this.markInTurn(false);
       this.failStreak++;

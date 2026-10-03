@@ -149,6 +149,8 @@
   .aclist .ft.create { color:var(--warn); }
   .aclist .ft.bad { color:var(--err); }
   .rows { padding:12px 22px 30px; display:flex; flex-direction:column; gap:7px; }
+  .tag { font-size:10px; padding:0 6px; border:1px solid var(--line2); border-radius:999px; color:var(--dim); cursor:pointer; white-space:nowrap; }
+  .tag:hover { border-color:var(--accent); color:var(--accent); }
   .row { display:flex; align-items:center; gap:10px; background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:10px 13px; }
   .row:hover { border-color:var(--line2); }
   .row .main { flex:1; min-width:0; }
@@ -1436,6 +1438,7 @@ function renderTree() {
     const matchH = !filter || h.label.toLowerCase().includes(filter) || h.id.includes(filter);
     const matchedSessions = list.filter((s) =>
       matchH || (s.title && s.title.toLowerCase().includes(filter)) || s.cwd.toLowerCase().includes(filter) || s.id.includes(filter)
+      || (s.tags || []).some((t) => t.toLowerCase().includes(filter))
     );
     if (filter && !matchH && !matchedSessions.length) continue;
 
@@ -1603,10 +1606,11 @@ function renderSessionList() {
         <div class="row" data-sid="${s.id}">
           ${pillOf(s, STATUS)}
           <div class="main">
-            <div class="t1">${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span> ' : ""}<b>${esc(s.title || "(无标题)")}</b></div>
+            <div class="t1">${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span> ' : ""}<b>${esc(s.title || "(无标题)")}</b>${(s.tags || []).map((t) => ` <span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}</div>
             <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
           </div>
           <div class="acts">
+            <button class="mini ghost" data-act="tags" title="编辑标签（逗号分隔，用于筛选）">🏷</button>
             <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
             <button class="mini ghost" data-act="star" title="${s.starred ? "取消收藏" : "收藏会话（置顶显示）"}" style="${s.starred ? "color:#f5b942" : ""}">${s.starred ? "★" : "☆"}</button>
             <button class="mini primary" data-act="open">进入</button>
@@ -1663,10 +1667,33 @@ function renderSessionList() {
         if (act === "stop") send({ type: "close", sessionId: id });
         if (act === "resume") send({ type: "resume", sessionId: id });
         if (act === "handoff") openHandoffDialog(id);
+        if (act === "tags") {
+          const s = sessions.get(id);
+          const cur = (s?.tags || []).join(", ");
+          const input = prompt("标签（逗号分隔，留空清空）：", cur);
+          if (input !== null) {
+            const tags = input.split(/[,，]/).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+            send({ type: "set-tags", sessionId: id, tags });
+            if (s) s.tags = tags;
+            renderSessionList(); renderTree();
+          }
+        }
         if (act === "del") { if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: id }); }
       };
     });
-    el.onclick = () => openSession(id);
+    el.onclick = (ev) => {
+      const tagEl = ev.target.closest?.(".tag");
+      if (tagEl) {
+        ev.stopPropagation();
+        const f = tagEl.dataset.tag || "";
+        state.filter = f.toLowerCase();
+        const fi = $("filter");
+        if (fi) fi.value = f;
+        renderTree();
+        return;
+      }
+      openSession(id);
+    };
   });
 }
 
