@@ -3185,9 +3185,27 @@ function renderSetPanel() {
         <option value="" ${cur ? "" : "selected"}>自动（探活可用的第一个）</option>
         ${hs.map((h) => `<option value="${esc(h.id)}" ${cur === h.id ? "selected" : ""}>${esc(h.label)}</option>`).join("")}
       </select>
+      <div class="cfgl" style="margin-top:8px">打标用模型（该 harness 的模型配置；空 = 默认模型）</div>
+      <select id="setTaggerModel" class="sm" style="width:100%"></select>
       <button class="mini primary" id="setSave" style="margin-top:10px">保存</button>
     </div>
     <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>`;
+  // 模型下拉跟随所选 harness（探活时收集的可切换模型）
+  const fillModels = () => {
+    const hid = $("setTagger").value;
+    const sel = $("setTaggerModel");
+    const st2 = appSettings || {};
+    let opts = [];
+    if (hid) {
+      const h = harnesses.get(hid);
+      const mc = (h?.configs || []).find((c) => c.category === "model") || (h?.configs || []).find((c) => /model/i.test(c.id));
+      opts = mc?.options || [];
+    }
+    sel.innerHTML = `<option value="" ${!st2.taggerModel ? "selected" : ""}>默认模型</option>` +
+      opts.map((o) => `<option value="${esc(o.value)}" ${st2.taggerModel === o.value ? "selected" : ""}>${esc(o.name || o.value)}</option>`).join("");
+  };
+  fillModels();
+  $("setTagger").onchange = fillModels;
   $("setSave").onclick = () => {
     send({
       type: "settings-set",
@@ -3195,6 +3213,7 @@ function renderSetPanel() {
         autoProjectTags: $("setProjTags").checked,
         autoSemanticTags: $("setSemTags").checked,
         taggerHarnessId: $("setTagger").value,
+        taggerModel: $("setTaggerModel").value,
       },
     });
     showToast("设置已保存（即时生效）", 2500);

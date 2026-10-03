@@ -673,6 +673,12 @@ autoTagger = new AutoTagger(
     const s = registry.harnesses.find((h) => availability(h, trust, currentProbe()).available);
     return s ? specOf(s.id) : undefined;
   },
+  (harnessId) => {
+    const h = registry.harnesses.find((x) => x.id === harnessId);
+    if (!h) return undefined;
+    const cfgs = availability(h, trust, currentProbe()).configs ?? [];
+    return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
+  },
   () => settingsStore.get(),
   DATA_DIR,
   (sid, tags) => {

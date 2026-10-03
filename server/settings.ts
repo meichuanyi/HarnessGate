@@ -9,12 +9,15 @@ export type AppSettings = {
   autoSemanticTags: boolean;
   /** 语义打标用哪个 harness（空 = 自动选探活可用的第一个） */
   taggerHarnessId: string;
+  /** 语义打标用哪个模型（该 harness 模型配置的 value；空 = harness 默认模型） */
+  taggerModel: string;
 };
 
 const DEFAULTS: AppSettings = {
   autoProjectTags: true,
   autoSemanticTags: true,
   taggerHarnessId: "",
+  taggerModel: "",
 };
 
 export class SettingsStore {
@@ -42,6 +45,7 @@ export class SettingsStore {
     if (typeof patch.autoProjectTags === "boolean") next.autoProjectTags = patch.autoProjectTags;
     if (typeof patch.autoSemanticTags === "boolean") next.autoSemanticTags = patch.autoSemanticTags;
     if (typeof patch.taggerHarnessId === "string") next.taggerHarnessId = patch.taggerHarnessId.trim();
+    if (typeof patch.taggerModel === "string") next.taggerModel = patch.taggerModel.trim();
     this.data = next;
     try {
       writeFileSync(this.file, JSON.stringify(next, null, 2));

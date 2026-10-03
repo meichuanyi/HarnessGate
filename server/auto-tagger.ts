@@ -50,6 +50,8 @@ export class AutoTagger {
     private readonly hooks: SessionHooks,
     private readonly specOf: (id: string) => HarnessSpec | undefined,
     private readonly firstAvailableSpec: () => HarnessSpec | undefined,
+    /** harness → 模型配置的 configId（探活收集；无模型配置的 harness 返回 undefined） */
+    private readonly modelConfigIdOf: (harnessId: string) => string | undefined,
     private readonly settings: () => AppSettings,
     private readonly dataDir: string,
     /** 打标成功后的回调（index.ts 里广播 session 更新） */
@@ -125,6 +127,10 @@ export class AutoTagger {
     };
     const record = HarnessSession.newRecord(spec, join(this.dataDir, "tagger"));
     record.utility = true;
+    // 指定了打标模型：经 chosen → 预置配置，ready 后自动下发（复用现有链路）
+    const wantedModel = this.settings().taggerModel;
+    const modelConfigId = wantedModel ? this.modelConfigIdOf(spec.id) : undefined;
+    if (wantedModel && modelConfigId) record.chosen = { [modelConfigId]: wantedModel };
     const tmp = new HarnessSession(spec, record, this.audit, quietHooks, this.hub);
     try {
       void tmp.start("new");
