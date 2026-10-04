@@ -653,7 +653,14 @@ class _ChatPageState extends State<ChatPage> {
         // 排除 mode 类配置（与 web 一致：有 modes 时 mode 类 config 不重复显示）。
         // isModeConfig 是精确匹配——contains('mode') 会连 "Model" 一起滤掉
         final hasModes = (s.modes?.availableModeIds ?? []).isNotEmpty;
-        final opts = s.configOptions.where((o) => o.options.isNotEmpty && !(hasModes && o.isModeConfig)).toList();
+        final h = widget.client.harnesses[s.harnessId];
+        var baseOpts = s.configOptions.isNotEmpty ? s.configOptions : (h?.configs ?? []);
+        final hasModel = baseOpts.any((o) => o.category == "model" || o.id == "model" || (o.name ?? "").toLowerCase() == "model");
+        if (!hasModel && h != null && h.configs.isNotEmpty) {
+          final modelOpts = h.configs.where((o) => o.category == "model" || o.id == "model" || (o.name ?? "").toLowerCase() == "model");
+          baseOpts = [...baseOpts, ...modelOpts];
+        }
+        final opts = baseOpts.where((o) => o.options.isNotEmpty && !(hasModes && o.isModeConfig)).toList();
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -900,13 +907,26 @@ class _ChatPageState extends State<ChatPage> {
 
   /// 当前模型 chip：AppBar 一眼可见（对齐 web 顶栏模型选择器），点按打开模型/配置面板
   Widget _modelChip(SessionInfo? s) {
-    final hasModes = (s?.modes?.availableModeIds ?? []).isNotEmpty;
+    if (s == null) return const SizedBox.shrink();
+    final hasModes = (s.modes?.availableModeIds ?? []).isNotEmpty;
+    final h = widget.client.harnesses[s.harnessId];
+    final allOpts = s.configOptions.isNotEmpty ? s.configOptions : (h?.configs ?? []);
     ConfigOption? modelCfg;
-    for (final o in s?.configOptions ?? const <ConfigOption>[]) {
+    for (final o in allOpts) {
       if (o.options.isEmpty) continue;
       if (hasModes && o.isModeConfig) continue;
-      modelCfg = o;
-      break;
+      if (o.category == "model" || o.id == "model" || (o.name ?? "").toLowerCase() == "model") {
+        modelCfg = o;
+        break;
+      }
+    }
+    if (modelCfg == null) {
+      for (final o in allOpts) {
+        if (o.options.isEmpty) continue;
+        if (hasModes && o.isModeConfig) continue;
+        modelCfg = o;
+        break;
+      }
     }
     if (modelCfg == null) return const SizedBox.shrink();
     String curName = modelCfg.currentValue ?? modelCfg.id;

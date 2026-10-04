@@ -685,11 +685,90 @@ Map<String, dynamic> msgVoiceLiveChunk(String pcmBase64) =>
 Map<String, dynamic> msgVoiceLiveBarge() => {'type': 'voice-live-barge'};
 Map<String, dynamic> msgVoiceLiveStop() => {'type': 'voice-live-stop'};
 Map<String, dynamic> msgCreate(String harnessId,
-        {String? cwd, bool? isolate, Map<String, String>? vars}) =>
+        {String? cwd, bool? isolate, Map<String, String>? vars, List<String>? mcpServerIds}) =>
     {
       'type': 'create',
       'harnessId': harnessId,
       if (cwd != null && cwd.isNotEmpty) 'cwd': cwd,
       if (isolate != null) 'isolate': isolate,
       if (vars != null && vars.isNotEmpty) 'vars': vars,
+      if (mcpServerIds != null) 'mcpServerIds': mcpServerIds,
     };
+
+/// 受管 MCP 服务器（hello/mcp 消息维护；新建会话时选择注入哪些）
+class McpServerInfo {
+  final String id;
+  final String name;
+  final String type; // stdio/http/sse
+  final String? command;
+  final List<String> args;
+  final List<({String name, String value})> env;
+  final String? url;
+  final List<({String name, String value})> headers;
+  final bool enabled; // 新建会话时的默认勾选
+  final String? note;
+
+  McpServerInfo({
+    required this.id,
+    required this.name,
+    required this.type,
+    this.command,
+    this.args = const [],
+    this.env = const [],
+    this.url,
+    this.headers = const [],
+    this.enabled = true,
+    this.note,
+  });
+
+  factory McpServerInfo.fromJson(Map<String, dynamic> j) => McpServerInfo(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        type: j['type'] as String? ?? 'stdio',
+        command: j['command'] as String?,
+        args: ((j['args'] as List<dynamic>?) ?? []).map((a) => a.toString()).toList(),
+        env: ((j['env'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((e) => (name: e['name'] as String? ?? '', value: e['value'] as String? ?? ''))
+            .toList(),
+        url: j['url'] as String?,
+        headers: ((j['headers'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((e) => (name: e['name'] as String? ?? '', value: e['value'] as String? ?? ''))
+            .toList(),
+        enabled: j['enabled'] as bool? ?? true,
+        note: j['note'] as String?,
+      );
+
+  /// 列表副标题：stdio 显示命令，http/sse 显示地址
+  String get summary {
+    if (type == 'stdio') {
+      final a = args.isNotEmpty ? ' ${args.join(' ')}' : '';
+      return '$command$a';
+    }
+    return url ?? '';
+  }
+}
+
+Map<String, dynamic> msgMcpList() => {'type': 'mcp-list'};
+
+Map<String, dynamic> msgMcpSave(McpServerInfo s) => {
+      'type': 'mcp-save',
+      'server': {
+        if (s.id.isNotEmpty) 'id': s.id,
+        'name': s.name,
+        'type': s.type,
+        if (s.type == 'stdio') ...{
+          if (s.command != null && s.command!.isNotEmpty) 'command': s.command,
+          if (s.args.isNotEmpty) 'args': s.args,
+          if (s.env.isNotEmpty) 'env': [for (final e in s.env) {'name': e.name, 'value': e.value}],
+        } else ...{
+          if (s.url != null && s.url!.isNotEmpty) 'url': s.url,
+          if (s.headers.isNotEmpty) 'headers': [for (final h in s.headers) {'name': h.name, 'value': h.value}],
+        },
+        'enabled': s.enabled,
+        if (s.note != null && s.note!.isNotEmpty) 'note': s.note,
+      },
+    };
+
+Map<String, dynamic> msgMcpDelete(String id) => {'type': 'mcp-delete', 'id': id};

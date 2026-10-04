@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/client.dart';
 import '../core/protocol.dart';
 import 'chat_page.dart';
+import 'mcp_page.dart';
 
 /// 新建会话：选 harness → 填工作目录（可勾选 git worktree 隔离）→ 创建后自动进入对话。
 class NewSessionPage extends StatefulWidget {
@@ -26,6 +27,9 @@ class _NewSessionPageState extends State<NewSessionPage> {
   bool _dirsLoading = false;
   bool _cwdExists = true;
   List<Map<String, dynamic>> _dirEntries = const [];
+
+  // MCP 注入选择：null = 未初始化（进页后按各服务器 enabled 预选）
+  Set<String>? _mcpPicked;
 
   @override
   void initState() {
@@ -126,7 +130,12 @@ class _NewSessionPageState extends State<NewSessionPage> {
       return;
     }
     setState(() { _creating = true; _error = null; });
-    widget.client.send(msgCreate(_harnessId!, cwd: _cwd.text.trim(), isolate: _isolate));
+    widget.client.send(msgCreate(
+      _harnessId!,
+      cwd: _cwd.text.trim(),
+      isolate: _isolate,
+      mcpServerIds: (_mcpPicked ?? {}).toList(),
+    ));
     // 服务端异常（如未知 harness）会回 error；这里兜底超时
     Timer(const Duration(seconds: 15), () {
       if (_creating && mounted) setState(() { _creating = false; _error = '创建超时，请检查服务器日志'; });
@@ -179,6 +188,7 @@ class _NewSessionPageState extends State<NewSessionPage> {
             title: const Text('隔离到 git worktree', style: TextStyle(fontSize: 14)),
             subtitle: Text('在独立分支跑，改动不污染主目录（需是含提交的 git 仓库）', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
           ),
+          ..._mcpSection,
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 4),
@@ -197,6 +207,57 @@ class _NewSessionPageState extends State<NewSessionPage> {
         ],
       ),
     );
+  }
+
+  /// MCP 注入选择区：FilterChips 勾选；首次按各服务器 enabled 预选
+  List<Widget> get _mcpSection {
+    final servers = widget.client.mcpServers;
+    final picked = _mcpPicked ??= servers.where((s) => s.enabled).map((s) => s.id).toSet();
+    return [
+      const SizedBox(height: 14),
+      Row(
+        children: [
+          const Text('MCP 服务器', style: TextStyle(fontWeight: FontWeight.w600)),
+          const Spacer(),
+          IconButton(
+            tooltip: '管理 MCP 服务器',
+            icon: const Icon(Icons.settings_outlined, size: 18),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => McpPage(client: widget.client)),
+            ).then((_) => setState(() {})),   // 管理页增删/改默认后回来刷新
+          ),
+        ],
+      ),
+      const SizedBox(height: 6),
+      if (servers.isEmpty)
+        Text('未配置（点右上管理可添加）', style: TextStyle(fontSize: 11.5, color: Colors.grey[500]))
+      else ...[
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final s in servers)
+              FilterChip(
+                label: Text(s.name, style: const TextStyle(fontSize: 11)),
+                selected: picked.contains(s.id),
+                showCheckmark: false,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                onSelected: (v) => setState(() {
+                  if (v) {
+                    picked.add(s.id);
+                  } else {
+                    picked.remove(s.id);
+                  }
+                }),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text('勾选的将在会话启动时注入（其工具直接出现在 agent 工具列表）', style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+      ],
+    ];
   }
 
   /// 历史目录 chips：点按直接填入

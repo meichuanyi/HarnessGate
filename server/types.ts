@@ -154,7 +154,7 @@ export type HarnessAvailability = {
 };
 
 export type ClientMsg =
-  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string> }
+  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string>; mcpServerIds?: string[] }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
   | { type: "config"; sessionId: string; configId: string; value: string }
@@ -254,7 +254,11 @@ export type ClientMsg =
   | { type: "check-update" }
   /** 应用更新：git pull --ff-only 后退出进程，交给 systemd Restart 拉起新代码 */
   | { type: "apply-update" }
-  | { type: "list" };
+  | { type: "list" }
+  /** MCP 服务器管理：list 拉取；save 带 id 更新/无 id 新建；delete 按 id 删 */
+  | { type: "mcp-list" }
+  | { type: "mcp-save"; server: Record<string, unknown> }
+  | { type: "mcp-delete"; id: string };
 
 export type ServerMsg =
   | {
@@ -270,7 +274,10 @@ export type ServerMsg =
       commit?: string;
       /** 运行时用户配置（自动标签等） */
       settings?: Record<string, unknown>;
+      /** 受管 MCP 服务器（新建会话时选择注入哪些） */
+      mcpServers?: Array<Record<string, unknown>>;
     }
+  | { type: "mcp"; servers: Array<Record<string, unknown>> }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: unknown }
   | { type: "turn_end"; sessionId: string; stopReason: string }

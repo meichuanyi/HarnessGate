@@ -1107,10 +1107,16 @@ function handleServer(msg) {
       serverVersion = msg.version || "";
       serverCommit = msg.commit || "";
       appSettings = msg.settings || null;
+      mcpServers = msg.mcpServers || [];
       { const vb = $("verBtn"); if (vb) vb.textContent = serverVersion ? `v${serverVersion}` : "v?"; }
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
       render();
       if (navBoot) { const n = navBoot; navBoot = null; applyNav(n); }   // 刷新/分享链接带 #/s/<id> 等时恢复视图
+      break;
+    case "mcp": /* 受管 MCP 服务器（设置抽屉/新建会话选择用） */
+      mcpServers = msg.servers || [];
+      renderSetPanel();
+      renderNewMcpRow();
       break;
     case "status":
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
@@ -1598,6 +1604,7 @@ function renderSessionList() {
         ${(h.extraAgents).map((a) => `<option value="${esc(a)}" ${a === (localStorage.getItem("hg_ocagent_" + h.id) || "main") ? "selected" : ""}>${esc(a)}</option>`).join("")}
       </select>` : ""}
       <label class="cfgl" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="newIso" style="width:auto" />git worktree 隔离</label>
+      <div id="newMcpRow" style="display:none"></div>
       <button class="primary" id="startBtn">启动</button>
     </div>
 
@@ -1629,6 +1636,7 @@ function renderSessionList() {
 
   const cwdInp = $("newCwd");
   attachDirComplete(cwdInp, { click: () => $("startBtn").click() });
+  renderNewMcpRow();
 
   $("startBtn").onclick = () => {
     const cwd = cwdInp.value.trim();
@@ -1638,7 +1646,8 @@ function renderSessionList() {
     if (agentSel) localStorage.setItem("hg_ocagent_" + h.id, agentSel.value);
     pendingCreate = true;
     const vars = agentSel ? { HG_OPENCLAW_AGENT: agentSel.value } : undefined;
-    send({ type: "create", harnessId: h.id, cwd, isolate: $("newIso")?.checked || false, vars });
+    const mcpIds = [...document.querySelectorAll("#newMcpRow input[data-mcp]:checked")].map((c) => c.dataset.mcp);
+    send({ type: "create", harnessId: h.id, cwd, isolate: $("newIso")?.checked || false, vars, mcpServerIds: mcpIds });
   };
 
   // 代理配置：保存/清除 → 服务端持久化到 harness.overrides.json 并广播刷新
@@ -3157,6 +3166,24 @@ function renderVerPanel() {
    设置抽屉（运行时配置：自动标签）
    ===================================================================== */
 let appSettings = null;   // hello/settings 消息维护
+let mcpServers = [];      // 受管 MCP 服务器（hello/mcp 消息维护）
+
+/** 新建会话区的 MCP 勾选行：默认勾 enabled 的；没配置时整行隐藏 */
+function renderNewMcpRow() {
+  const row = $("newMcpRow");
+  if (!row) return;
+  if (!mcpServers.length) { row.style.display = "none"; row.innerHTML = ""; return; }
+  row.style.display = "";
+  row.innerHTML = `
+    <div class="cfgl" style="margin-top:6px">MCP 服务器（勾选的在启动时注入）</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+      ${mcpServers.map((s) => `
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;border:1px solid var(--bd,#333);border-radius:6px;padding:3px 8px;cursor:pointer">
+          <input type="checkbox" data-mcp="${esc(s.id)}" style="width:auto" ${s.enabled !== false ? "checked" : ""} />
+          ${esc(s.name)}<span style="opacity:.55;font-size:10.5px">${esc(s.type)}</span>
+        </label>`).join("")}
+    </div>`;
+}
 $("setBtn").onclick = () => {
   const p = $("setPanel");
   p.hidden = !p.hidden;
@@ -3189,6 +3216,36 @@ function renderSetPanel() {
       <select id="setTaggerModel" class="sm" style="width:100%"></select>
       <button class="mini primary" id="setSave" style="margin-top:10px">保存</button>
     </div>
+    <div class="wsRow" style="margin-top:10px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">MCP 服务器</div>
+      <div id="mcpList">${(mcpServers || []).map((s) => `
+        <div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px dashed var(--bd,#333);font-size:12.5px">
+          <code style="font-size:12px">${esc(s.name)}</code>
+          <span style="opacity:.55;font-size:11px">${esc(s.type)} · ${esc(s.type === "stdio" ? [s.command, ...(s.args || [])].filter(Boolean).join(" ") : s.url || "")}</span>
+          <span class="spacer"></span>
+          <button class="mini ghost" data-mcp-toggle="${esc(s.id)}" title="新建会话时的默认勾选">${s.enabled !== false ? "默认开" : "默认关"}</button>
+          <button class="mini ghost" data-mcp-edit="${esc(s.id)}">编辑</button>
+          <button class="mini ghost" data-mcp-del="${esc(s.id)}">删除</button>
+        </div>`).join("") || '<div style="opacity:.55;font-size:12px;padding:4px 0">还没有配置（新建会话时可用 MCP 注入）</div>'}</div>
+      <button class="mini" id="mcpAdd" style="margin-top:8px">+ 添加</button>
+      <div id="mcpForm" hidden style="margin-top:8px;display:grid;gap:6px">
+        <select id="mcpType" class="sm" style="width:120px">
+          <option value="stdio">stdio</option><option value="http">http</option><option value="sse">sse</option>
+        </select>
+        <input type="text" id="mcpName" placeholder="名称（字母/数字/._-，agent 侧标识）" />
+        <input type="text" id="mcpCommand" placeholder="command（可执行文件，建议绝对路径）" />
+        <input type="text" id="mcpArgs" placeholder="参数（空白分隔）" />
+        <textarea id="mcpEnv" rows="2" placeholder="环境变量，每行 KEY=VALUE"></textarea>
+        <input type="text" id="mcpUrl" placeholder="url（http/sse 用，https://…）" />
+        <textarea id="mcpHeaders" rows="2" placeholder="请求头，每行 Name: Value（http/sse 用）"></textarea>
+        <input type="text" id="mcpNote" placeholder="备注（可选）" />
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="mcpEnabled" style="width:auto" checked />新建会话默认勾选</label>
+        <div style="display:flex;gap:6px">
+          <button class="mini primary" id="mcpFormSave">保存</button>
+          <button class="mini ghost" id="mcpFormCancel">取消</button>
+        </div>
+      </div>
+    </div>
     <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>`;
   // 模型下拉跟随所选 harness（探活时收集的可切换模型）
   const fillModels = () => {
@@ -3218,6 +3275,77 @@ function renderSetPanel() {
     });
     showToast("设置已保存（即时生效）", 2500);
   };
+  wireMcpPanel();
+}
+
+/* 设置抽屉里的 MCP 管理块：增删改 + 默认勾选切换（服务端 mcp.json） */
+function wireMcpPanel() {
+  let editingId = null;
+  const form = $("mcpForm");
+  const fillForm = (s) => {
+    editingId = s?.id || null;
+    $("mcpType").value = s?.type || "stdio";
+    $("mcpName").value = s?.name || "";
+    $("mcpCommand").value = s?.command || "";
+    $("mcpArgs").value = (s?.args || []).join(" ");
+    $("mcpEnv").value = (s?.env || []).map((e) => `${e.name}=${e.value}`).join("\n");
+    $("mcpUrl").value = s?.url || "";
+    $("mcpHeaders").value = (s?.headers || []).map((h) => `${h.name}: ${h.value}`).join("\n");
+    $("mcpNote").value = s?.note || "";
+    $("mcpEnabled").checked = s ? s.enabled !== false : true;
+    form.hidden = false;
+    syncMcpFormVis();
+  };
+  const syncMcpFormVis = () => {
+    const stdio = $("mcpType").value === "stdio";
+    $("mcpCommand").style.display = stdio ? "" : "none";
+    $("mcpArgs").style.display = stdio ? "" : "none";
+    $("mcpEnv").style.display = stdio ? "" : "none";
+    $("mcpUrl").style.display = stdio ? "none" : "";
+    $("mcpHeaders").style.display = stdio ? "none" : "";
+  };
+  $("mcpType").onchange = syncMcpFormVis;
+  $("mcpAdd").onclick = () => fillForm(null);
+  $("mcpFormCancel").onclick = () => { form.hidden = true; editingId = null; };
+  $("mcpFormSave").onclick = () => {
+    const type = $("mcpType").value;
+    const env = $("mcpEnv").value.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const i = l.indexOf("="); return { name: l.slice(0, i), value: l.slice(i + 1) };
+    }).filter((e) => e.name);
+    const headers = $("mcpHeaders").value.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const i = l.indexOf(":"); return { name: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+    }).filter((h) => h.name);
+    send({
+      type: "mcp-save",
+      server: {
+        ...(editingId ? { id: editingId } : {}),
+        name: $("mcpName").value.trim(),
+        type,
+        ...(type === "stdio"
+          ? { command: $("mcpCommand").value.trim(), args: $("mcpArgs").value.trim() ? $("mcpArgs").value.trim().split(/\s+/) : [], env }
+          : { url: $("mcpUrl").value.trim(), headers }),
+        enabled: $("mcpEnabled").checked,
+        note: $("mcpNote").value.trim(),
+      },
+    });
+    form.hidden = true;
+    editingId = null;
+  };
+  $("mcpList").querySelectorAll("[data-mcp-edit]").forEach((b) => {
+    b.onclick = () => fillForm(mcpServers.find((s) => s.id === b.dataset.mcpEdit));
+  });
+  $("mcpList").querySelectorAll("[data-mcp-del]").forEach((b) => {
+    b.onclick = () => {
+      const s = mcpServers.find((x) => x.id === b.dataset.mcpDel);
+      if (s && confirm(`删除 MCP 服务器 ${s.name}？（已存档会话不受影响）`)) send({ type: "mcp-delete", id: s.id });
+    };
+  });
+  $("mcpList").querySelectorAll("[data-mcp-toggle]").forEach((b) => {
+    b.onclick = () => {
+      const s = mcpServers.find((x) => x.id === b.dataset.mcpToggle);
+      if (s) send({ type: "mcp-save", server: { ...s, enabled: s.enabled === false } });
+    };
+  });
 }
 
 /* =====================================================================

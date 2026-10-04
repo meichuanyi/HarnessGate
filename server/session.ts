@@ -16,6 +16,7 @@ import type {
   TranscriptEntry,
 } from "./types.ts";
 import { AuditLog, isInside } from "./audit.ts";
+import type { WireMcp } from "./mcp.ts";
 import type { WorkspaceHub } from "./workspace.ts";
 import type { PersistedSession } from "./store.ts";
 import type { WorktreeInfo } from "./types.ts";
@@ -52,6 +53,12 @@ export function applyChosen<T extends { id: string; currentValue?: string; optio
 let fallbackConfigsOf: ((harnessId: string) => ConfigOption[] | undefined) | undefined;
 export function registerConfigFallback(fn: (harnessId: string) => ConfigOption[] | undefined): void {
   fallbackConfigsOf = fn;
+}
+
+/** MCP 解析器：把会话记录的 mcpServerIds 解析成 ACP 线格式（由 index.ts 注册，接 mcp.json） */
+let mcpWireOf: ((ids: string[]) => WireMcp[]) | undefined;
+export function registerMcpResolver(fn: (ids: string[]) => WireMcp[]): void {
+  mcpWireOf = fn;
 }
 
 export type SessionHooks = {
@@ -235,6 +242,8 @@ export class HarnessSession {
   private queued: { text: string; attachments: Attachment[]; userPushed?: boolean }[] = [];
   /** 用户手动选过的配置（模型等），持久化并在恢复时重放 */
   private chosen: Record<string, string> = {};
+  /** 本会话注入的受管 MCP 服务器（恢复/fork/load 时原样重传，保持工具集一致） */
+  mcpServerIds: string[] = [];
   /** 房间 worker 的宽松权限：就绪后自动切到 harness 支持的最宽 mode（auto/yolo/acceptEdits/…）。
    *  worker 都在 git 隔离的 worktree 里，从源头减少授权请求比事后批准更稳（不会挂、不留审批债） */
   permissiveMode = false;
@@ -270,6 +279,7 @@ export class HarnessSession {
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
     this.chosen = record.chosen ?? {};
     this.fallbackConfigs = fallbackConfigsOf?.(spec.id)?.map((o) => ({ ...o }));
+    this.mcpServerIds = Array.isArray(record.mcpServerIds) ? record.mcpServerIds.map(String) : [];
     for (const c of record.changedFiles ?? []) this.changedPaths.set(c.path, c.ts);
     this.autoApprove = (record.autoApprove as AutoApproveLevel) ?? "off";
     this.pendingConfigs = Object.entries(this.chosen).map(([configId, value]) => ({ configId, value }));
@@ -311,6 +321,7 @@ export class HarnessSession {
       worktree: this.worktree,
       transcript: this.transcript,
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
+      mcpServerIds: this.mcpServerIds.length ? this.mcpServerIds : undefined,
       autoApprove: this.autoApprove,
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
@@ -318,6 +329,27 @@ export class HarnessSession {
       semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,
     };
+  }
+
+  /** 综合计算会话可用配置项：优先使用运行时上报，空时回退到探针配置；若缺少模型项则自动从探针中补全 */
+  private resolvedConfigs(): ConfigOption[] | undefined {
+    const fallback = (this.fallbackConfigs && this.fallbackConfigs.length > 0)
+      ? this.fallbackConfigs
+      : fallbackConfigsOf?.(this.harnessId);
+
+    if (!this.configOptions || this.configOptions.length === 0) {
+      return fallback?.map((o) => ({ ...o }));
+    }
+
+    const hasModel = this.configOptions.some((c) => c.category === "model" || c.id === "model" || /^model$/i.test(c.name ?? ""));
+    if (!hasModel && fallback?.length) {
+      const fallbackModels = fallback.filter((c) => c.category === "model" || c.id === "model" || /^model$/i.test(c.name ?? ""));
+      if (fallbackModels.length) {
+        return [...this.configOptions, ...fallbackModels.map((o) => ({ ...o }))];
+      }
+    }
+
+    return this.configOptions;
   }
 
   info(): SessionInfo {
@@ -336,7 +368,7 @@ export class HarnessSession {
       pendingPermission: this.pendingPerm,
       title: this.derivedTitle(),
       modes: this.modes,
-      configOptions: applyChosen(this.configOptions ?? this.fallbackConfigs, this.chosen),
+      configOptions: applyChosen(this.resolvedConfigs(), this.chosen),
       worktree: this.worktree,
       inTurn: this.inTurnFlag,
       /** 本回合开始时间（epoch ms）；inTurn=false 时无 */
@@ -524,13 +556,17 @@ export class HarnessSession {
         }
         this.ctx = ctx;
 
+        // 本会话要注入的 MCP 服务器（新建时用户所选；恢复时从记录原样重传）
+        const mcp = mcpWireOf?.(this.mcpServerIds) ?? [];
+        if (mcp.length) this.log(`注入 MCP 服务器: ${mcp.map((s) => String(s.name)).join(", ")}`);
+
         if (mode === "resume") {
           const tryFork = async (): Promise<boolean> => {
             try {
               const f = await ctx.request(acp.methods.agent.session.fork, {
                 sessionId: this.acpSessionId!,
                 cwd: this.cwd,
-                mcpServers: [],
+                mcpServers: mcp,
               });
               const fid = (f as { sessionId?: string }).sessionId;
               if (!fid) return false;
@@ -550,7 +586,7 @@ export class HarnessSession {
               const r = await ctx.request(acp.methods.agent.session.resume, {
                 sessionId: this.acpSessionId!,
                 cwd: this.cwd,
-                mcpServers: [],
+                mcpServers: mcp,
               });
               const rr = r as { configOptions?: ConfigOption[]; modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] } };
               if (rr.configOptions?.length) this.configOptions = rr.configOptions;
@@ -570,7 +606,7 @@ export class HarnessSession {
             const r = await ctx.request(acp.methods.agent.session.load, {
               sessionId: this.acpSessionId!,
               cwd: this.cwd,
-              mcpServers: [],
+              mcpServers: mcp,
             });
             const lr = r as { configOptions?: ConfigOption[]; modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] } };
             if (lr.configOptions?.length) this.configOptions = lr.configOptions;
@@ -592,7 +628,8 @@ export class HarnessSession {
         } else {
           const created = await ctx.request(acp.methods.agent.session.new, {
             cwd: this.cwd,
-            mcpServers: [],
+            // WireMcp 与 schema.McpServer 结构对齐；SDK 的联合类型声明式赋值过不了，按惯例断言
+            mcpServers: mcp as never[],
           });
           this.acpSessionId = created.sessionId;
           this.resumable = true;   // 拿到 ACP 会话 id 后，停止/重启就总能 resume/fork

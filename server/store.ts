@@ -19,6 +19,8 @@ export type PersistedSession = {
   worktree?: WorktreeInfo;
   /** 用户手动选过的配置（模型等），进/恢复会话时显示并自动重放 */
   chosen?: Record<string, string>;
+  /** 本会话注入的受管 MCP 服务器 id（恢复时原样重传，保持工具集一致） */
+  mcpServerIds?: string[];
   /** 自动决策档位（off/readonly/all）；房间会话恒 all */
   autoApprove?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */

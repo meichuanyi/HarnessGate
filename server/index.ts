@@ -11,7 +11,8 @@ import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyO
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
-import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback } from "./session.ts";
+import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver } from "./session.ts";
+import { McpStore } from "./mcp.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
@@ -195,6 +196,10 @@ function currentProbe() {
 // 会话的兜底配置：harness 没上报 configOptions 时（hermes 从不报；部分 resume/load 也不带），
 // 活会话面板也能显示/切换模型——探活结果按 harness 缓存，正好是「这个 harness 有哪些配置」的答案
 registerConfigFallback((harnessId) => currentProbe()[harnessId]?.configs);
+
+// 受管 MCP 服务器（~/.harnessgate/mcp.json）：会话启动/恢复时按所选 id 解析成 ACP 线格式
+const mcpStore = new McpStore(join(DATA_DIR, "mcp.json"));
+registerMcpResolver((ids) => mcpStore.wire(ids));
 
 function mtimeOf(file: string): number {
   try {
@@ -729,6 +734,7 @@ function helloPayload(): ServerMsg {
     version: VERSION,
     commit: GIT_COMMIT,
     harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
+    mcpServers: mcpStore.list(),
     sessions: sessionList(),
     defaultCwd,
     rooms: rooms.list(),
@@ -756,6 +762,30 @@ wss.on("connection", (ws, req) => {
         case "list":
           ws.send(JSON.stringify(helloPayload()));
           break;
+
+        case "mcp-list":
+          ws.send(JSON.stringify({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg));
+          break;
+
+        case "mcp-save": {
+          const r = mcpStore.upsert(msg.server as Record<string, unknown>);
+          if ("error" in r) {
+            ws.send(JSON.stringify({ type: "error", message: `MCP 保存失败: ${r.error}` } satisfies ServerMsg));
+            break;
+          }
+          broadcast({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg);
+          break;
+        }
+
+        case "mcp-delete": {
+          // 已存档会话记录里可能还留着它的 id：wire() 会静默跳过，不阻塞恢复，无需清理
+          if (!mcpStore.remove(String(msg.id))) {
+            ws.send(JSON.stringify({ type: "error", message: "MCP 服务器不存在" } satisfies ServerMsg));
+            break;
+          }
+          broadcast({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg);
+          break;
+        }
 
         case "create": {
           const spec = specOf(msg.harnessId);
@@ -791,6 +821,14 @@ wss.on("connection", (ws, req) => {
           autoTagger?.applyProjectTags(record);   // 必须在构造实例前改 record（实例构造时快照 tags）
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           if (msg.vars) session.vars = msg.vars;
+          // MCP 注入：显式给了列表就用列表（未知 id 剔除），没给则默认全部 enabled 的
+          const knownIds = new Set(mcpStore.list().map((s) => s.id));
+          session.mcpServerIds = msg.mcpServerIds
+            ? msg.mcpServerIds.map(String).filter((id) => knownIds.has(id))
+            : mcpStore.enabledIds();
+          if (msg.mcpServerIds && session.mcpServerIds.length !== msg.mcpServerIds.length) {
+            ws.send(JSON.stringify({ type: "error", message: "部分所选 MCP 服务器已不存在，已忽略" } satisfies ServerMsg));
+          }
           live.set(session.id, session);
           store.upsert(session.record());
           audit.append({ session: session.id, harness: spec.id, op: "session.create", cwd: session.cwd, isolated: Boolean(record.worktree) });

@@ -56,6 +56,11 @@ class GateClient {
   Stream<void> get workspaceChanged => _workspaceCtrl.stream;
   String defaultCwd = '';
 
+  /// 受管 MCP 服务器（hello/mcp 消息自动维护；新建会话时选择注入哪些）
+  List<McpServerInfo> mcpServers = [];
+  final _mcpCtrl = StreamController<void>.broadcast();
+  Stream<void> get mcpChanged => _mcpCtrl.stream;
+
   bool get connected => _ws != null;
 
   void connect(String baseUrl, String token) {
@@ -158,6 +163,11 @@ class GateClient {
             .whereType<Map<String, dynamic>>()
             .map((j) => MapEntry(j['id'] as String, HarnessInfo.fromJson(j))));
       defaultCwd = m['defaultCwd'] as String? ?? '';
+      mcpServers = ((m['mcpServers'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(McpServerInfo.fromJson)
+          .toList();
+      _mcpCtrl.add(null);
       serverVersion = m['version'] as String? ?? '';
       serverCommit = m['commit'] as String? ?? '';
       rooms
@@ -190,6 +200,12 @@ class GateClient {
             .whereType<Map<String, dynamic>>()
             .map((j) => MapEntry((j)['id'] as String, RoomInfo.fromJson(j))));
       _roomsCtrl.add(null);
+    } else if (m['type'] == 'mcp' && m['servers'] is List) {
+      mcpServers = (m['servers'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map(McpServerInfo.fromJson)
+          .toList();
+      _mcpCtrl.add(null);
     } else if (m['type'] == 'session' && m['session'] is Map<String, dynamic>) {
       final s = SessionInfo.fromJson(m['session'] as Map<String, dynamic>);
       sessions[s.id] = s;
