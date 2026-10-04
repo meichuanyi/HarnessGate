@@ -11,7 +11,7 @@ import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyO
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
-import { HarnessSession, deriveTitle, applyChosen } from "./session.ts";
+import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
@@ -191,6 +191,10 @@ function currentProbe() {
   }
   return probe;
 }
+
+// 会话的兜底配置：harness 没上报 configOptions 时（hermes 从不报；部分 resume/load 也不带），
+// 活会话面板也能显示/切换模型——探活结果按 harness 缓存，正好是「这个 harness 有哪些配置」的答案
+registerConfigFallback((harnessId) => currentProbe()[harnessId]?.configs);
 
 function mtimeOf(file: string): number {
   try {
@@ -879,14 +883,23 @@ wss.on("connection", (ws, req) => {
 
         case "config": {
           const session = live.get(msg.sessionId);
-          if (!session) {
-            ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: "会话未在运行" } satisfies ServerMsg));
-            return;
+          if (session) {
+            void session.setConfigOption(msg.configId, msg.value).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: `切换配置失败: ${message}` } satisfies ServerMsg));
+            });
+            break;
           }
-          void session.setConfigOption(msg.configId, msg.value).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: `切换配置失败: ${message}` } satisfies ServerMsg));
-          });
+          // 存档会话：记进 chosen 即可——恢复时构造函数会转成 pendingConfigs 自动重放，
+          // 面板立即显示新选择（之前直接报「会话未在运行」，冷会话的模型选项成了摆设）
+          const rec = store.get(msg.sessionId);
+          if (!rec) {
+            ws.send(JSON.stringify({ type: "error", sessionId: msg.sessionId, message: "会话不存在" } satisfies ServerMsg));
+            break;
+          }
+          rec.chosen = { ...rec.chosen, [msg.configId]: msg.value };
+          store.upsert(rec);
+          broadcast({ type: "session", session: savedInfo(rec) });
           break;
         }
 

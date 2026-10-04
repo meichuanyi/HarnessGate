@@ -10,6 +10,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
 import '../core/md_style.dart';
+import '../core/math_markdown.dart';
 import '../core/protocol.dart';
 import 'call_page.dart';
 
@@ -236,12 +237,41 @@ class _ChatPageState extends State<ChatPage> {
   bool get _nearBottom =>
       !_scroll.hasClients || (_scroll.position.maxScrollExtent - _scroll.position.pixels) < 220;
 
-  void _jumpBottom() {
+  /// 多帧收敛回底：解决 ListView.builder 惰性加载导致 maxScrollExtent 估算不准的问题
+  /// （避免"只滚了一部分"或"滚到空白区域"）
+  void _jumpBottom({bool smooth = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 150), curve: Curves.easeOut);
+      if (!_scroll.hasClients) return;
+      void settle(int remaining) {
+        if (!_scroll.hasClients || remaining <= 0) return;
+        final max = _scroll.position.maxScrollExtent;
+        final current = _scroll.position.pixels;
+
+        // 已精确落底且未越界
+        if ((current - max).abs() <= 2.0 && current <= max) return;
+
+        // 越界空白纠偏
+        if (current > max) {
+          _scroll.jumpTo(max);
+          WidgetsBinding.instance.addPostFrameCallback((_) => settle(remaining - 1));
+          return;
+        }
+
+        // 还有距离未到底部
+        if (smooth && remaining >= 3) {
+          _scroll.animateTo(
+            max,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+          ).then((_) {
+            WidgetsBinding.instance.addPostFrameCallback((_) => settle(remaining - 1));
+          });
+        } else {
+          _scroll.jumpTo(max);
+          WidgetsBinding.instance.addPostFrameCallback((_) => settle(remaining - 1));
+        }
       }
+      settle(5);
     });
   }
 
@@ -620,9 +650,10 @@ class _ChatPageState extends State<ChatPage> {
       builder: (ctx) {
         final s = _session;
         if (s == null) return const Center(child: Text('会话不存在'));
-        // 排除 mode 类配置（与 web 一致：有 modes 时 mode 类 config 不重复显示）
+        // 排除 mode 类配置（与 web 一致：有 modes 时 mode 类 config 不重复显示）。
+        // isModeConfig 是精确匹配——contains('mode') 会连 "Model" 一起滤掉
         final hasModes = (s.modes?.availableModeIds ?? []).isNotEmpty;
-        final opts = s.configOptions.where((o) => o.options.isNotEmpty && !(hasModes && (o.name ?? '').toLowerCase().contains('mode'))).toList();
+        final opts = s.configOptions.where((o) => o.options.isNotEmpty && !(hasModes && o.isModeConfig)).toList();
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -873,7 +904,7 @@ class _ChatPageState extends State<ChatPage> {
     ConfigOption? modelCfg;
     for (final o in s?.configOptions ?? const <ConfigOption>[]) {
       if (o.options.isEmpty) continue;
-      if (hasModes && (o.name ?? '').toLowerCase().contains('mode')) continue;
+      if (hasModes && o.isModeConfig) continue;
       modelCfg = o;
       break;
     }
@@ -1020,6 +1051,8 @@ class _ChatPageState extends State<ChatPage> {
               children: [
                 ListView.builder(
                   controller: _scroll,
+                  cacheExtent: 1500, // ignore: deprecated_member_use
+                  physics: const ClampingScrollPhysics(),
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   // 转圈只在「已发出消息但还没任何输出」时出现；开始流式（思考/正文）即隐藏
                   itemCount: (_hasEarlier ? 1 : 0) + _entries.length + (_waiting && !_streaming ? 1 : 0),
@@ -1175,7 +1208,16 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                MarkdownBody(data: e.text ?? '', selectable: true, styleSheet: hgMarkdownStyle(context)),
+                MarkdownBody(
+                  data: e.text ?? "",
+                  selectable: true,
+                  styleSheet: hgMarkdownStyle(context),
+                  inlineSyntaxes: [BlockMathSyntax(), InlineMathSyntax()],
+                  builders: {
+                    "latex_inline": MathElementBuilder(baseStyle: const TextStyle(fontSize: 14)),
+                    "latex_block": MathElementBuilder(baseStyle: const TextStyle(fontSize: 15), isBlock: true),
+                  },
+                ),
                 if ((e.text ?? '').trim().isNotEmpty)
                   Align(
                     alignment: Alignment.centerLeft,

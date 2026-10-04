@@ -21,10 +21,17 @@ class _NewSessionPageState extends State<NewSessionPage> {
   String? _error;
   StreamSubscription? _sub;
 
+  // 工作目录补全（服务端 dirs 接口）：输入防抖 250ms 拉候选子目录
+  Timer? _dirsDebounce;
+  bool _dirsLoading = false;
+  bool _cwdExists = true;
+  List<Map<String, dynamic>> _dirEntries = const [];
+
   @override
   void initState() {
     super.initState();
     _cwd.text = widget.client.defaultCwd;
+    _cwd.addListener(_refreshDirs);
     // 创建后服务端广播一条新 id 的 session（status=starting），据此进入对话
     final known = widget.client.sessions.keys.toSet();
     _sub = widget.client.messages.listen((m) {
@@ -44,13 +51,59 @@ class _NewSessionPageState extends State<NewSessionPage> {
         });
       }
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshDirs());
   }
 
   @override
   void dispose() {
+    _dirsDebounce?.cancel();
     _sub?.cancel();
     _cwd.dispose();
     super.dispose();
+  }
+
+  /// 输入变化 → 防抖拉目录候选；服务端回显 input，过期响应直接丢弃
+  void _refreshDirs() {
+    _dirsDebounce?.cancel();
+    _dirsDebounce = Timer(const Duration(milliseconds: 250), () async {
+      if (!mounted) return;
+      setState(() => _dirsLoading = true);
+      final forInput = _cwd.text.trim();
+      final m = await widget.client.request('dirs', {'type': 'dirs', 'input': forInput});
+      if (!mounted) return;
+      if (m == null || (m['input'] as String? ?? '') != _cwd.text.trim()) {
+        // 断连/超时/过期：保留旧候选，只结束 loading
+        setState(() => _dirsLoading = false);
+        return;
+      }
+      setState(() {
+        _dirsLoading = false;
+        _cwdExists = m['exists'] == true;
+        _dirEntries =
+            ((m['entries'] as List<dynamic>?) ?? []).whereType<Map<String, dynamic>>().toList();
+      });
+    });
+  }
+
+  void _pickDir(String path) {
+    _cwd.text = path;
+    _cwd.selection = TextSelection.collapsed(offset: path.length);
+    // text 变化会触发 _refreshDirs，自动列出该目录的子目录（可继续往下钻）
+  }
+
+  /// 历史目录：从已有会话聚合（按最近活动排序去重），加上服务器默认目录
+  List<String> get _historyDirs {
+    final latest = <String, String>{};
+    for (final s in widget.client.sessions.values) {
+      final d = s.cwd.trim();
+      if (d.isEmpty) continue;
+      final at = s.lastActiveAt;
+      if (latest[d] == null || at.compareTo(latest[d]!) > 0) latest[d] = at;
+    }
+    final dirs = latest.keys.toList()..sort((a, b) => latest[b]!.compareTo(latest[a]!));
+    final def = widget.client.defaultCwd;
+    if (def.isNotEmpty && !dirs.contains(def)) dirs.insert(0, def);
+    return dirs.take(8).toList();
   }
 
   List<HarnessInfo> get _harnesses {
@@ -99,12 +152,25 @@ class _NewSessionPageState extends State<NewSessionPage> {
           const SizedBox(height: 8),
           TextField(
             controller: _cwd,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '/root/projects/my-repo',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
               isDense: true,
+              suffixIcon: _dirsLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(14),
+                      child: SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  : null,
             ),
           ),
+          if (_cwd.text.trim().isNotEmpty && !_cwdExists)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text('目录不存在，创建会话时将自动新建', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+            ),
+          ..._historySection,
+          ..._suggestSection,
           const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -131,6 +197,71 @@ class _NewSessionPageState extends State<NewSessionPage> {
         ],
       ),
     );
+  }
+
+  /// 历史目录 chips：点按直接填入
+  List<Widget> get _historySection {
+    final dirs = _historyDirs;
+    if (dirs.isEmpty) return const [];
+    return [
+      const SizedBox(height: 10),
+      Text('历史目录', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final d in dirs)
+            ActionChip(
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 230),
+                child: Text(d, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+              ),
+              onPressed: () => _pickDir(d),
+            ),
+        ],
+      ),
+    ];
+  }
+
+  /// 子目录候选：服务端 dirs 接口（输入过滤 + git 标记），点按往下钻
+  List<Widget> get _suggestSection {
+    if (_dirEntries.isEmpty) return const [];
+    const shown = 7;
+    final items = _dirEntries.take(shown).toList();
+    return [
+      const SizedBox(height: 10),
+      Text('子目录（点按选择，输入可过滤）', style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+      const SizedBox(height: 4),
+      Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            for (final e in items)
+              ListTile(
+                dense: true,
+                visualDensity: VisualDensity.compact,
+                leading: Icon(
+                  e['git'] == true ? Icons.account_tree : Icons.folder_outlined,
+                  size: 18,
+                  color: e['git'] == true ? const Color(0xFF3FB950) : Colors.grey[600],
+                ),
+                title: Text('${e['name']}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                subtitle: Text('${e['path']}', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: Colors.grey[500])),
+                onTap: () => _pickDir(e['path'] as String),
+              ),
+          ],
+        ),
+      ),
+      if (_dirEntries.length > shown)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text('还有 ${_dirEntries.length - shown} 个未显示，继续输入可过滤', style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+        ),
+    ];
   }
 
   Widget _harnessTile(HarnessInfo h) {

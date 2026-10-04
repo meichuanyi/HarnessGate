@@ -212,6 +212,33 @@ class GateClient {
     // 未连接：hello 到来后由 UI 重新拉取；这里静默丢弃（与网页端行为一致）
   }
 
+  int _reqSeq = 0;
+
+  /// reqId 关联的请求-响应：发送 msg（自动附 reqId），等待同 type+reqId 的回复。
+  /// 超时/断连返回 null，调用方按「无数据」降级（如目录补全静默不显示）
+  Future<Map<String, dynamic>?> request(
+    String respType,
+    Map<String, dynamic> msg, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final reqId = 'app-${DateTime.now().microsecondsSinceEpoch}-${_reqSeq++}';
+    final resp = Completer<Map<String, dynamic>?>();
+    StreamSubscription? sub;
+    sub = messages.listen((m) {
+      if (m['type'] == respType && m['reqId'] == reqId && !resp.isCompleted) {
+        resp.complete(m);
+      }
+    });
+    send({...msg, 'reqId': reqId});
+    try {
+      return await resp.future.timeout(timeout);
+    } on TimeoutException {
+      return null;
+    } finally {
+      await sub.cancel();
+    }
+  }
+
   void dispose() {
     _closedByUs = true;
     _retry?.cancel();

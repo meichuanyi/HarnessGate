@@ -28,23 +28,34 @@ import 'package:flutter/material.dart';
 class ConfigOption {
   final String id;
   final String? name;
+  final String? category;
   final String? currentValue;
   final List<({String value, String? name})> options;
   ConfigOption(
       {required this.id,
       this.name,
+      this.category,
       this.currentValue,
       this.options = const []});
 
   factory ConfigOption.fromJson(Map<String, dynamic> j) => ConfigOption(
         id: j['id'] as String,
         name: j['name'] as String?,
+        category: j['category'] as String?,
         currentValue: j['currentValue'] as String?,
         options: ((j['options'] as List<dynamic>?) ?? [])
             .map((o) =>
                 (value: o['value'] as String, name: o['name'] as String?))
             .toList(),
       );
+
+  /// 是否为权限模式类配置（有 modes 面板时列表里不重复显示）。
+  /// 必须精确匹配：曾用 contains('mode') 判断，把 "Model" 也误杀——
+  /// 活会话带 modes 时模型选项整个消失、存档（无 modes）反而正常的元凶
+  bool get isModeConfig =>
+      category?.toLowerCase() == 'mode' ||
+      id.toLowerCase() == 'mode' ||
+      (name ?? '').toLowerCase() == 'mode';
 }
 
 class SessionInfo {

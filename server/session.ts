@@ -46,6 +46,14 @@ export function applyChosen<T extends { id: string; currentValue?: string; optio
   });
 }
 
+/** 兜底配置提供器：harness 没上报 configOptions 时（hermes 从不报；部分 harness 的
+ *  resume/load 响应也不带），按 harness 从探活结果取一份，模型/配置面板才不至于空白。
+ *  由宿主（index.ts）在启动时注册 */
+let fallbackConfigsOf: ((harnessId: string) => ConfigOption[] | undefined) | undefined;
+export function registerConfigFallback(fn: (harnessId: string) => ConfigOption[] | undefined): void {
+  fallbackConfigsOf = fn;
+}
+
 export type SessionHooks = {
   onStatus: (info: SessionInfo) => void;
   onUpdate: (sessionId: string, update: unknown) => void;
@@ -185,6 +193,8 @@ export class HarnessSession {
   handoffFrom?: string;
   modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] };
   configOptions?: ConfigOption[];
+  /** 兜底配置（构造时从提供器快照的浅拷贝）：仅当 harness 未上报 configOptions 时用于展示/切换 */
+  private fallbackConfigs?: ConfigOption[];
   worktree?: WorktreeInfo;
   /** 圆桌模式下由服务端自动批准权限请求（成员会话没人点按钮，否则会永久挂起） */
   autoApprove: AutoApproveLevel = "off";
@@ -259,6 +269,7 @@ export class HarnessSession {
     this.transcript = record.transcript;
     // 上次手动选过的配置（模型等）：进会话时 UI 显示它，恢复会话时自动重新下发给 harness
     this.chosen = record.chosen ?? {};
+    this.fallbackConfigs = fallbackConfigsOf?.(spec.id)?.map((o) => ({ ...o }));
     for (const c of record.changedFiles ?? []) this.changedPaths.set(c.path, c.ts);
     this.autoApprove = (record.autoApprove as AutoApproveLevel) ?? "off";
     this.pendingConfigs = Object.entries(this.chosen).map(([configId, value]) => ({ configId, value }));
@@ -325,7 +336,7 @@ export class HarnessSession {
       pendingPermission: this.pendingPerm,
       title: this.derivedTitle(),
       modes: this.modes,
-      configOptions: applyChosen(this.configOptions, this.chosen),
+      configOptions: applyChosen(this.configOptions ?? this.fallbackConfigs, this.chosen),
       worktree: this.worktree,
       inTurn: this.inTurnFlag,
       /** 本回合开始时间（epoch ms）；inTurn=false 时无 */
@@ -1170,7 +1181,14 @@ export class HarnessSession {
   }
 
   async setConfigOption(configId: string, value: string): Promise<void> {
-    if (!this.ctx || !this.acpSessionId) throw new Error("会话上下文尚未建立");
+    if (!this.ctx || !this.acpSessionId) {
+      // 会话还在启动/恢复中（或已停）：先记账，就绪后由 pendingConfigs 重放——刚进冷会话就选模型的场景
+      this.chosen[configId] = value;
+      this.pendingConfigs.push({ configId, value });
+      this.log(`会话未就绪，配置已排队: ${configId}=${value}`);
+      this.hooks.onPersist(this.record());
+      return;
+    }
     await this.withTimeout(
       this.ctx.request(acp.methods.agent.session.setConfigOption, {
         sessionId: this.acpSessionId,
@@ -1180,7 +1198,7 @@ export class HarnessSession {
       10_000,
       `切换配置项 ${configId}`,
     );
-    const opt = this.configOptions?.find((o) => o.id === configId);
+    const opt = this.configOptions?.find((o) => o.id === configId) ?? this.fallbackConfigs?.find((o) => o.id === configId);
     if (opt) opt.currentValue = value;
     this.chosen[configId] = value;   // 记住用户的选择：落盘 + 恢复时重放
     this.log(`配置项已切换: ${configId}=${value}`);

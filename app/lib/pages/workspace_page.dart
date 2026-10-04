@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../core/client.dart';
 import '../core/protocol.dart';
+import 'chat_page.dart';
 
 /// 工作区：跨 harness 的目录视图——谁在哪个目录干活、改了哪些文件、多会话同碰一文件的冲突归因。
 /// 只读监控（请求/响应式，进入与下拉刷新）。
@@ -97,16 +98,25 @@ class _WorkspacePageState extends State<WorkspacePage> {
                 ),
                 title: Text(
                   '${s.harnessLabel}${s.inTurn ? "  正在干活" : ""}',
-                  style: const TextStyle(fontSize: 12.5),
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500),
                   maxLines: 1, overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
                   [
+                    '#${s.id.length > 8 ? s.id.substring(0, 8) : s.id}',
                     s.mode == 'worktree' ? 'worktree ${s.branch ?? ""}' : '共享目录',
                     if (s.changedCount > 0) '改动 ${s.changedCount} 个文件',
                   ].join(' · '),
                   style: const TextStyle(fontSize: 11),
                 ),
+                trailing: const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
+                onTap: s.id.isEmpty
+                    ? null
+                    : () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ChatPage(client: widget.client, sessionId: s.id),
+                          ),
+                        ),
               ),
             if (r.files.isNotEmpty) ...[
               const Padding(
