@@ -11,7 +11,7 @@ import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyO
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
-import { HarnessSession, deriveTitle } from "./session.ts";
+import { HarnessSession, deriveTitle, applyChosen } from "./session.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
@@ -373,6 +373,7 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     autoApprove: rec.autoApprove,
     starred: rec.starred,
     tags: rec.tags,
+    configOptions: applyChosen(currentProbe()[rec.harnessId]?.configs, rec.chosen),
   };
 }
 

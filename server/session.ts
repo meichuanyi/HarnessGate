@@ -31,6 +31,21 @@ export function deriveTitle(transcript: TranscriptEntry[]): string | undefined {
   return undefined;
 }
 
+/** 用户上次选的值优先显示（恢复后的会话 harness 上报的 currentValue 可能回到默认）。
+ *  活会话 info() 与冷会话 savedInfo() 共用；chosen 值已不在选项列表里时不覆盖 */
+export function applyChosen<T extends { id: string; currentValue?: string; options?: { value: string }[] }>(
+  opts: T[] | undefined,
+  chosen: Record<string, string> | undefined,
+): T[] | undefined {
+  if (!opts) return opts;
+  return opts.map((o) => {
+    const v = chosen?.[o.id];
+    return v !== undefined && !(o.options?.length && !o.options.some((x) => x.value === v))
+      ? { ...o, currentValue: v }
+      : o;
+  });
+}
+
 export type SessionHooks = {
   onStatus: (info: SessionInfo) => void;
   onUpdate: (sessionId: string, update: unknown) => void;
@@ -310,12 +325,7 @@ export class HarnessSession {
       pendingPermission: this.pendingPerm,
       title: this.derivedTitle(),
       modes: this.modes,
-      configOptions: this.configOptions?.map((o) =>
-        // 用户上次选的值优先显示（恢复后的会话 harness 上报的 currentValue 可能回到默认）
-        this.chosen[o.id] !== undefined && !(o.options?.length && !o.options.some((x) => x.value === this.chosen[o.id]))
-          ? { ...o, currentValue: this.chosen[o.id] }
-          : o,
-      ),
+      configOptions: applyChosen(this.configOptions, this.chosen),
       worktree: this.worktree,
       inTurn: this.inTurnFlag,
       /** 本回合开始时间（epoch ms）；inTurn=false 时无 */
@@ -546,11 +556,14 @@ export class HarnessSession {
             if (!this.canLoadSession) return false;
             this.replaying = this.transcript.length > 0;
             if (!this.replaying) this.log("本地台账为空，本次将采用 harness 回放的历史重建台账");
-            await ctx.request(acp.methods.agent.session.load, {
+            const r = await ctx.request(acp.methods.agent.session.load, {
               sessionId: this.acpSessionId!,
               cwd: this.cwd,
               mcpServers: [],
             });
+            const lr = r as { configOptions?: ConfigOption[]; modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] } };
+            if (lr.configOptions?.length) this.configOptions = lr.configOptions;
+            if (lr.modes?.availableModes?.length) this.modes = lr.modes;
             this.log(`会话已恢复（session/load）：${this.acpSessionId}`);
             return true;
           };
