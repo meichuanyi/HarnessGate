@@ -14,3 +14,6 @@ vscode/src/generated/
 # APP 签名密钥（本地与 CI secrets 各持一份，绝不入库）
 app/android/app/key.properties
 app/android/app/*.jks
+
+# 临时直发的 APK（本地构建应急用，不入库）
+hg-fix-tmp.apk
