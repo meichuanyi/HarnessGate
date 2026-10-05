@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'protocol.dart';
 import 'transcript_cache.dart';
@@ -22,7 +24,8 @@ class GateClient {
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;
 
-  final _stateCtrl = StreamController<String>.broadcast(); // idle/connecting/connected/error
+  final _stateCtrl =
+      StreamController<String>.broadcast(); // idle/connecting/connected/error
   Stream<String> get state => _stateCtrl.stream;
 
   /// 会话列表快照（hello/session 消息自动维护）
@@ -83,7 +86,9 @@ class GateClient {
     if (s.isEmpty) return '';
     try {
       final u = Uri.parse(s.contains('://') ? s : 'http://$s');
-      final port = u.hasPort && !((u.scheme == 'http' && u.port == 80) || (u.scheme == 'https' && u.port == 443))
+      final port = u.hasPort &&
+              !((u.scheme == 'http' && u.port == 80) ||
+                  (u.scheme == 'https' && u.port == 443))
           ? ':${u.port}'
           : '';
       return '${u.scheme}://${u.host}$port';
@@ -95,29 +100,42 @@ class GateClient {
   /// WebSocket 地址：http(s) 自动转 ws(s)，已填 ws/wss 的原样保留。
   static String buildWsUrl(String baseUrl, String token) {
     var b = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
-    b = b.replaceFirst(RegExp('^https://'), 'wss://').replaceFirst(RegExp('^http://'), 'ws://');
-    final query = token.trim().isEmpty ? '' : '?token=${Uri.encodeComponent(token.trim())}';
+    b = b
+        .replaceFirst(RegExp('^https://'), 'wss://')
+        .replaceFirst(RegExp('^http://'), 'ws://');
+    final query = token.trim().isEmpty
+        ? ''
+        : '?token=${Uri.encodeComponent(token.trim())}';
     return '$b/ws$query';
   }
 
   /// 会话改动文件的下载链接（http 直链，带 token；改动面板点击下载用）
   String downloadUrl(String sessionId, String path) {
-    final base = _url.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://');
+    final base = _url
+        .replaceFirst('wss://', 'https://')
+        .replaceFirst('ws://', 'http://');
     final q = _token.isEmpty ? '' : '&token=${Uri.encodeComponent(_token)}';
     return '$base/download?session=${Uri.encodeComponent(sessionId)}&path=${Uri.encodeComponent(path)}$q';
   }
 
   /// http(s) 形式的服务地址（APP 更新中转下载用）
-  String get httpBase => _url.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://');
+  String get httpBase =>
+      _url.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://');
 
   /// 带 token 的 query（中转下载鉴权用）
-  String get tokenQuery => _token.isEmpty ? '' : 'token=${Uri.encodeComponent(_token)}';
+  String get tokenQuery =>
+      _token.isEmpty ? '' : 'token=${Uri.encodeComponent(_token)}';
 
   void _doConnect() {
     if (_url.isEmpty) return;
     _stateCtrl.add('connecting');
     try {
-      final ws = WebSocketChannel.connect(Uri.parse(buildWsUrl(_url, _token)));
+      // 连接必须带硬超时：WS 升级被网络中间设备挂起时 pending 永不触发事件，
+      // 没有超时就永远不会自动重试（用户实测：浏览器通、APP 死等的根因）
+      final ws = IOWebSocketChannel.connect(
+        Uri.parse(buildWsUrl(_url, _token)),
+        connectTimeout: const Duration(seconds: 10),
+      );
       _ws = ws;
       ws.stream.listen(
         (data) {
@@ -141,7 +159,7 @@ class GateClient {
         onError: (_) {
           _ws = null;
           _stateCtrl.add('error');
-          _scheduleRetry();
+          _scheduleRetry(); // 4s 后再试——网络恢复瞬间自动接上（含连接超时/握手失败）
         },
       );
     } catch (e) {
