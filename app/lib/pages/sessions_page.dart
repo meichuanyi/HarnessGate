@@ -248,6 +248,7 @@ class _SessionsPageState extends State<SessionsPage> {
               onChanged: (_) => setState(() {}),
             ),
           ),
+          _tagChipsRow(),
           Expanded(
             child: RefreshIndicator(
               onRefresh: () async => widget.client.send(msgList()),
@@ -271,25 +272,35 @@ class _SessionsPageState extends State<SessionsPage> {
         borderRadius: BorderRadius.circular(12),
         onTap: () {
           if (aid != null) {
-            Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(client: widget.client, sessionId: aid)));
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) =>
+                    ChatPage(client: widget.client, sessionId: aid)));
           } else {
             widget.client.send(msgAssistantEnsure());
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在创建助理会话…')));
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('正在创建助理会话…')));
           }
         },
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
             children: [
-              Icon(Icons.auto_awesome, size: 22, color: live ? const Color(0xFF3FB950) : const Color(0xFF5B9CF8)),
+              Icon(Icons.auto_awesome,
+                  size: 22,
+                  color:
+                      live ? const Color(0xFF3FB950) : const Color(0xFF5B9CF8)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('助理', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    const Text('助理',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14.5)),
                     Text(
-                      aid == null ? '点此创建常驻助理（永不回收，带长期记忆）' : (live ? '在线 · 直接说话' : '休息中 · 进入自动唤醒'),
+                      aid == null
+                          ? '点此创建常驻助理（永不回收，带长期记忆）'
+                          : (live ? '在线 · 直接说话' : '休息中 · 进入自动唤醒'),
                       style: TextStyle(fontSize: 11.5, color: Colors.grey[500]),
                     ),
                   ],
@@ -298,6 +309,46 @@ class _SessionsPageState extends State<SessionsPage> {
               const Icon(Icons.chevron_right, size: 20, color: Colors.grey),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 标签快筛：全库标签按出现次数排序，点选=过滤框填入该标签（再点取消）
+  Widget _tagChipsRow() {
+    final counts = <String, int>{};
+    for (final s in widget.client.sessions.values) {
+      for (final t in s.tags) {
+        counts[t] = (counts[t] ?? 0) + 1;
+      }
+    }
+    if (counts.isEmpty) return const SizedBox.shrink();
+    final tags = counts.keys.toList()
+      ..sort((a, b) {
+        final byCount = (counts[b] ?? 0).compareTo(counts[a] ?? 0);
+        return byCount != 0 ? byCount : a.compareTo(b);
+      });
+    final active = _filter.text.trim();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: SizedBox(
+        height: 34,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (final t in tags)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ChoiceChip(
+                  label: Text('$t ${counts[t]}',
+                      style: const TextStyle(fontSize: 11.5)),
+                  selected: active == t,
+                  visualDensity: VisualDensity.compact,
+                  onSelected: (_) =>
+                      setState(() => _filter.text = active == t ? '' : t),
+                ),
+              ),
+          ],
         ),
       ),
     );

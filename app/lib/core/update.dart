@@ -14,18 +14,30 @@ class AppUpdate {
 
   /// Release tag（含 v 前缀，如 v0.3.0）
   final String tag;
+
+  /// APK 资产字节数（本地已缓存同尺寸文件即视为下载完成，跳过重复下载）
+  final int sizeBytes;
+
   /// Release 标题
   final String name;
+
   /// 更新日志（Release body）
   final String notes;
+
   /// APK 下载地址（browser_download_url）
   final Uri apkUrl;
 
-  const AppUpdate({required this.tag, required this.name, required this.notes, required this.apkUrl});
+  const AppUpdate(
+      {required this.tag,
+      required this.name,
+      required this.notes,
+      required this.apkUrl,
+      this.sizeBytes = 0});
 
   /// 检查更新：有新版本返回 update；已是最新/失败/无 APK 时 update 为空，
   /// [manual] = true 时把原因放进 message（弹窗展示），静默检查则全部无声。
-  static Future<({AppUpdate? update, String? message})> check({bool manual = false}) async {
+  static Future<({AppUpdate? update, String? message})> check(
+      {bool manual = false}) async {
     String? current;
     try {
       current = (await PackageInfo.fromPlatform()).version;
@@ -33,17 +45,18 @@ class AppUpdate {
 
     http.Response res;
     try {
-      res = await http
-          .get(
-            Uri.https('api.github.com', '/repos/$repo/releases/latest'),
-            headers: {'Accept': 'application/vnd.github+json'},
-          )
-          .timeout(const Duration(seconds: 15));
+      res = await http.get(
+        Uri.https('api.github.com', '/repos/$repo/releases/latest'),
+        headers: {'Accept': 'application/vnd.github+json'},
+      ).timeout(const Duration(seconds: 15));
     } catch (e) {
       return (update: null, message: manual ? '连不上 GitHub（$e）' : null);
     }
     if (res.statusCode != 200) {
-      return (update: null, message: manual ? 'GitHub API ${res.statusCode}（限流？稍后再试）' : null);
+      return (
+        update: null,
+        message: manual ? 'GitHub API ${res.statusCode}（限流？稍后再试）' : null
+      );
     }
 
     Map<String, dynamic> j;
@@ -58,14 +71,18 @@ class AppUpdate {
     }
     // 找 APK 产物（CI 命名 harnessgate-vX.Y.Z-android.apk）
     Map<String, dynamic>? apk;
-    for (final a in (j['assets'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>()) {
+    for (final a in (j['assets'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()) {
       if ((a['name'] as String? ?? '').endsWith('-android.apk')) {
         apk = a;
         break;
       }
     }
     if (apk == null) {
-      return (update: null, message: manual ? 'Release $tag 没有 Android APK 产物' : null);
+      return (
+        update: null,
+        message: manual ? 'Release $tag 没有 Android APK 产物' : null
+      );
     }
 
     final latest = tag.replaceFirst('v', '');
@@ -78,6 +95,7 @@ class AppUpdate {
         name: j['name'] as String? ?? tag,
         notes: j['body'] as String? ?? '',
         apkUrl: Uri.parse(apk['browser_download_url'] as String),
+        sizeBytes: (apk['size'] as num?)?.toInt() ?? 0,
       ),
       message: null,
     );
@@ -90,6 +108,16 @@ class AppUpdate {
     void Function(int done, int total) onProgress, {
     String? relayBaseUrl,
   }) async {
+    final fileName = 'harnessgate-${u.tag}.apk';
+    // 之前下载过且大小吻合 → 直接复用（点"更新"不再重复下载）
+    final cached = File('${Directory.systemTemp.path}/$fileName');
+    if (u.sizeBytes > 0 &&
+        cached.existsSync() &&
+        cached.lengthSync() == u.sizeBytes) {
+      onProgress(u.sizeBytes, u.sizeBytes);
+      return cached.path;
+    }
+
     final urls = <Uri>[
       if (relayBaseUrl != null && relayBaseUrl.isNotEmpty)
         Uri.parse('$relayBaseUrl/release-apk?tag=${u.tag}'),
@@ -98,7 +126,7 @@ class AppUpdate {
     Object? lastErr;
     for (final url in urls) {
       try {
-        return await _downloadFrom(url, onProgress, fileName: 'harnessgate-${u.tag}.apk');
+        return await _downloadFrom(url, onProgress, fileName: '$fileName.part');
       } catch (e) {
         lastErr = e; // 中转失败（服务器离线/缓存未就绪）→ 试下一个源
       }
@@ -106,15 +134,20 @@ class AppUpdate {
     throw lastErr ?? '下载失败';
   }
 
-  static Future<String> _downloadFrom(Uri url, void Function(int, int) onProgress, {required String fileName}) async {
+  static Future<String> _downloadFrom(
+      Uri url, void Function(int, int) onProgress,
+      {required String fileName}) async {
     final client = http.Client();
     try {
-      final res = await client.send(http.Request('GET', url)).timeout(const Duration(minutes: 5));
+      final res = await client
+          .send(http.Request('GET', url))
+          .timeout(const Duration(minutes: 10));
       if (res.statusCode != 200) {
         throw HttpException('HTTP ${res.statusCode}');
       }
       final total = res.contentLength ?? 0;
-      final file = File('${Directory.systemTemp.path}/$fileName');
+      // 写 .part 成功后改名——中断的半截不会被误当成完整安装包
+      final file = File('${Directory.systemTemp.path}/$fileName.part');
       final sink = file.openWrite();
       var done = 0;
       await for (final chunk in res.stream) {
@@ -124,7 +157,9 @@ class AppUpdate {
       }
       await sink.flush();
       await sink.close();
-      return file.path;
+      final finalPath = '${Directory.systemTemp.path}/$fileName';
+      file.renameSync(finalPath);
+      return finalPath;
     } finally {
       client.close();
     }
@@ -133,7 +168,8 @@ class AppUpdate {
   /// 调起系统安装器（Android 8+ 首次需要授予「安装未知应用」权限，系统会引导）。
   /// 返回 ok=false 时通常是未授权，UI 应给出重试入口（授权回来后点重试即可，不必重新下载）。
   static Future<({bool ok, String message})> install(String apkPath) async {
-    final r = await OpenFilex.open(apkPath, type: 'application/vnd.android.package-archive');
+    final r = await OpenFilex.open(apkPath,
+        type: 'application/vnd.android.package-archive');
     return (ok: r.type == ResultType.done, message: r.message);
   }
 
@@ -144,6 +180,7 @@ class AppUpdate {
       final nums = v.split(RegExp(r'[+/-]'))[0].split('.');
       return [for (var i = 0; i < 3; i++) i < nums.length ? num(nums[i]) : 0];
     }
+
     final pa = parts(a);
     final pb = parts(b);
     for (var i = 0; i < 3; i++) {
