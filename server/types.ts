@@ -258,7 +258,13 @@ export type ClientMsg =
   /** MCP 服务器管理：list 拉取；save 带 id 更新/无 id 新建；delete 按 id 删 */
   | { type: "mcp-list" }
   | { type: "mcp-save"; server: Record<string, unknown> }
-  | { type: "mcp-delete"; id: string };
+  | { type: "mcp-delete"; id: string }
+  /** 技能管理：snapshot 拉库+挂载；save 写库；delete 进回收站；mount 挂/卸软链；read 读全文 */
+  | { type: "skills"; reqId?: string }
+  | { type: "skills-save"; reqId?: string; skill: { name: string; description: string; body: string; renameFrom?: string } }
+  | { type: "skills-delete"; reqId?: string; name: string }
+  | { type: "skills-mount"; reqId?: string; name: string; harnessId: string; on: boolean }
+  | { type: "skills-read"; reqId: string; name: string; nativeHarness?: string };
 
 export type ServerMsg =
   | {
@@ -276,8 +282,17 @@ export type ServerMsg =
       settings?: Record<string, unknown>;
       /** 受管 MCP 服务器（新建会话时选择注入哪些） */
       mcpServers?: Array<Record<string, unknown>>;
+      /** 技能快照：主库 + 各 harness 挂载情况 */
+      skills?: { library: Array<Record<string, unknown>>; mounts: Array<Record<string, unknown>> };
     }
   | { type: "mcp"; servers: Array<Record<string, unknown>> }
+  | {
+      type: "skills";
+      reqId?: string;
+      library: Array<Record<string, unknown>>;
+      mounts: Array<Record<string, unknown>>;
+    }
+  | { type: "skills-content"; reqId: string; name: string; content: string }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: unknown }
   | { type: "turn_end"; sessionId: string; stopReason: string }

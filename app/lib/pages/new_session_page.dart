@@ -4,6 +4,7 @@ import '../core/client.dart';
 import '../core/protocol.dart';
 import 'chat_page.dart';
 import 'mcp_page.dart';
+import 'skills_page.dart';
 
 /// 新建会话：选 harness → 填工作目录（可勾选 git worktree 隔离）→ 创建后自动进入对话。
 class NewSessionPage extends StatefulWidget {
@@ -219,6 +220,14 @@ class _NewSessionPageState extends State<NewSessionPage> {
         children: [
           const Text('MCP 服务器', style: TextStyle(fontWeight: FontWeight.w600)),
           const Spacer(),
+          IconButton(
+            tooltip: '技能库（挂载/卸载）',
+            icon: const Icon(Icons.extension_outlined, size: 18),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => SkillsPage(client: widget.client)),
+            ).then((_) => setState(() {})),
+          ),
           IconButton(
             tooltip: '管理 MCP 服务器',
             icon: const Icon(Icons.settings_outlined, size: 18),

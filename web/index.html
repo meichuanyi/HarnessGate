@@ -1118,6 +1118,17 @@ function handleServer(msg) {
       renderSetPanel();
       renderNewMcpRow();
       break;
+    case "skills": /* 技能快照：主库 + 各 harness 挂载（设置抽屉用） */
+      skillsLibrary = msg.library || [];
+      skillsMounts = msg.mounts || [];
+      renderSetPanel();
+      break;
+    case "skills-content": /* 编辑表单读全文的回填 */
+      if (msg.reqId && msg.reqId === pendingSkillRead && $("skillForm") && !$("skillForm").hidden) {
+        $("skillBody").value = (msg.content || "").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim();
+        pendingSkillRead = null;
+      }
+      break;
     case "status":
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
         const isNewSession = !sessions.has(msg.session.id);
@@ -3167,6 +3178,8 @@ function renderVerPanel() {
    ===================================================================== */
 let appSettings = null;   // hello/settings 消息维护
 let mcpServers = [];      // 受管 MCP 服务器（hello/mcp 消息维护）
+let skillsLibrary = [];   // 技能主库（hello/skills 消息维护）
+let skillsMounts = [];    // 各 harness 挂载视图（同上）
 
 /** 新建会话区的 MCP 勾选行：默认勾 enabled 的；没配置时整行隐藏 */
 function renderNewMcpRow() {
@@ -3246,7 +3259,35 @@ function renderSetPanel() {
         </div>
       </div>
     </div>
-    <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>`;
+    <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>
+    <div class="wsRow" style="margin-top:10px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">技能（skills）</div>
+      <div class="meta2" style="margin:0 0 6px">装在库里不占 token；挂载后名称+描述进入 harness 系统提示词（≈值）。改动对新会话生效。</div>
+      ${(skillsMounts || []).map((m) => `
+        <div style="font-size:11.5px;opacity:.75;margin:2px 0">${esc(m.harnessId)}：挂载 ${m.skills.filter((s) => !s.native).length} · 原生 ${m.skills.filter((s) => s.native).length} 个 · 常驻 ≈${m.totalTokens} token${m.totalTokens > 1500 ? ' ⚠' : ""}</div>`).join("")}
+      <div id="skillList">${(skillsLibrary || []).map((s) => `
+        <div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px dashed var(--bd,#333);font-size:12.5px">
+          <code style="font-size:12px">${esc(s.name)}</code>
+          <span style="opacity:.45;font-size:10.5px">≈${s.tokens}t</span>
+          <span style="opacity:.55;font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.description || "")}</span>
+          ${(skillsMounts || []).map((m) => {
+            const on = (s.mountedOn || []).includes(m.harnessId);
+            return `<button class="mini ${on ? "primary" : "ghost"}" data-skill-toggle="${esc(s.name)}|${esc(m.harnessId)}|${on ? 0 : 1}" title="${on ? "卸载" : "挂载"}（省 token 就靠这个）">${esc(m.harnessId)}${on ? " ✓" : ""}</button>`;
+          }).join("")}
+          <button class="mini ghost" data-skill-edit="${esc(s.name)}">编辑</button>
+          <button class="mini ghost" data-skill-del="${esc(s.name)}">删</button>
+        </div>`).join("") || '<div style="opacity:.55;font-size:12px;padding:4px 0">主库为空</div>'}</div>
+      <button class="mini" id="skillAdd" style="margin-top:8px">+ 新建</button>
+      <div id="skillForm" hidden style="margin-top:8px;display:grid;gap:6px">
+        <input type="text" id="skillName" placeholder="名称（字母/数字/._-）" />
+        <textarea id="skillDesc" rows="2" placeholder="描述（常驻系统提示词，越短越省 token）"></textarea>
+        <textarea id="skillBody" rows="5" placeholder="正文（SKILL.md 主体，被使用时才进入上下文）"></textarea>
+        <div style="display:flex;gap:6px">
+          <button class="mini primary" id="skillFormSave">保存到主库</button>
+          <button class="mini ghost" id="skillFormCancel">取消</button>
+        </div>
+      </div>
+    </div>`;
   // 模型下拉跟随所选 harness（探活时收集的可切换模型）
   const fillModels = () => {
     const hid = $("setTagger").value;
@@ -3276,7 +3317,59 @@ function renderSetPanel() {
     showToast("设置已保存（即时生效）", 2500);
   };
   wireMcpPanel();
+  wireSkillsPanel();
 }
+
+/* 设置抽屉里的技能块：主库增删改 + 按 harness 挂载/卸载（软链，服务端 skills.ts） */
+function wireSkillsPanel() {
+  let editingName = null;
+  const form = $("skillForm");
+  const fillForm = (s) => {
+    editingName = s?.name ?? null;
+    $("skillName").value = s?.name || "";
+    $("skillDesc").value = s?.description || "";
+    $("skillBody").value = "";
+    form.hidden = false;
+    if (s) {
+      // 读全文剥 frontmatter 填正文
+      const reqId = `sk-${Date.now()}`;
+      pendingSkillRead = reqId;
+      send({ type: "skills-read", reqId, name: s.name });
+    }
+  };
+  $("skillAdd").onclick = () => fillForm(null);
+  $("skillFormCancel").onclick = () => { form.hidden = true; editingName = null; };
+  $("skillFormSave").onclick = () => {
+    send({
+      type: "skills-save",
+      skill: {
+        name: $("skillName").value.trim(),
+        description: $("skillDesc").value.trim(),
+        body: $("skillBody").value,
+        ...(editingName && editingName !== $("skillName").value.trim() ? { renameFrom: editingName } : {}),
+      },
+    });
+    form.hidden = true;
+    editingName = null;
+  };
+  $("skillList").querySelectorAll("[data-skill-toggle]").forEach((b) => {
+    b.onclick = () => {
+      const [name, harnessId, on] = b.dataset.skillToggle.split("|");
+      send({ type: "skills-mount", name, harnessId, on: on === "1" });
+    };
+  });
+  $("skillList").querySelectorAll("[data-skill-edit]").forEach((b) => {
+    b.onclick = () => fillForm(skillsLibrary.find((s) => s.name === b.dataset.skillEdit));
+  });
+  $("skillList").querySelectorAll("[data-skill-del]").forEach((b) => {
+    b.onclick = () => {
+      const name = b.dataset.skillDel;
+      if (confirm(`删除技能 ${name}？（先从所有 harness 卸载，文件进回收站）`)) send({ type: "skills-delete", name });
+    };
+  });
+}
+
+let pendingSkillRead = null;
 
 /* 设置抽屉里的 MCP 管理块：增删改 + 默认勾选切换（服务端 mcp.json） */
 function wireMcpPanel() {

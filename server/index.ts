@@ -13,6 +13,7 @@ import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver } from "./session.ts";
 import { McpStore } from "./mcp.ts";
+import { SkillsStore } from "./skills.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
@@ -200,6 +201,13 @@ registerConfigFallback((harnessId) => currentProbe()[harnessId]?.configs);
 // 受管 MCP 服务器（~/.harnessgate/mcp.json）：会话启动/恢复时按所选 id 解析成 ACP 线格式
 const mcpStore = new McpStore(join(DATA_DIR, "mcp.json"));
 registerMcpResolver((ids) => mcpStore.wire(ids));
+
+// 技能管理：主库 + 软链挂载（「装在库里」不占 token，「挂载中」才占）
+const skillsStore = new SkillsStore(DATA_DIR);
+const skillsSnapshot = () => skillsStore.snapshot(registry.harnesses.map((h) => ({ id: h.id })));
+function broadcastSkills(reqId?: string) {
+  broadcast({ type: "skills", reqId, ...skillsSnapshot() } satisfies ServerMsg);
+}
 
 function mtimeOf(file: string): number {
   try {
@@ -735,6 +743,7 @@ function helloPayload(): ServerMsg {
     commit: GIT_COMMIT,
     harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
     mcpServers: mcpStore.list(),
+    skills: skillsSnapshot(),
     sessions: sessionList(),
     defaultCwd,
     rooms: rooms.list(),
@@ -784,6 +793,47 @@ wss.on("connection", (ws, req) => {
             break;
           }
           broadcast({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg);
+          break;
+        }
+
+        case "skills": {
+          ws.send(JSON.stringify({ type: "skills", reqId: msg.reqId, ...skillsSnapshot() } satisfies ServerMsg));
+          break;
+        }
+        case "skills-save": {
+          const r = skillsStore.save(msg.skill);
+          if ("error" in r) {
+            ws.send(JSON.stringify({ type: "error", message: `skill 保存失败: ${r.error}` } satisfies ServerMsg));
+            break;
+          }
+          broadcastSkills(msg.reqId);
+          break;
+        }
+        case "skills-delete": {
+          const r = skillsStore.remove(String(msg.name));
+          if ("error" in r) {
+            ws.send(JSON.stringify({ type: "error", message: `skill 删除失败: ${r.error}` } satisfies ServerMsg));
+            break;
+          }
+          broadcastSkills(msg.reqId);
+          break;
+        }
+        case "skills-mount": {
+          const r = skillsStore.setMount(String(msg.name), String(msg.harnessId), msg.on !== false);
+          if ("error" in r) {
+            ws.send(JSON.stringify({ type: "error", message: `挂载操作失败: ${r.error}` } satisfies ServerMsg));
+            break;
+          }
+          broadcastSkills(msg.reqId);
+          break;
+        }
+        case "skills-read": {
+          const r = skillsStore.read(String(msg.name), { nativeHarness: msg.nativeHarness ? String(msg.nativeHarness) : undefined });
+          if (typeof r !== "string") {
+            ws.send(JSON.stringify({ type: "error", message: r.error } satisfies ServerMsg));
+            break;
+          }
+          ws.send(JSON.stringify({ type: "skills-content", reqId: msg.reqId, name: String(msg.name), content: r } satisfies ServerMsg));
           break;
         }
 

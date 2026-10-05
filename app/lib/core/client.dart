@@ -61,6 +61,12 @@ class GateClient {
   final _mcpCtrl = StreamController<void>.broadcast();
   Stream<void> get mcpChanged => _mcpCtrl.stream;
 
+  /// 技能快照（hello/skills 消息维护）：主库 + 各 harness 挂载视图
+  List<SkillInfo> skillLibrary = [];
+  List<SkillMountInfo> skillMounts = [];
+  final _skillsCtrl = StreamController<void>.broadcast();
+  Stream<void> get skillsChanged => _skillsCtrl.stream;
+
   bool get connected => _ws != null;
 
   void connect(String baseUrl, String token) {
@@ -168,6 +174,18 @@ class GateClient {
           .map(McpServerInfo.fromJson)
           .toList();
       _mcpCtrl.add(null);
+      final sk = m['skills'];
+      if (sk is Map<String, dynamic>) {
+        skillLibrary = ((sk['library'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(SkillInfo.fromJson)
+            .toList();
+        skillMounts = ((sk['mounts'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(SkillMountInfo.fromJson)
+            .toList();
+        _skillsCtrl.add(null);
+      }
       serverVersion = m['version'] as String? ?? '';
       serverCommit = m['commit'] as String? ?? '';
       rooms
@@ -200,6 +218,16 @@ class GateClient {
             .whereType<Map<String, dynamic>>()
             .map((j) => MapEntry((j)['id'] as String, RoomInfo.fromJson(j))));
       _roomsCtrl.add(null);
+    } else if (m['type'] == 'skills' && m['library'] is List) {
+      skillLibrary = ((m['library'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(SkillInfo.fromJson)
+          .toList();
+      skillMounts = ((m['mounts'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(SkillMountInfo.fromJson)
+          .toList();
+      _skillsCtrl.add(null);
     } else if (m['type'] == 'mcp' && m['servers'] is List) {
       mcpServers = (m['servers'] as List<dynamic>)
           .whereType<Map<String, dynamic>>()
