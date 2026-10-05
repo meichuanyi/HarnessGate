@@ -259,6 +259,50 @@ class _SessionsPageState extends State<SessionsPage> {
     );
   }
 
+  /// 常驻助理入口：hello 的 assistantSessionId 驱动；无则一键创建（assistant-ensure）
+  Widget _assistantHeader() {
+    final aid = widget.client.assistantSessionId;
+    final s = aid != null ? widget.client.sessions[aid] : null;
+    final live = s?.live ?? false;
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      color: const Color(0xFF16202E),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          if (aid != null) {
+            Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(client: widget.client, sessionId: aid)));
+          } else {
+            widget.client.send(msgAssistantEnsure());
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在创建助理会话…')));
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 22, color: live ? const Color(0xFF3FB950) : const Color(0xFF5B9CF8)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('助理', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                    Text(
+                      aid == null ? '点此创建常驻助理（永不回收，带长期记忆）' : (live ? '在线 · 直接说话' : '休息中 · 进入自动唤醒'),
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey[500]),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, size: 20, color: Colors.grey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildGroupedList() {
     final all = widget.client.sessions.values
         .where((s) => !_starredOnly || (s.starred ?? false))
@@ -267,6 +311,7 @@ class _SessionsPageState extends State<SessionsPage> {
         filter: _filter.text, collapsed: _collapsed);
     if (groups.isEmpty) {
       return ListView(children: [
+        _assistantHeader(),
         const SizedBox(height: 140),
         Center(
             child: Text(
@@ -287,9 +332,10 @@ class _SessionsPageState extends State<SessionsPage> {
     }
     return ListView.builder(
       padding: const EdgeInsets.only(bottom: 88),
-      itemCount: items.length,
+      itemCount: items.length + 1,
       itemBuilder: (_, i) {
-        final (type, data) = items[i];
+        if (i == 0) return _assistantHeader();
+        final (type, data) = items[i - 1];
         if (type == 0) {
           final g = data as SessionGroup;
           return InkWell(

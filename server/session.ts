@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import type { Readable as NodeReadable, Writable as NodeWritable } from "node:stream";
@@ -190,6 +191,10 @@ export class HarnessSession {
   starred = false;
   /** 内部工具会话（自动打标等）：不进列表、不广播、不参与回收 */
   utility = false;
+  /** 常驻助理会话：豁免空闲回收（armIdleStopWatch 直接跳过） */
+  assistant = false;
+  /** 本进程内记忆是否已注入（每次拉起只带一次，避免每条消息重复） */
+  private memoryInjected = false;
   /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
   tags: string[] = [];
   /** 用户手动编辑过标签：自动打标永不覆盖 */
@@ -270,6 +275,7 @@ export class HarnessSession {
     this.roomId = record.roomId;
     this.starred = Boolean(record.starred);
     this.utility = Boolean(record.utility);
+    this.assistant = Boolean(record.assistant);
     this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
     this.tagsManual = Boolean(record.tagsManual);
     this.semanticTagged = Boolean(record.semanticTagged);
@@ -326,6 +332,7 @@ export class HarnessSession {
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
       tagsManual: this.tagsManual || undefined,
+      assistant: this.assistant || undefined,
       semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,
     };
@@ -379,6 +386,7 @@ export class HarnessSession {
       roomId: this.roomId,
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
+      assistant: this.assistant || undefined,
       promptAudio: this.promptAudioSupported,
       handoffFrom: this.handoffFrom,
     };
@@ -876,6 +884,21 @@ export class HarnessSession {
         }
       }
       if (!blocks.length) blocks.push({ type: "text", text: "" });
+      // 常驻助理的记忆注入：本进程首条消息前带上 MEMORY.md + 记忆更新机制说明
+      if (this.assistant && !this.memoryInjected) {
+        this.memoryInjected = true;
+        const memPath = join(homedir(), ".harnessgate", "MEMORY.md");
+        let mem = "";
+        try {
+          mem = existsSync(memPath) ? readFileSync(memPath, "utf8").trim() : "";
+        } catch {}
+        const header =
+          (mem ? `【长期记忆】\n${mem}\n\n` : "") +
+          "【记忆机制】把需要长期记住的信息（用户偏好、事实、约定）写入 ~/.harnessgate/MEMORY.md（追加或更新条目，保持精炼），下次对话会自动带上。\n\n";
+        blocks[0] = blocks[0] && blocks[0].type === "text"
+          ? { type: "text", text: header + (blocks[0].text ?? "") }
+          : { type: "text", text: header };
+      }
       const t0 = Date.now();
       const req = this.ctx.request(acp.methods.agent.session.prompt, {
         sessionId: this.acpSessionId,
@@ -1015,6 +1038,7 @@ export class HarnessSession {
    *  注：挂死回合由各流程的静默看门狗（idle-timeout）负责，这里不做回合总时长上限——长任务合法。 */
   private armIdleStopWatch(): void {
     this.clearIdleStopWatch();
+    if (this.assistant) return;   // 常驻助理：永不空闲回收
     const min = Number(process.env.HG_IDLE_STOP_MIN ?? 30);
     if (!min || min <= 0) return;   // 0 = 不限制
     this.idleStopTimer = setTimeout(() => {

@@ -734,10 +734,18 @@ autoTagger = new AutoTagger(
   },
 );
 
+/** 助理会话 id：live 里找，退到 store（同一时刻只有一个 assistant 会话） */
+function findAssistantSessionId(): string | null {
+  for (const s of live.values()) if (s.assistant) return s.id;
+  const rec = store.all().find((r) => r.assistant);
+  return rec?.id ?? null;
+}
+
 function helloPayload(): ServerMsg {
   return {
     type: "hello",
     settings: settingsStore.get() as Record<string, unknown>,
+    assistantSessionId: findAssistantSessionId(),
     providers: history.availableProviders(),
     version: VERSION,
     commit: GIT_COMMIT,
@@ -837,6 +845,33 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "assistant-ensure": {
+          // 幂等：已有助理会话则只拉活
+          let asid = findAssistantSessionId();
+          if (asid) {
+            reviveSession(asid);
+            ws.send(JSON.stringify({ type: "session", session: (live.get(asid) ?? live.values().next().value as HarnessSession).info() } satisfies ServerMsg));
+            break;
+          }
+          const hid = msg.harnessId || settingsStore.get().taggerHarnessId || registry.harnesses.find((h) => availability(h, trust, currentProbe()).available)?.id;
+          const spec = hid ? specOf(hid) : undefined;
+          if (!spec) {
+            ws.send(JSON.stringify({ type: "error", message: "没有可用 harness，无法创建助理会话" } satisfies ServerMsg));
+            break;
+          }
+          const record = HarnessSession.newRecord(spec, join(DATA_DIR, "assistant"));
+          record.assistant = true;
+          record.title = "助理";
+          record.tags = ["助理"];
+          const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
+          live.set(session.id, session);
+          store.upsert(session.record());
+          audit.append({ session: session.id, harness: spec.id, op: "assistant.create" });
+          broadcast({ type: "session", session: session.info() });
+          void session.start("new");
+          break;
+        }
+
         case "create": {
           const spec = specOf(msg.harnessId);
           void msg.vars;
@@ -868,6 +903,7 @@ wss.on("connection", (ws, req) => {
               ws.send(JSON.stringify({ type: "error", message: `创建 worktree 失败，已退回原目录: ${message}` } satisfies ServerMsg));
             }
           }
+          if (msg.assistant) record.assistant = true;
           autoTagger?.applyProjectTags(record);   // 必须在构造实例前改 record（实例构造时快照 tags）
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           if (msg.vars) session.vars = msg.vars;

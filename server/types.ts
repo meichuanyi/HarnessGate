@@ -68,6 +68,8 @@ export type SessionInfo = {
   tags?: string[];
   /** 内部工具会话（自动打标等），客户端应忽略 */
   utility?: boolean;
+  /** 常驻助理会话（首页直达、永不回收） */
+  assistant?: boolean;
   /** 该会话的 harness 是否声明支持音频 prompt（promptCapabilities.audio）——决定通话能否「直传音频」 */
   promptAudio?: boolean;
   /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
@@ -154,7 +156,9 @@ export type HarnessAvailability = {
 };
 
 export type ClientMsg =
-  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string>; mcpServerIds?: string[] }
+  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string>; mcpServerIds?: string[]; assistant?: boolean }
+  /** 确保助理会话存在（无则用默认 harness 创建）；hello 里带 assistantSessionId */
+  | { type: "assistant-ensure"; harnessId?: string }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
   | { type: "config"; sessionId: string; configId: string; value: string }
@@ -284,6 +288,8 @@ export type ServerMsg =
       mcpServers?: Array<Record<string, unknown>>;
       /** 技能快照：主库 + 各 harness 挂载情况 */
       skills?: { library: Array<Record<string, unknown>>; mounts: Array<Record<string, unknown>> };
+      /** 常驻助理会话 id（没有则 null；客户端据此显示助理入口） */
+      assistantSessionId?: string | null;
     }
   | { type: "mcp"; servers: Array<Record<string, unknown>> }
   | {

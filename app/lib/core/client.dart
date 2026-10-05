@@ -40,6 +40,9 @@ class GateClient {
   String serverVersion = '';
   String serverCommit = '';
 
+  /// 常驻助理会话 id（hello 下发；null = 尚未创建）
+  String? assistantSessionId;
+
   /// 用户当前正在查看的会话 id（ChatPage 维护；通知模块据此跳过同屏打扰）
   String? viewingSessionId;
 
@@ -205,6 +208,7 @@ class GateClient {
         _skillsCtrl.add(null);
       }
       serverVersion = m['version'] as String? ?? '';
+      assistantSessionId = m['assistantSessionId'] as String?;
       serverCommit = m['commit'] as String? ?? '';
       rooms
         ..clear()

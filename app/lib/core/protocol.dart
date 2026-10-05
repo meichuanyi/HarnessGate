@@ -69,6 +69,7 @@ class SessionInfo {
   final bool? inTurn;
   final bool? starred;
   final List<String> tags;
+  final bool assistant;
 
   /// 该 harness 是否支持音频 prompt（通话「直传音频」模式的前提）
   final bool? promptAudio;
@@ -92,6 +93,7 @@ class SessionInfo {
     this.inTurn,
     this.starred,
     this.tags = const [],
+    this.assistant = false,
     this.promptAudio,
     this.title,
     this.autoApprove,
@@ -115,6 +117,7 @@ class SessionInfo {
         starred: j['starred'] as bool?,
         tags:
             ((j['tags'] as List<dynamic>?) ?? []).whereType<String>().toList(),
+        assistant: j['assistant'] as bool? ?? false,
         promptAudio: j['promptAudio'] as bool?,
         title: j['title'] as String?,
         autoApprove: j['autoApprove'] as String?,
@@ -153,6 +156,7 @@ class SessionInfo {
         harnessLabel: harnessLabel,
         cwd: cwd,
         tags: tags ?? this.tags,
+        assistant: assistant,
         status: status ?? this.status,
         live: live ?? this.live,
         resumable: resumable,
@@ -479,6 +483,9 @@ Map<String, dynamic> msgSessionDetail(String sessionId) =>
 /// 停止圆桌房间
 Map<String, dynamic> msgRoomStop(String roomId) =>
     {'type': 'room-stop', 'roomId': roomId};
+
+/// 确保助理会话存在（无则服务端用默认 harness 创建）
+Map<String, dynamic> msgAssistantEnsure() => {'type': 'assistant-ensure'};
 
 /// 设置标签（整体替换；空数组=清空）
 Map<String, dynamic> msgSetTags(String sessionId, List<String> tags) =>
