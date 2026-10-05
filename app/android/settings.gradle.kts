@@ -11,10 +11,14 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        // 默认源在部分网络下不可达，改用阿里云镜像
+        // 阿里云镜像优先（国内快），但镜像会 502——尾部保留官方源兜底，
+        // 并 exclusiveContent 免除（Gradle 对 502 的处理是"禁用该仓库"而非换下一个）
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
         maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 

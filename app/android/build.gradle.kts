@@ -1,9 +1,10 @@
 allprojects {
     repositories {
-        // 默认源在部分网络下不可达，改用阿里云镜像
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
         maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        google()
+        mavenCentral()
     }
 }
 
