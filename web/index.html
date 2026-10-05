@@ -1107,6 +1107,7 @@ function handleServer(msg) {
       serverVersion = msg.version || "";
       serverCommit = msg.commit || "";
       appSettings = msg.settings || null;
+      assistantSessionId = msg.assistantSessionId || null;
       mcpServers = msg.mcpServers || [];
       { const vb = $("verBtn"); if (vb) vb.textContent = serverVersion ? `v${serverVersion}` : "v?"; }
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
@@ -1133,6 +1134,11 @@ function handleServer(msg) {
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
         const isNewSession = !sessions.has(msg.session.id);
         sessions.set(msg.session.id, msg.session);
+        if (msg.session.assistant && pendingAssistantCreate) {
+          pendingAssistantCreate = false;
+          assistantSessionId = msg.session.id;
+          openSession(msg.session.id);   // 助理创建完成：直接进入
+        }
         // 模型列表按 harness 缓存：接续对话框在探活数据缺位时的兜底来源
         const mc = (msg.session.configOptions || []).find((o) => o.category === "model" && o.options?.length);
         if (mc) { try { localStorage.setItem("hg_models_" + msg.session.harnessId, JSON.stringify(mc.options)); } catch {} }
@@ -1455,6 +1461,16 @@ function renderTree() {
   const filter = state.filter;
   let html = "";
 
+  const asid = assistantSessionId;
+  const asst = asid ? sessions.get(asid) : null;
+  html += `
+    <div class="hNode">
+      <div class="hRow" data-asst="1">
+        <span class="dot ${asst?.live ? "on" : ""}"></span>
+        <span class="nm">✨ 助理</span>
+        <span class="ct">${asid ? (asst?.live ? "在线" : "唤醒") : "创建"}</span>
+      </div>
+    </div>`;
   for (const h of harnesses.values()) {
     const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
     list.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
@@ -1483,6 +1499,7 @@ function renderTree() {
               return `
                 <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}">
                   <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
+                  ${s.assistant ? '<span title="常驻助理" style="font-size:11px">✨</span>' : ""}
                   ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
                   <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
                 </div>`;
@@ -1494,6 +1511,11 @@ function renderTree() {
 
   tree.querySelectorAll(".hRow").forEach((el) => {
     el.onclick = (e) => {
+      if (el.dataset.asst) {
+        if (assistantSessionId) openSession(assistantSessionId);
+        else { send({ type: "assistant-ensure" }); pendingAssistantCreate = true; }
+        return;
+      }
       if (e.target.dataset.toggle) {
         const id = e.target.dataset.toggle;
         if (collapsedHarnesses.has(id)) collapsedHarnesses.delete(id);
@@ -1631,7 +1653,7 @@ function renderSessionList() {
         <div class="row" data-sid="${s.id}">
           ${pillOf(s, STATUS)}
           <div class="main">
-            <div class="t1">${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span> ' : ""}<b>${esc(s.title || "(无标题)")}</b>${(s.tags || []).map((t) => ` <span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}</div>
+            <div class="t1">${s.assistant ? '<span title="常驻助理" style="font-size:11px">✨</span> ' : ""}${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span> ' : ""}<b>${esc(s.title || "(无标题)")}</b>${(s.tags || []).map((t) => ` <span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}</div>
             <div class="t2">#${s.id} · ${esc(s.cwd)} · ${new Date(s.lastActiveAt || s.createdAt).toLocaleString()}</div>
           </div>
           <div class="acts">
@@ -3177,6 +3199,8 @@ function renderVerPanel() {
    设置抽屉（运行时配置：自动标签）
    ===================================================================== */
 let appSettings = null;   // hello/settings 消息维护
+let assistantSessionId = null;   // 常驻助理会话 id（hello 下发）
+let pendingAssistantCreate = false;
 let mcpServers = [];      // 受管 MCP 服务器（hello/mcp 消息维护）
 let skillsLibrary = [];   // 技能主库（hello/skills 消息维护）
 let skillsMounts = [];    // 各 harness 挂载视图（同上）
