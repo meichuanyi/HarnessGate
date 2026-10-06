@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'protocol.dart';
+import 'update.dart';
 import 'transcript_cache.dart';
 import 'voice.dart';
 
@@ -45,6 +46,9 @@ class GateClient {
 
   /// 半开死链检测：20s 一发 ping，45s 无任何下行数据（pong 也是数据）即强制重连
   Timer? _heartbeat;
+
+  /// 服务端是否支持心跳（hello 版本门槛判定）
+  bool _heartbeatSupported = false;
   DateTime _lastReceived = DateTime.now();
 
   /// 断线期间待发消息（重连 hello 后补发；上限 50 防爆）
@@ -221,6 +225,12 @@ class GateClient {
       serverVersion = m['version'] as String? ?? '';
       assistantSessionId = m['assistantSessionId'] as String?;
 
+      // 心跳需要服务端 pong 支持（≥0.6.25）；旧服务端会对 ping 回"未知消息类型"错误，
+      // 所以低版本服务端直接禁用心跳（宁缺死链检测，不刷错误）
+      _heartbeatSupported = serverVersion.isEmpty
+          ? false
+          : AppUpdate.compareVersions(serverVersion, '0.6.25') >= 0;
+
       // 重连后补发断线期间的消息（hello 之后发，服务端已就绪）
       if (_outbox.isNotEmpty) {
         for (final om in _outbox.take(50)) {
@@ -309,7 +319,7 @@ class GateClient {
     _heartbeat?.cancel();
     _lastReceived = DateTime.now();
     _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (_ws == null) return;
+      if (_ws == null || !_heartbeatSupported) return;
       final silent = DateTime.now().difference(_lastReceived);
       if (silent.inSeconds > 45) {
         try {
