@@ -1214,7 +1214,7 @@ class _ChatPageState extends State<ChatPage> {
               margin: const EdgeInsets.only(left: 48),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(color: const Color(0xFF1F2733), borderRadius: BorderRadius.circular(10)),
-              child: Text(e.text ?? '', style: const TextStyle(fontSize: 14)),
+              child: SelectableText(e.text ?? '', style: const TextStyle(fontSize: 14)),
             ),
           ),
         );
@@ -1279,7 +1279,7 @@ class _ChatPageState extends State<ChatPage> {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 260),
                     child: SingleChildScrollView(
-                      child: Text(e.text ?? '', style: TextStyle(fontSize: 12.5, color: Colors.grey[400])),
+                      child: SelectableText(e.text ?? '', style: TextStyle(fontSize: 12.5, color: Colors.grey[400])),
                     ),
                   ),
                 ],
@@ -1298,7 +1298,7 @@ class _ChatPageState extends State<ChatPage> {
               children: [
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(e.text ?? '', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                  child: SelectableText(e.text ?? '', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
                 ),
               ],
             ),
@@ -1390,11 +1390,11 @@ class _ChatPageState extends State<ChatPage> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0xFFF85149).withValues(alpha: 0.5)),
             ),
-            child: Text('✕ ${e.message ?? ''}', style: const TextStyle(fontSize: 12.5, color: Color(0xFFF85149))),
+            child: SelectableText('✕ ${e.message ?? ''}', style: const TextStyle(fontSize: 12.5, color: Color(0xFFF85149))),
           ),
         );
       default:
-        return wrap(Padding(padding: const EdgeInsets.only(bottom: 6), child: Text(e.text ?? '', style: TextStyle(fontSize: 11.5, color: Colors.grey[600]))));
+        return wrap(Padding(padding: const EdgeInsets.only(bottom: 6), child: SelectableText(e.text ?? '', style: TextStyle(fontSize: 11.5, color: Colors.grey[600]))));
     }
   }
 }
