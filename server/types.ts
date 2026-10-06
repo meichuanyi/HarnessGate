@@ -173,6 +173,8 @@ export type ClientMsg =
   | { type: "set-tags"; sessionId: string; tags: string[] }
   | { type: "settings-get" }
   | { type: "settings-set"; patch: Record<string, unknown> }
+  /** 清理 harness 本地存储的工具会话（无 ids = 扫描预览；带 ids = 事务级联删除） */
+  | { type: "utility-cleanup"; ids?: string[] }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
   /** 设置单会话自动决策档位（off=人工，readonly=只读自动，all=全自动；危险操作永远人工） */
@@ -409,5 +411,7 @@ export type ServerMsg =
   | { type: "pong" }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
   | { type: "settings"; settings: Record<string, unknown> }
+  /** utility-cleanup 的回复：各源的扫描/删除结果 */
+  | { type: "utility-cleanup-report"; reports: Array<{ id: string; label: string; ok: boolean; found: number; deleted: number; candidates?: Array<{ sessionId: string; title: string; path: string; reason: string }>; error?: string }> }
   | { type: "log"; sessionId: string; line: string }
   | { type: "error"; sessionId?: string; message: string };

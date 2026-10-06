@@ -1307,6 +1307,24 @@ function handleServer(msg) {
       appSettings = msg.settings || appSettings;
       renderSetPanel();
       break;
+    case "utility-cleanup-report": {
+      const box = $("cleanupList");
+      if (!box) break;
+      $("cleanupScan").textContent = "扫描预览";
+      $("cleanupRun").disabled = false;
+      const items = (msg.reports || []).flatMap((r) => (r.candidates || []).map((c) => ({ ...c, label: r.label })));
+      const deletedTotal = (msg.reports || []).reduce((a, r) => a + (r.deleted || 0), 0);
+      if (deletedTotal > 0) { showToast(`✅ 已删除 ${deletedTotal} 条工具会话`, 3000); send({ type: "utility-cleanup" }); return; }
+      box.innerHTML = items.length
+        ? items.map((i) => `<label class="cleanupItem" style="display:flex;gap:6px;align-items:center;padding:2px 0;font-size:12px">
+            <input type="checkbox" checked data-sid="${esc(i.sessionId)}" style="width:auto" />
+            <span>${esc(i.label)} · ${esc(i.title || i.sessionId)} <span style="color:var(--dim2)">(${i.reason === "tool-dir" ? "工具目录" : "标记"})</span></span>
+          </label>`).join("")
+        : "✅ 没有发现工具会话";
+      $("cleanupRun").style.display = items.length ? "" : "none";
+      $("cleanupRun").textContent = items.length ? `删除选中（${items.length}）` : "删除选中";
+      break;
+    }
     case "update-check":
       updateInfo = msg;
       renderVerPanel();
@@ -3285,6 +3303,13 @@ function renderSetPanel() {
     </div>
     <div class="meta2" style="margin-top:8px">改动即时生效（写入服务器 settings.json，无需重启）。语义打标在会话首轮结束几秒后出现，失败静默重试一次。</div>
     <div class="wsRow" style="margin-top:10px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">🧹 清理 harness 工具会话</div>
+      <div class="meta2" style="margin:4px 0">自动打标等临时对话会留在 harness 本地存储里（如 ZCode 的库）；此处按工具目录/[HG-UTILITY] 标记识别并级联删除，你的真实历史不受影响。</div>
+      <div id="cleanupList" class="meta2" style="margin:6px 0;max-height:160px;overflow:auto"></div>
+      <button class="mini" id="cleanupScan">扫描预览</button>
+      <button class="mini primary" id="cleanupRun" style="display:none">删除选中</button>
+    </div>
+    <div class="wsRow" style="margin-top:10px">
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">技能（skills）</div>
       <div class="meta2" style="margin:0 0 6px">装在库里不占 token；挂载后名称+描述进入 harness 系统提示词（≈值）。改动对新会话生效。</div>
       ${(skillsMounts || []).map((m) => `
@@ -3328,6 +3353,14 @@ function renderSetPanel() {
   };
   fillModels();
   $("setTagger").onchange = fillModels;
+  // 工具会话清理：扫描预览 → 勾选 → 删除
+  $("cleanupScan").onclick = () => { send({ type: "utility-cleanup" }); $("cleanupScan").textContent = "扫描中…"; };
+  $("cleanupRun").onclick = () => {
+    const checked = [...document.querySelectorAll(".cleanupItem input:checked")].map((i) => i.dataset.sid);
+    if (!checked.length || !confirm(`删除选中的 ${checked.length} 条工具会话？`)) return;
+    send({ type: "utility-cleanup", ids: checked });
+    $("cleanupRun").disabled = true;
+  };
   $("setSave").onclick = () => {
     send({
       type: "settings-set",

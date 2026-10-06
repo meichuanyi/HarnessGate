@@ -18,6 +18,7 @@ import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
 import { UtilitySessions } from "./utility-session.ts";
+import { scanUtilitySessions, deleteUtilitySessions, utilityCleanupSources } from "./utility-cleanup.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
@@ -1619,6 +1620,20 @@ wss.on("connection", (ws, req) => {
         case "set-auto-approve": {
           const session = live.get(msg.sessionId);
           if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "utility-cleanup": {
+          const reports = utilityCleanupSources().map((src) => {
+            if (msg.ids) {
+              const r = deleteUtilitySessions(src.db, msg.ids);
+              audit.append({ op: "utility-cleanup.delete", source: src.id, count: r.deleted, error: r.error });
+              return { id: src.id, label: src.label, ok: r.ok, found: r.found, deleted: r.deleted, error: r.error };
+            }
+            const r = scanUtilitySessions(src.db);
+            return { id: src.id, label: src.label, ok: r.ok, found: r.found, deleted: 0, candidates: r.candidates, error: r.error };
+          });
+          ws.send(JSON.stringify({ type: "utility-cleanup-report", reports } satisfies ServerMsg));
           break;
         }
 
