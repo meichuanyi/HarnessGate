@@ -896,6 +896,13 @@ export class HistorySync {
           summary.skipped += 1;
           continue;
         }
+        // 工具对话（自动打标等临时会话）不导入：它们是真实存在的 agent 对话，
+        // 但对用户是噪音——不跳过的话每次同步都会重新导入（删了也会回来，实测踩坑）
+        const firstUser = transcript.find((e) => e.kind === "user") as { text?: string } | undefined;
+        if (firstUser?.text?.startsWith("[HG-UTILITY")) {
+          summary.skipped += 1;
+          continue;
+        }
         const kept = transcript.length > 800
           ? ([{ kind: "log", ts: c.createdAt, text: `（更早的 ${transcript.length - 800} 条已省略；本工具每个会话保留最近 800 条）` }] as TranscriptEntry[]).concat(transcript.slice(-800))
           : transcript;

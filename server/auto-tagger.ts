@@ -98,6 +98,7 @@ export class AutoTagger {
     const wanted = this.settings().taggerHarnessId;
 
     const prompt =
+      `[HG-UTILITY:auto-tagger]\n` +
       `给下面这段对话打 1-3 个简短中文标签（每条 2-6 个字，主题/项目/任务类型）。\n` +
       `只输出一个 JSON 字符串数组，例如 ["重构","anki"]，不要输出任何其他内容。\n\n` +
       `标题：${title}\n内容：${body}`;
