@@ -846,14 +846,28 @@ wss.on("connection", (ws, req) => {
         }
 
         case "assistant-ensure": {
-          // 幂等：已有助理会话则只拉活
-          let asid = findAssistantSessionId();
-          if (asid) {
+          // 幂等：已有助理会话（未指定 harness 或 harness 相同）则只拉活
+          const asid = findAssistantSessionId();
+          const wantHid = typeof msg.harnessId === "string" ? msg.harnessId.trim() : "";
+          const curRec = asid ? store.get(asid) : undefined;
+          const needRebuild = Boolean(asid && wantHid && curRec && curRec.harnessId !== wantHid);
+          if (asid && !needRebuild) {
             reviveSession(asid);
             ws.send(JSON.stringify({ type: "session", session: (live.get(asid) ?? live.values().next().value as HarnessSession).info() } satisfies ServerMsg));
             break;
           }
-          const hid = msg.harnessId || settingsStore.get().taggerHarnessId || registry.harnesses.find((h) => availability(h, trust, currentProbe()).available)?.id;
+          if (needRebuild) {
+            // 换芯重建：停旧删旧，台账搬进新会话；cwd 记忆目录不变 → 长期记忆跨 harness 保留
+            const old = live.get(asid!);
+            if (old) {
+              await old.stop();
+              live.delete(asid!);
+            }
+            store.remove(asid!);
+            audit.append({ session: asid!, op: "assistant.recreate", from: curRec!.harnessId, to: wantHid });
+            broadcast({ type: "deleted", sessionId: asid } as unknown as ServerMsg);
+          }
+          const hid = wantHid || settingsStore.get().taggerHarnessId || registry.harnesses.find((h) => availability(h, trust, currentProbe()).available)?.id;
           const spec = hid ? specOf(hid) : undefined;
           if (!spec) {
             ws.send(JSON.stringify({ type: "error", message: "没有可用 harness，无法创建助理会话" } satisfies ServerMsg));
@@ -863,11 +877,13 @@ wss.on("connection", (ws, req) => {
           record.assistant = true;
           record.title = "助理";
           record.tags = ["助理"];
+          if (needRebuild) record.transcript = curRec!.transcript;   // 聊天记录跟过去
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           live.set(session.id, session);
           store.upsert(session.record());
           audit.append({ session: session.id, harness: spec.id, op: "assistant.create" });
           broadcast({ type: "session", session: session.info() });
+          ws.send(JSON.stringify(helloPayload()));   // assistantSessionId 变了，让发起端立刻拿到新 id
           void session.start("new");
           break;
         }
@@ -1603,6 +1619,11 @@ wss.on("connection", (ws, req) => {
         case "set-auto-approve": {
           const session = live.get(msg.sessionId);
           if (session) session.setAutoApprove(msg.level);
+          break;
+        }
+
+        case "ping": {
+          ws.send(JSON.stringify({ type: "pong" } satisfies ServerMsg));
           break;
         }
 

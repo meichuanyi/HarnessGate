@@ -43,6 +43,13 @@ class GateClient {
   /// 常驻助理会话 id（hello 下发；null = 尚未创建）
   String? assistantSessionId;
 
+  /// 半开死链检测：20s 一发 ping，45s 无任何下行数据（pong 也是数据）即强制重连
+  Timer? _heartbeat;
+  DateTime _lastReceived = DateTime.now();
+
+  /// 断线期间待发消息（重连 hello 后补发；上限 50 防爆）
+  final List<Map<String, dynamic>> _outbox = [];
+
   /// 用户当前正在查看的会话 id（ChatPage 维护；通知模块据此跳过同屏打扰）
   String? viewingSessionId;
 
@@ -140,8 +147,10 @@ class GateClient {
         connectTimeout: const Duration(seconds: 10),
       );
       _ws = ws;
+      _startHeartbeat();
       ws.stream.listen(
         (data) {
+          _lastReceived = DateTime.now();
           _stateCtrl.add('connected');
           _retry?.cancel();
           try {
@@ -152,6 +161,7 @@ class GateClient {
         },
         onDone: () {
           _ws = null;
+          _stopHeartbeat();
           if (!_closedByUs) {
             _stateCtrl.add('error');
             _scheduleRetry();
@@ -161,6 +171,7 @@ class GateClient {
         },
         onError: (_) {
           _ws = null;
+          _stopHeartbeat();
           _stateCtrl.add('error');
           _scheduleRetry(); // 4s 后再试——网络恢复瞬间自动接上（含连接超时/握手失败）
         },
@@ -209,6 +220,16 @@ class GateClient {
       }
       serverVersion = m['version'] as String? ?? '';
       assistantSessionId = m['assistantSessionId'] as String?;
+
+      // 重连后补发断线期间的消息（hello 之后发，服务端已就绪）
+      if (_outbox.isNotEmpty) {
+        for (final om in _outbox.take(50)) {
+          try {
+            _ws?.sink.add(jsonEncode(om));
+          } catch (_) {}
+        }
+        _outbox.clear();
+      }
       serverCommit = m['commit'] as String? ?? '';
       rooms
         ..clear()
@@ -259,9 +280,12 @@ class GateClient {
     } else if (m['type'] == 'session' && m['session'] is Map<String, dynamic>) {
       final s = SessionInfo.fromJson(m['session'] as Map<String, dynamic>);
       sessions[s.id] = s;
+      // 助理会话可能被「换芯重建」（删旧建新）：跟随广播保持入口指向最新
+      if (s.assistant) assistantSessionId = s.id;
       changed = true;
     } else if (m['type'] == 'deleted' && m['sessionId'] is String) {
       sessions.remove(m['sessionId']);
+      if (m['sessionId'] == assistantSessionId) assistantSessionId = null;
       changed = true;
     }
     if (changed) _sessionsCtrl.add(null);
@@ -275,7 +299,34 @@ class GateClient {
         return;
       } catch (_) {}
     }
-    // 未连接：hello 到来后由 UI 重新拉取；这里静默丢弃（与网页端行为一致）
+    // 未连接：入队暂存（hello 后补发），不再静默丢弃——半开/断线窗口发的消息
+    // 就是之前「助理不响应」的元凶
+    if (msg['type'] != 'ping' && _outbox.length < 50) _outbox.add(msg);
+  }
+
+  /// 半开心跳：20s 发 ping；45s 无任何下行数据视为死链，强制断开触发重连
+  void _startHeartbeat() {
+    _heartbeat?.cancel();
+    _lastReceived = DateTime.now();
+    _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (_ws == null) return;
+      final silent = DateTime.now().difference(_lastReceived);
+      if (silent.inSeconds > 45) {
+        try {
+          _ws?.sink.close();
+        } catch (_) {}
+        _ws = null;
+        return; // onDone 走重连
+      }
+      try {
+        _ws?.sink.add(jsonEncode({'type': 'ping'}));
+      } catch (_) {}
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeat?.cancel();
+    _heartbeat = null;
   }
 
   int _reqSeq = 0;

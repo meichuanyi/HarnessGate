@@ -265,11 +265,13 @@ class _SessionsPageState extends State<SessionsPage> {
     final aid = widget.client.assistantSessionId;
     final s = aid != null ? widget.client.sessions[aid] : null;
     final live = s?.live ?? false;
+    final hid = s?.harnessId;
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
       color: const Color(0xFF16202E),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
+        onLongPress: _pickAssistantHarness,
         onTap: () {
           if (aid != null) {
             Navigator.of(context).push(MaterialPageRoute(
@@ -299,8 +301,8 @@ class _SessionsPageState extends State<SessionsPage> {
                             fontWeight: FontWeight.w600, fontSize: 14.5)),
                     Text(
                       aid == null
-                          ? '点此创建常驻助理（永不回收，带长期记忆）'
-                          : (live ? '在线 · 直接说话' : '休息中 · 进入自动唤醒'),
+                          ? '点此创建常驻助理 · 长按选 harness（永不回收，带长期记忆）'
+                          : '${live ? '在线 · 直接说话' : '休息中 · 进入自动唤醒'} · $hid · 长按切换',
                       style: TextStyle(fontSize: 11.5, color: Colors.grey[500]),
                     ),
                   ],
@@ -309,6 +311,65 @@ class _SessionsPageState extends State<SessionsPage> {
               const Icon(Icons.chevron_right, size: 20, color: Colors.grey),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 助理 harness 选择：长按助理卡弹出；选不同的 harness 触发服务端「换芯重建」
+  /// （停旧建新，cwd 记忆目录与聊天台账都保留）
+  void _pickAssistantHarness() {
+    final aid = widget.client.assistantSessionId;
+    final cur = aid != null ? widget.client.sessions[aid]?.harnessId : null;
+    final all = widget.client.harnesses.values.toList()
+      ..sort((a, b) {
+        final ap = a.probedOk ? 0 : (a.available ? 1 : 2);
+        final bp = b.probedOk ? 0 : (b.available ? 1 : 2);
+        return ap.compareTo(bp) != 0 ? ap.compareTo(bp) : a.label.compareTo(b.label);
+      });
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Text(cur == null ? '创建助理 · 选择 harness' : '助理 harness（当前：$cur）',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+              child: Text('切换会重建助理会话：长期记忆和聊天记录都保留，只是换底层模型驱动',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final h in all.where((h) => h.available))
+                    ListTile(
+                      dense: true,
+                      leading: Icon(
+                        h.id == cur ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                        size: 20,
+                        color: h.id == cur ? const Color(0xFF5B9CF8) : null,
+                      ),
+                      title: Text(h.label, style: const TextStyle(fontSize: 13.5)),
+                      subtitle: Text(h.id, style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        if (h.id == cur) return;
+                        widget.client.send(msgAssistantEnsure(harnessId: h.id));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('正在把助理切到 ${h.label}（记忆保留）…')));
+                      },
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
       ),
     );

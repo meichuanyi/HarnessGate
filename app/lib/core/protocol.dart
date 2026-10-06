@@ -484,8 +484,9 @@ Map<String, dynamic> msgSessionDetail(String sessionId) =>
 Map<String, dynamic> msgRoomStop(String roomId) =>
     {'type': 'room-stop', 'roomId': roomId};
 
-/// 确保助理会话存在（无则服务端用默认 harness 创建）
-Map<String, dynamic> msgAssistantEnsure() => {'type': 'assistant-ensure'};
+/// 确保助理会话存在（无则创建；harnessId 与现役不同时服务端换芯重建——长期记忆与台账保留）
+Map<String, dynamic> msgAssistantEnsure({String? harnessId}) =>
+    {'type': 'assistant-ensure', if (harnessId != null && harnessId.isNotEmpty) 'harnessId': harnessId};
 
 /// 设置标签（整体替换；空数组=清空）
 Map<String, dynamic> msgSetTags(String sessionId, List<String> tags) =>

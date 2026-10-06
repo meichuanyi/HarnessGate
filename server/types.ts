@@ -159,6 +159,8 @@ export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string>; mcpServerIds?: string[]; assistant?: boolean }
   /** 确保助理会话存在（无则用默认 harness 创建）；hello 里带 assistantSessionId */
   | { type: "assistant-ensure"; harnessId?: string }
+  /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
+  | { type: "ping" }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
   | { type: "config"; sessionId: string; configId: string; value: string }
@@ -404,6 +406,7 @@ export type ServerMsg =
       error?: string;
     }
   | { type: "update-applied"; version: string; message: string }
+  | { type: "pong" }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
   | { type: "settings"; settings: Record<string, unknown> }
   | { type: "log"; sessionId: string; line: string }
