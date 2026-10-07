@@ -796,6 +796,29 @@ let schedulesArr = [];   // 定时任务
 let schedEdit = null;    // 正在编辑的定时任务（null = 列表态）
 let pendingFiles = [];
 let entries = [];
+/** 进程内台账缓存（对齐 APP transcript_cache）：重进会话先秒显上次内容，再拉新覆盖。
+ *  LRU 上限 8 个会话；只缓存内存态，刷新页面自然失效（服务端才是唯一事实源） */
+const transcriptCache = new Map();
+const TRANSCRIPT_CACHE_MAX = 8;
+function cacheGet(sid) {
+  const v = transcriptCache.get(sid);
+  if (v !== undefined) {
+    transcriptCache.delete(sid);
+    transcriptCache.set(sid, v);
+  }
+  return v;
+}
+function cachePut(sid, list) {
+  transcriptCache.delete(sid);
+  transcriptCache.set(sid, list);
+  while (transcriptCache.size > TRANSCRIPT_CACHE_MAX) {
+    transcriptCache.delete(transcriptCache.keys().next().value);
+  }
+}
+function cacheTouch(sid) {
+  const v = transcriptCache.get(sid);
+  if (v !== undefined) cachePut(sid, v);
+}
 let nodes = [];
 let streamingAssistant = false;
 let transcriptBase = 0;
@@ -1203,6 +1226,7 @@ function handleServer(msg) {
         transcriptTotal = msg.total ?? incoming.length;
         transcriptStart = msg.start ?? 0;
         loadingEarlier = false;
+        if (incoming.length) cachePut(state.sessionId, incoming);
         const loadingEarlier = transcriptStart > 0 && entries.length && incoming.length &&
           entries[0].ts === incoming[incoming.length - 1]?.ts;
         if (loadingEarlier) {
@@ -2169,7 +2193,11 @@ function openSession(id, push = true) {
   const s = sessions.get(id);
   if (!s) return;
   state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
-  entries = []; nodes = []; streamingAssistant = false; transcriptBase = 0;
+  // 秒显缓存：上次渲染过的台账先上屏（无缓存才出现空窗）
+  const cached = cacheGet(id);
+  entries = cached ? [...cached] : [];
+  nodes = []; streamingAssistant = false; transcriptBase = 0;
+  transcriptTotal = 0; transcriptStart = cached ? -1 : 0;   // -1 = 有缓存待覆盖（暂不显示「加载更早」）
   // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
   for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
