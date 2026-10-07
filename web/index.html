@@ -1519,6 +1519,7 @@ function renderTree() {
                   <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
                   ${s.assistant ? '<span title="常驻助理" style="font-size:11px">✨</span>' : ""}
                   ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
+                  ${(s.tags || []).slice(0, 2).map((t) => `<span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}
                   <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
                 </div>`;
             }).join("")}
@@ -3155,6 +3156,7 @@ function renderStarPanel() {
       <div style="display:flex;align-items:center;gap:6px">
         ${pillOf(s, STATUS)}
         <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title || "(无标题)")}</b>
+        ${(s.tags || []).map((t) => `<span class="tag" data-tag="${esc(t)}">${esc(t)}</span>`).join("")}
         <button class="mini ghost" data-unstar="${s.id}" title="取消收藏" style="color:#f5b942">★</button>
       </div>
       <div class="meta2">${esc(s.harnessLabel)} · #${s.id} · ${esc(s.cwd)}</div>
