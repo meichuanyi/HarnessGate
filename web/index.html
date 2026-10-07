@@ -799,6 +799,18 @@ let entries = [];
 let nodes = [];
 let streamingAssistant = false;
 let transcriptBase = 0;
+/** 台账窗口（对齐 APP v0.6.11）：首屏只拉最近 N 条，大会话不再整包 1.4MB 慢慢传；
+    顶部「加载更早」按 before 再拉一窗往前拼 */
+const TRANSCRIPT_WINDOW = 120;
+let _scrollEl = null;      // 对话滚动容器（#stream）
+let loadingEarlier = false;
+function requestEarlier() {
+  if (loadingEarlier || !state.sessionId || !entries.length) return;
+  loadingEarlier = true;
+  send({ type: "transcript", sessionId: state.sessionId, limit: TRANSCRIPT_WINDOW, before: transcriptStart });
+}
+let transcriptTotal = 0;   // 服务端台账总条数
+let transcriptStart = 0;   // 当前窗口起点（entries[0] 对应服务端下标）
 let showLog = false;
 let pendingRoomStart = false;
 let pendingCreate = false;   // 新建会话后等服务端回包，自动进入对话
@@ -1187,8 +1199,23 @@ function handleServer(msg) {
       break;
     case "transcript":
       if (state.view === "chat" && state.sessionId === msg.sessionId) {
-        entries = msg.entries || [];
-        renderAll();
+        const incoming = msg.entries || [];
+        transcriptTotal = msg.total ?? incoming.length;
+        transcriptStart = msg.start ?? 0;
+        loadingEarlier = false;
+        const loadingEarlier = transcriptStart > 0 && entries.length && incoming.length &&
+          entries[0].ts === incoming[incoming.length - 1]?.ts;
+        if (loadingEarlier) {
+          // 「加载更早」：往前拼，保持滚动位置大致不动
+          const near = _scrollEl?.scrollTop ?? 0;
+          const prevHeight = _scrollEl?.scrollHeight ?? 0;
+          entries = incoming.concat(entries);
+          renderAll(true);
+          if (_scrollEl) _scrollEl.scrollTop = (_scrollEl.scrollHeight - prevHeight) + near;
+        } else {
+          entries = incoming;
+          renderAll();
+        }
       }
       break;
     case "turn-end":
@@ -2146,7 +2173,8 @@ function openSession(id, push = true) {
   // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
   for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
-  send({ type: "transcript", sessionId: id });
+  transcriptTotal = 0;
+  send({ type: "transcript", sessionId: id, limit: TRANSCRIPT_WINDOW });
   if (!s.live && s.resumable) {
     pushEntry({ kind: "log", text: "会话已归档，正在自动恢复…" });
     send({ type: "resume", sessionId: id });
@@ -2199,6 +2227,7 @@ function renderChat() {
   renderModes(); renderConfig();
 
   // 恢复该会话的未发送草稿（重连/重绘后不再丢失）
+  _scrollEl = $("stream");
   const draft = drafts.get(state.sessionId);
   if (draft !== undefined) {
     $("input").value = draft;
@@ -2699,7 +2728,7 @@ function paint(el, e) {
   }
 }
 
-function renderAll() {
+function renderAll(restoreScroll = false) {
   const stream = $("stream");
   if (!stream) return;
   stream.innerHTML = "";
@@ -2709,7 +2738,20 @@ function renderAll() {
     return;
   }
   nodes = entries.map((e) => { const n = entryNode(e); stream.appendChild(n); return n; });
-  stream.scrollTop = stream.scrollHeight;
+  // 窗口化：前面还有更早的台账时给入口（首屏加载/新消息时不打扰当前滚动位置）
+  if (transcriptStart > 0) {
+    const btn = document.createElement("button");
+    btn.className = "mini ghost";
+    btn.style.cssText = "margin:0 auto 10px;display:block";
+    btn.textContent = `⬆ 加载更早的对话（还有 ${transcriptStart} 条）`;
+    btn.onclick = () => {
+      btn.disabled = true;
+      btn.textContent = "加载中…";
+      requestEarlier();
+    };
+    stream.insertBefore(btn, stream.firstChild);
+  }
+  if (!restoreScroll) stream.scrollTop = stream.scrollHeight;
   transcriptBase = entries.length;
   refreshNav();
 }
