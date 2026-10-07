@@ -1126,6 +1126,7 @@ function applyNav(n) {
 window.addEventListener("popstate", (e) => applyNav(e.state?.hgNav || navOfHash(location.hash)));
 /* 初始 hash 里带的视图（如刷新 #/s/<id>）：等 hello 数据到位再恢复 */
 let navBoot = navOfHash(location.hash);
+let pendingOpenOnHello = null;   // hello 前的 openSession 请求，hello 后补开
 try { history.replaceState({ hgNav: navBoot || { view: "harnesses" } }, "", hashOfNav(navBoot || { view: "harnesses" })); } catch {}
 
 /* =====================================================================
@@ -1148,6 +1149,7 @@ function handleServer(msg) {
       $("viewRoot").dataset.cwd = msg.defaultCwd || "";   // 新会话目录的默认值来源
       render();
       if (navBoot) { const n = navBoot; navBoot = null; applyNav(n); }   // 刷新/分享链接带 #/s/<id> 等时恢复视图
+      if (pendingOpenOnHello) { const pid = pendingOpenOnHello; pendingOpenOnHello = null; openSession(pid); }
       break;
     case "mcp": /* 受管 MCP 服务器（设置抽屉/新建会话选择用） */
       mcpServers = msg.servers || [];
@@ -1227,9 +1229,9 @@ function handleServer(msg) {
         transcriptStart = msg.start ?? 0;
         loadingEarlier = false;
         if (incoming.length) cachePut(state.sessionId, incoming);
-        const loadingEarlier = transcriptStart > 0 && entries.length && incoming.length &&
+        const isEarlierLoad = transcriptStart > 0 && entries.length && incoming.length &&
           entries[0].ts === incoming[incoming.length - 1]?.ts;
-        if (loadingEarlier) {
+        if (isEarlierLoad) {
           // 「加载更早」：往前拼，保持滚动位置大致不动
           const near = _scrollEl?.scrollTop ?? 0;
           const prevHeight = _scrollEl?.scrollHeight ?? 0;
@@ -2190,8 +2192,13 @@ async function endCall() {
 
 /* ---------- 对话视图 ---------- */
 function openSession(id, push = true) {
-  const s = sessions.get(id);
-  if (!s) return;
+  let s = sessions.get(id);
+  if (!s) {
+    // hash 直达早于 hello 的窗口：记下待开会话，hello 数据到位后重试（此前静默 return
+    // 表现为「点开历史会话什么都没有」）
+    if (navBoot !== null || !sessions.size) { pendingOpenOnHello = id; }
+    return;
+  }
   state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
   // 秒显缓存：上次渲染过的台账先上屏（无缓存才出现空窗）
   const cached = cacheGet(id);
@@ -2202,6 +2209,10 @@ function openSession(id, push = true) {
   for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   render();
   transcriptTotal = 0;
+  if (cached && cached.length) {
+    // 秒显缓存：立即渲染上次内容（renderAll 会滚动到底），服务端最新到达后整体覆盖
+    renderAll();
+  }
   send({ type: "transcript", sessionId: id, limit: TRANSCRIPT_WINDOW });
   if (!s.live && s.resumable) {
     pushEntry({ kind: "log", text: "会话已归档，正在自动恢复…" });
