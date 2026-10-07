@@ -2155,6 +2155,9 @@ function openSession(id, push = true) {
   if (push) pushNav();
 }
 
+// 会话草稿：键入即存、重绘即恢复（hello→render() 会整体重建输入框，无此机制则未发送内容随重连丢失）
+const drafts = new Map();
+
 function renderChat() {
   const root = $("viewRoot");
   const s = sessions.get(state.sessionId);
@@ -2194,8 +2197,18 @@ function renderChat() {
   updateChatHeader();
   renderModes(); renderConfig();
 
+  // 恢复该会话的未发送草稿（重连/重绘后不再丢失）
+  const draft = drafts.get(state.sessionId);
+  if (draft !== undefined) {
+    $("input").value = draft;
+    drafts.delete(state.sessionId);
+  }
+
   $("attachBtn").onclick = () => $("fileInput").click();
   $("voiceBtn").onclick = toggleVoice;
+  $("input").addEventListener("input", () => {
+    if (state.sessionId) drafts.set(state.sessionId, $("input").value);
+  });
   const callEndBtn = $("callEnd");
   if (callEndBtn) callEndBtn.onclick = () => endCall();
   $("sendBtn").onclick = doSend;
@@ -3067,6 +3080,7 @@ function doSend() {
   if (!s) return;
   if (!s.live) { alert("会话未在运行：先点顶部的「恢复会话」"); return; }
   inp.value = "";
+  drafts.delete(state.sessionId);
   streamingAssistant = false;
   const atts = pendingFiles.slice();
   if (!s.title) { s.title = text.slice(0, 40); renderTree(); }
