@@ -2,7 +2,7 @@
   "name": "harnessgate",
   "displayName": "HarnessGate",
   "description": "HarnessGate 的 VS Code 客户端（瘦客户端，本机无需装任何 agent CLI）。需要先在服务器上安装并运行后端 HarnessGate：git clone 后 npm install && npm start（监听 9830），插件里填 ws://<服务器IP>:9830/ws 即可远程驱动 OpenCode/Claude Code/Codex/ZCode 等多个编码 agent",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "publisher": "meichuan",
   "license": "MIT",
   "engines": {
@@ -109,6 +109,36 @@
       {
         "command": "harnessgate.showLog",
         "title": "HarnessGate: 显示连接日志"
+      },
+      {
+        "command": "harnessgate.assistantEnsure",
+        "title": "HarnessGate: 助理（创建/打开常驻助理）",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "harnessgate.editTags",
+        "title": "HarnessGate: 编辑会话标签",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "harnessgate.toggleStar",
+        "title": "HarnessGate: 收藏/取消收藏",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "harnessgate.filterSessions",
+        "title": "HarnessGate: 过滤会话（标签/关键词）",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "harnessgate.schedules",
+        "title": "HarnessGate: 定时任务",
+        "icon": "$(clock)"
+      },
+      {
+        "command": "harnessgate.workspace",
+        "title": "HarnessGate: 工作区归因",
+        "icon": "$(folder-library)"
       }
     ],
     "menus": {
@@ -191,7 +221,36 @@
           "description": "新建会话时默认的工作目录（服务器上的路径）。留空则用服务端默认值。"
         }
       }
-    }
+    },
+    "view/item/context": [
+      {
+        "command": "harnessgate.toggleStar",
+        "when": "viewItem =~ /session/",
+        "group": "inline@1"
+      },
+      {
+        "command": "harnessgate.editTags",
+        "when": "viewItem =~ /session/",
+        "group": "inline@2"
+      }
+    ],
+    "view/title": [
+      {
+        "command": "harnessgate.filterSessions",
+        "when": "view == harnessgate.harnesses",
+        "group": "navigation@3"
+      },
+      {
+        "command": "harnessgate.schedules",
+        "when": "view == harnessgate.harnesses",
+        "group": "navigation@4"
+      },
+      {
+        "command": "harnessgate.workspace",
+        "when": "view == harnessgate.harnesses",
+        "group": "navigation@5"
+      }
+    ]
   },
   "scripts": {
     "build": "node gen-renderer.mjs && node esbuild.mjs",

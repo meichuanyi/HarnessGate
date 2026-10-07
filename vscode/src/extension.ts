@@ -4,6 +4,7 @@ import { Store } from "./store.ts";
 import { HarnessTreeProvider } from "./tree.ts";
 import { ChatPanel } from "./chat.ts";
 import { RoomPanel } from "./room-panel.ts";
+import { SchedulesPanel, WorkspacePanel, setSchedulesData, setWorkspaceData } from "./schedules-panel.ts";
 import { promptCwd } from "./cwd-input.ts";
 import type { HarnessAvailability, Room, SessionInfo } from "./protocol.ts";
 
@@ -47,6 +48,72 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       tree.refresh();
     }),
     vscode.commands.registerCommand("harnessgate.showLog", () => output.show(true)),
+    // 助理：ensure（无则创建，有则直达）
+    vscode.commands.registerCommand("harnessgate.assistantEnsure", () => {
+      const asid = store.assistantSessionId;
+      if (asid) {
+        vscode.commands.executeCommand("harnessgate.openChat", asid);
+      } else {
+        client.send({ type: "assistant-ensure" });
+        vscode.window.showInformationMessage("正在创建助理会话…");
+      }
+    }),
+    // 会话标签：编辑（逗号分隔）
+    vscode.commands.registerCommand("harnessgate.editTags", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const s = store.getSession(id);
+      const cur = (s?.tags ?? []).join(", ");
+      const input = await vscode.window.showInputBox({
+        prompt: "标签（逗号分隔，留空清空）",
+        value: cur,
+        placeHolder: "如: 重构, anki, 长期任务",
+      });
+      if (input === undefined) return;
+      const tags = input.split(/[,，]/).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+      client.send({ type: "set-tags", sessionId: id, tags });
+      if (s) {
+        store.upsertSession({ ...s, tags });
+      }
+    }),
+    // 收藏切换
+    vscode.commands.registerCommand("harnessgate.toggleStar", (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const s = store.getSession(id);
+      const v = !(s?.starred ?? false);
+      client.send({ type: "star", sessionId: id, starred: v });
+      if (s) store.upsertSession({ ...s, starred: v });
+    }),
+    // 过滤：选标签或手动输入
+    vscode.commands.registerCommand("harnessgate.filterSessions", async () => {
+      const counts = [...store.tagCounts().entries()].sort((a, b) => b[1] - a[1]);
+      const picks: Array<vscode.QuickPickItem & { tag?: string }> = [
+        { label: "（清除过滤）", tag: "", alwaysShow: true },
+        ...counts.map(([t, n]) => ({ label: t, description: `${n} 个会话`, tag: t })),
+        { label: "$(search) 手动输入…", alwaysShow: true },
+      ];
+      const picked = await vscode.window.showQuickPick(picks, { placeHolder: `按标签过滤会话（当前：${store.filterText || "无"}）` });
+      if (!picked) return;
+      if (picked.label.includes("手动输入")) {
+        const input = await vscode.window.showInputBox({ prompt: "过滤词（标题/目录/标签）", value: store.filterText });
+        if (input === undefined) return;
+        store.filterText = input;
+      } else {
+        store.filterText = picked.tag ?? "";
+      }
+      tree.refresh();
+    }),
+    // 定时任务面板
+    vscode.commands.registerCommand("harnessgate.schedules", () => {
+      client.send({ type: "schedules-list" });
+      SchedulesPanel.reveal().attach(client, store);
+    }),
+    // 工作区归因面板
+    vscode.commands.registerCommand("harnessgate.workspace", () => {
+      client.send({ type: "workspace" });
+      WorkspacePanel.reveal().attach(client, store);
+    }),
     vscode.commands.registerCommand("harnessgate.syncHistory", async () => {
       if (!client.send({ type: "sync-history" })) {
         void vscode.window.showWarningMessage("未连接 HarnessGate 服务");
@@ -136,9 +203,31 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     }
     if (s === "connected") errNotified = false;
   });
-  client.on("hello", (msg: { harnesses: HarnessAvailability[]; sessions: SessionInfo[]; defaultCwd: string; rooms?: Room[] }) => {
-    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms);
-    output.appendLine(`已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话，${msg.rooms?.length ?? 0} 个圆桌`);
+  client.on("hello", (msg: {
+    harnesses: HarnessAvailability[];
+    sessions: SessionInfo[];
+    defaultCwd: string;
+    rooms?: Room[];
+    schedules?: import("./protocol.ts").Schedule[];
+    assistantSessionId?: string | null;
+  }) => {
+    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms, msg.schedules, msg.assistantSessionId);
+    if (msg.schedules) setSchedulesData(msg.schedules);
+    output.appendLine(
+      `已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话，${msg.rooms?.length ?? 0} 个圆桌，${msg.schedules?.length ?? 0} 个定时任务`,
+    );
+  });
+  client.on("schedules", (msg: { schedules?: import("./protocol.ts").Schedule[] }) => {
+    if (msg.schedules) {
+      store.setSchedules(msg.schedules);
+      setSchedulesData(msg.schedules);
+    }
+  });
+  client.on("workspace", (msg: { reports?: import("./protocol.ts").WorkspaceReport[] }) => {
+    if (msg.reports) {
+      store.setWorkspaceReports(msg.reports);
+      setWorkspaceData(msg.reports);
+    }
   });
   client.on("rooms", (msg: { rooms?: Room[] }) => {
     if (msg.rooms) store.setRooms(msg.rooms);

@@ -2,7 +2,13 @@ import * as vscode from "vscode";
 import type { Store } from "./store.ts";
 import type { HarnessAvailability, SessionInfo } from "./protocol.ts";
 
-export type TreeNode = HarnessNode | SessionNode | InfoNode;
+export type TreeNode = HarnessNode | SessionNode | AssistantNode | InfoNode;
+
+/** 树顶常驻助理入口（✨ 直达，永不回收） */
+export class AssistantNode {
+  readonly kind = "assistant";
+  constructor(readonly sessionId: string | null) {}
+}
 
 export class HarnessNode {
   readonly kind = "harness";
@@ -97,17 +103,34 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       return item;
     }
 
+    if (node.kind === "assistant") {
+      const item = new vscode.TreeItem("助理", vscode.TreeItemCollapsibleState.None);
+      item.id = `asst#${this.gen}`;
+      item.contextValue = "assistant";
+      item.iconPath = new vscode.ThemeIcon("sparkle", new vscode.ThemeColor("charts.blue"));
+      item.description = node.sessionId ? "常驻 · 长期记忆" : "点此创建";
+      item.tooltip = new vscode.MarkdownString(
+        "✨ **常驻助理**\n\n永不空闲回收，带文件式长期记忆（MEMORY.md）。\n与网页/APP 是同一个助理、同一份记忆。",
+      );
+      item.command = node.sessionId
+        ? { command: "harnessgate.openChat", title: "打开助理", arguments: [node.sessionId] }
+        : { command: "harnessgate.assistantEnsure", title: "创建助理" };
+      return item;
+    }
+
     if (node.kind === "session") {
       const s = node.session;
       const item = new vscode.TreeItem(s.title || `(空会话 #${s.id})`, vscode.TreeItemCollapsibleState.None);
       item.id = `s:${s.id}#${this.gen}`;
       item.contextValue = s.live ? "session-live" : s.resumable ? "session-saved" : "session";
-      item.description = `${STATUS_LABEL[s.status] ?? s.status} · ${s.cwd}`;
+      const tagPart = (s.tags ?? []).length ? ` [${(s.tags ?? []).join(", ")}]` : "";
+      item.description = `${s.starred ? "★ " : ""}${STATUS_LABEL[s.status] ?? s.status}${tagPart} · ${s.cwd}`;
       item.tooltip = new vscode.MarkdownString(
         [
-          `**${s.harnessLabel}** · \`#${s.id}\``,
+          `**${s.harnessLabel}** · \`#${s.id}\`${s.starred ? " · ★ 已收藏" : ""}`,
           "",
           `目录：\`${s.cwd}\``,
+          (s.tags ?? []).length ? `标签：${(s.tags ?? []).map((t) => `\`${t}\``).join(" ")}` : "",
           s.worktree ? `worktree：\`${s.worktree.branch}\`` : "",
           s.error ? `\n错误：${s.error}` : "",
         ]
@@ -119,6 +142,7 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           : s.status === "error" ? "error"
             : s.status === "awaiting" ? "shield"
               : "comment",
+        s.starred ? new vscode.ThemeColor("editorLightBulb.foreground") : undefined,
       );
       item.command = { command: "harnessgate.openChat", title: "打开对话", arguments: [s.id] };
       return item;
@@ -149,7 +173,7 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
             a.label.localeCompare(b.label),
         );
       if (!list.length) return [new InfoNode("没有可用的 harness", "info")];
-      return list.map((h) => new HarnessNode(h));
+      return [new AssistantNode(this.store.assistantSessionId), ...list.map((h) => new HarnessNode(h))];
     }
     if (node.kind === "harness") {
       const ss = this.store.sessionsOf(node.harness.id);

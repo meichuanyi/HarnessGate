@@ -36,6 +36,12 @@ export type SessionInfo = {
   /** 权限自动决策档位（与网页版对齐；房间会话恒为 all 不可改） */
   autoApprove?: "off" | "readonly" | "all";
   roomId?: string;
+  /** 用户收藏（置顶展示） */
+  starred?: boolean;
+  /** 用户自定义标签（筛选用） */
+  tags?: string[];
+  /** 常驻助理会话（树顶直达、永不空闲回收） */
+  assistant?: boolean;
 };
 
 export type HarnessAvailability = {
@@ -159,6 +165,17 @@ export type ClientMsg =
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
   | { type: "interrupt"; sessionId: string }
   | { type: "delete"; sessionId: string }
+  | { type: "star"; sessionId: string; starred: boolean }
+  | { type: "set-tags"; sessionId: string; tags: string[] }
+  /** 确保助理会话存在（无则服务端用默认 harness 创建） */
+  | { type: "assistant-ensure"; harnessId?: string }
+  /** 定时任务：列表/立即运行/删除（启停走 schedule-save 的 enabled） */
+  | { type: "schedules-list" }
+  | { type: "schedule-run"; id: string }
+  | { type: "schedule-delete"; id: string }
+  /** 工作区归因（只读） */
+  | { type: "workspace"; cwd?: string }
+  | { type: "ping" }
   | { type: "handoff"; sessionId: string; keep?: number }
   | { type: "sync-history"; harnessId?: string; force?: boolean }
   | { type: "transcript"; sessionId: string }
@@ -192,6 +209,36 @@ export type ClientMsg =
   | { type: "room-stop"; roomId: string }
   | { type: "list" };
 
+export type Schedule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  harnessId: string;
+  cwd?: string;
+  cadence:
+    | { type: "daily"; at: string }
+    | { type: "interval"; everyMinutes: number }
+    | { type: "weekly"; days: number[]; at: string }
+    | { type: "cron"; expr: string };
+  promptTemplate: string;
+  state?: {
+    running?: boolean;
+    nextFireAt?: string;
+    lastRunAt?: string;
+    lastStatus?: "ok" | "error" | "contract-fail" | "timeout" | "skipped-running" | "missing-files";
+    lastSessionId?: string;
+    consecutiveFailures?: number;
+  };
+};
+
+export type WorkspaceReport = {
+  cwd: string;
+  sessions: Array<{ id: string; harnessLabel: string; live: boolean; inTurn: boolean; mode: "shared" | "worktree"; branch?: string; changedFiles?: string[]; diffStat?: string }>;
+  files: Array<{ path: string; rel: string; touches: Array<{ sessionId: string; harnessId: string }>; conflict: boolean; lastTs: string }>;
+  conflicts: number;
+  note: string;
+};
+
 export type ServerMsg =
   | {
       type: "hello";
@@ -200,6 +247,9 @@ export type ServerMsg =
       defaultCwd: string;
       rooms?: Room[];
       providers?: Array<{ id: string; label: string }>;
+      schedules?: Schedule[];
+      /** 常驻助理会话 id（null = 尚未创建） */
+      assistantSessionId?: string | null;
     }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: Record<string, unknown> }
@@ -212,6 +262,10 @@ export type ServerMsg =
   | { type: "history"; providers: Array<{ id: string; label: string }>; summaries?: Array<{ label: string; imported: number; updated: number; skipped: number }> }
   | { type: "log"; sessionId: string; line: string }
   | { type: "deleted"; sessionId: string }
+  | { type: "settings"; settings: Record<string, unknown> }
+  | { type: "schedules"; schedules: Schedule[] }
+  | { type: "workspace"; reports: WorkspaceReport[] }
+  | { type: "pong" }
   | {
       type: "crew-detail";
       roomId: string;
