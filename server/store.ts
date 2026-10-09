@@ -35,6 +35,10 @@ export type PersistedSession = {
   semanticTagged?: boolean;
   /** 常驻助理会话：永不空闲回收、永不归档显示、首页直达（OpenClaw 式常驻人格的载体） */
   assistant?: boolean;
+  /** 会话树：从哪个会话分叉（分支共享父会话上下文，收编后闭环） */
+  parentId?: string;
+  /** 分支名（用户起的，如「方案A」「试试rust」；主线无此字段） */
+  branchName?: string;
   /** 本会话由哪次「接续」分叉而来（快照文件名也用它定位） */
   handoffFrom?: string;
   /** 本会话碰过的文件（hub 实时回填，上限 500） */

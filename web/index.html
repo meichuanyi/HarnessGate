@@ -1402,6 +1402,12 @@ function handleServer(msg) {
     case "handoff_done": /* 2026-09-19 新增：接续完成后跳到新会话 */
       if (msg.to) openSession(msg.to);
       break;
+    case "branch-created":
+      if (msg.to) openSession(msg.to);   // 分支建好直接进入
+      break;
+    case "branch-adopted":
+      showToast("✅ 分支已收编回主线（主线已收到结论摘要）", 5000);
+      break;
     case "voice-stt-result":   // 本地识别结果：追加进输入框
       setVoiceUI("idle");
       if (msg.error) showToast("🎙 " + msg.error, 6000);
@@ -1568,8 +1574,9 @@ function renderTree() {
             ${matchedSessions.map((s) => {
               const activeS = state.sessionId === s.id;
               return `
-                <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}">
+                <div class="sRow ${activeS ? "active" : ""}" data-sid="${s.id}" style="${s.parentId ? "padding-left:20px" : ""}">
                   <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
+                  ${s.parentId ? `<span title="分支${s.branchName ? "：" + esc(s.branchName) : ""}" style="font-size:10px;opacity:.75">⎇</span>` : ""}
                   ${s.assistant ? '<span title="常驻助理" style="font-size:11px">✨</span>' : ""}
                   ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
                   ${(s.tags || []).slice(0, 2).map((t) => `<span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}
@@ -1730,6 +1737,8 @@ function renderSessionList() {
           </div>
           <div class="acts">
             <button class="mini ghost" data-act="tags" title="编辑标签（逗号分隔，用于筛选）">🏷</button>
+            <button class="mini ghost" data-act="branch" title="从这里分叉一个分支会话（继承上下文，探索不同想法）">⎇</button>
+            ${s.parentId ? `<button class="mini ghost" data-act="adopt" title="把这个分支的结论蒸馏后收编回主线">⇱收编</button>` : ""}
             <button class="mini ghost" data-act="handoff" title="把历史复制到新会话继续跑">接续</button>
             <button class="mini ghost" data-act="star" title="${s.starred ? "取消收藏" : "收藏会话（置顶显示）"}" style="${s.starred ? "color:#f5b942" : ""}">${s.starred ? "★" : "☆"}</button>
             <button class="mini primary" data-act="open">进入</button>
@@ -1788,6 +1797,20 @@ function renderSessionList() {
         if (act === "stop") send({ type: "close", sessionId: id });
         if (act === "resume") send({ type: "resume", sessionId: id });
         if (act === "handoff") openHandoffDialog(id);
+        if (act === "branch") {
+          const name = prompt("分支名（比如：方案A / 试试rust / 换个思路）：", "");
+          if (name === null) return;
+          send({ type: "branch", sessionId: id, branchName: name.trim() || "分支" });
+          showToast(`正在创建分支「${name.trim() || "分支"}」（继承本会话上下文）…`, 4000);
+        }
+        if (act === "adopt") {
+          const s2 = sessions.get(id);
+          const mainId = s2?.parentId;
+          if (!mainId) { showToast("该会话没有主线", 3000); return; }
+          if (!confirm(`把这个分支的结论蒸馏后收编回主线？（主线会收到摘要并继续）`)) return;
+          send({ type: "adopt-branch", branchId: id, mainId });
+          showToast("正在蒸馏分支结论并注入主线…", 4000);
+        }
         if (act === "tags") {
           const s = sessions.get(id);
           const cur = (s?.tags || []).join(", ");

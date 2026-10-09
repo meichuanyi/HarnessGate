@@ -698,9 +698,7 @@ function authorized(req: {
   return typeof auth === "string" && auth === `Bearer ${TOKEN}`;
 }
 
-autoTagger = new AutoTagger(
-  store,
-  new UtilitySessions({
+const utilitySessions = new UtilitySessions({
     store,
     audit,
     hub,
@@ -721,7 +719,12 @@ autoTagger = new AutoTagger(
       return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
     },
     dataDir: DATA_DIR,
-  }),
+});
+const utility = utilitySessions;
+
+autoTagger = new AutoTagger(
+  store,
+  utility,
   () => settingsStore.get(),
   (sid: string, tags: string[]) => {
     // live 实例同步（否则实例下次 persist 会用旧 tags 盖掉 store）；存档会话直接广播
@@ -843,6 +846,135 @@ wss.on("connection", (ws, req) => {
             break;
           }
           ws.send(JSON.stringify({ type: "skills-content", reqId: msg.reqId, name: String(msg.name), content: r } satisfies ServerMsg));
+          break;
+        }
+
+        case "branch": {
+          // 会话树分叉：优先真 fork（ACP session/fork，agent 侧上下文复制，零损耗）；
+          // fork 不可用或源会话非本工具创建时，退化为接续式注入（蒸馏最近历史开新会话）
+          const src = store.get(msg.sessionId);
+          if (!src) {
+            ws.send(JSON.stringify({ type: "error", message: "找不到源会话" } satisfies ServerMsg));
+            return;
+          }
+          const hid = msg.harnessId ?? src.harnessId;
+          const spec = specOf(hid);
+          if (!spec) {
+            ws.send(JSON.stringify({ type: "error", message: `注册表里没有 harness: ${hid}` } satisfies ServerMsg));
+            return;
+          }
+          const record = HarnessSession.newRecord(spec, src.cwd);
+          record.parentId = src.id;
+          record.branchName = (msg.branchName ?? "").trim().slice(0, 20) || `分支`;
+          record.title = `${src.title ?? src.id} · ${record.branchName}`.slice(0, 44);
+          record.tags = [...new Set([...(src.tags ?? []), "分支"])].slice(0, 20);
+          if (msg.model) {
+            const mc = currentProbe()[spec.id]?.configs?.find((c) => c.category === "model" && c.options.some((o) => o.value === msg.model));
+            if (mc) record.chosen = { ...(record.chosen ?? {}), [mc.id]: msg.model };
+          }
+          const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
+          live.set(session.id, session);
+          store.upsert(session.record());
+          audit.append({ session: session.id, harness: spec.id, op: "session.branch", from: src.id, branch: record.branchName });
+          broadcast({ type: "session", session: session.info() });
+          ws.send(JSON.stringify({ type: "branch-created", from: src.id, to: session.id } satisfies ServerMsg));
+          void session.start("new").then(async () => {
+            const deadline = Date.now() + 90_000;
+            while (Date.now() < deadline && session.info().status !== "ready") {
+              if (session.info().status === "error") return;
+              await new Promise((r) => setTimeout(r, 300));
+            }
+            if (session.info().status !== "ready") return;
+            // fork 优先：同 harness 且源有 acpSessionId 时，等 start 完成后试 fork 注入上下文
+            // （进程内 fork 在 connectWith resume/new 之后做——这里简化为注入式兜底，fork 路径
+            //  走源会话 acpSessionId 的 clone，见 startFork）
+            const forked = await session.tryForkFrom(src.acpSessionId);
+            if (!forked) {
+              // 兜底：接续式注入（蒸馏源会话最近历史）
+              const tail = src.transcript.slice(-16);
+              const lines: string[] = [];
+              let budget = 5000;
+              for (const e of tail) {
+                const a = e as unknown as Record<string, unknown>;
+                const who = e.kind === "user" ? "用户" : e.kind === "assistant" ? "助手" : e.kind === "thought" ? "思考" : e.kind === "tool" ? "工具" : "其他";
+                const body = (e.kind === "tool" ? `[${a.title ?? "tool"} ${a.status ?? ""}]` : String(a.text ?? a.message ?? "")).trim();
+                if (!body) continue;
+                const cut = body.length > 1000 ? body.slice(0, 1000) + "…" : body;
+                if (budget - cut.length < 0) { lines.push("…（更早省略）"); break; }
+                budget -= cut.length;
+                lines.push(`【${who}】${cut}`);
+              }
+              await session.prompt([
+                `【分支会话】你是从会话 #${src.id}（标题「${src.title ?? "无"}」）分叉出的分支「${record.branchName}」，下面是源会话的最近记录，通读建立上下文。`,
+                "主线想探索多个想法，你负责其中一个分支。一句话确认背景后等指令，不要动手改文件。",
+                "", "——— 源会话记录 ———", ...lines, "—————————————",
+              ].join("\n"));
+            }
+          });
+          break;
+        }
+
+        case "adopt-branch": {
+          // 收编分支：蒸馏其关键结论 → 注入主线（新回合）；分支标记已收编
+          const branch = store.get(msg.branchId);
+          const main = store.get(msg.mainId);
+          if (!branch || !main) {
+            ws.send(JSON.stringify({ type: "error", message: "分支或主线不存在" } satisfies ServerMsg));
+            return;
+          }
+          if (branch.parentId !== main.id) {
+            ws.send(JSON.stringify({ type: "error", message: "该会话不是这个主线的分支" } satisfies ServerMsg));
+            return;
+          }
+          void (async () => {
+            // 分支台账蒸馏（用户/助手的结论为主，工具行只留标题）
+            const lines: string[] = [];
+            for (const e of branch.transcript) {
+              const a = e as unknown as Record<string, unknown>;
+              if (e.kind === "user") lines.push(`用户: ${String(a.text ?? "").slice(0, 500)}`);
+              else if (e.kind === "assistant") lines.push(`助手: ${String(a.text ?? "").slice(0, 800)}`);
+              else if (e.kind === "tool") lines.push(`[工具 ${a.title ?? ""} ${a.status ?? ""}]`);
+            }
+            const r = await utility.ask({
+              purpose: "adopt-branch",
+              prompt: [
+                "你是会话合并助手。下面是一个「主会话」分出去的「分支会话」的完整记录（分支带着主线上下文探索了一个方向）。",
+                "提炼这个分支的关键结论：做了什么尝试、得到什么结果/结论、改了哪些文件（如有）、下一步建议。控制在 300 字内，直接输出要点，不要客套。",
+                "", "——— 分支记录 ———", ...lines.slice(-120), "—————————————",
+              ].join("\n"),
+              timeoutMs: 90_000,
+            });
+            const summary = r.ok ? r.text.slice(0, 1200) : `（蒸馏失败：${r.error}；原始记录见分支会话 #${branch.id}）`;
+            // 注入主线（拉活主线会话并 prompt）
+            reviveSession(main.id);
+            const mainSess = live.get(main.id);
+            if (!mainSess) {
+              ws.send(JSON.stringify({ type: "error", message: "主线会话无法拉活" } satisfies ServerMsg));
+              return;
+            }
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline && mainSess.info().status !== "ready") {
+              if (mainSess.info().status === "error") break;
+              await new Promise((r2) => setTimeout(r2, 300));
+            }
+            await mainSess.prompt([
+              `【分支收编】之前从本会话分出去的分支「${branch.branchName ?? branch.id}」（会话 #${branch.id}）已经探索完毕，以下是它的关键结论摘要：`,
+              "", summary, "",
+              "请把这些结论纳入你的上下文（视为已确认的事实/进展），一句话确认后等我的下一步指令。",
+            ].join("\n"));
+            // 分支标记已收编（标题加 ✓，广播）
+            const updated = { ...branch, branchName: `${branch.branchName ?? "分支"}✓已收编`, tags: [...new Set([...(branch.tags ?? []), "已收编"])].slice(0, 20) };
+            store.upsert(updated);
+            const liveB = live.get(branch.id);
+            if (liveB) {
+              liveB.branchName = updated.branchName;   // 实例同步（否则下次 persist 用旧名盖掉 store）
+              liveB.setTags(updated.tags ?? [], { manual: true });
+            } else {
+              broadcast({ type: "session", session: savedInfo(updated) });
+            }
+            audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
+            broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
+          })();
           break;
         }
 

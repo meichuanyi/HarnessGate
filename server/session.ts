@@ -193,6 +193,8 @@ export class HarnessSession {
   utility = false;
   /** 常驻助理会话：豁免空闲回收（armIdleStopWatch 直接跳过） */
   assistant = false;
+  parentId?: string;
+  branchName?: string;
   /** 本进程内记忆是否已注入（每次拉起只带一次，避免每条消息重复） */
   private memoryInjected = false;
   /** 用户自定义标签（自由命名，筛选用；上限 20 个） */
@@ -276,6 +278,8 @@ export class HarnessSession {
     this.starred = Boolean(record.starred);
     this.utility = Boolean(record.utility);
     this.assistant = Boolean(record.assistant);
+    this.parentId = record.parentId;
+    this.branchName = record.branchName;
     this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
     this.tagsManual = Boolean(record.tagsManual);
     this.semanticTagged = Boolean(record.semanticTagged);
@@ -333,6 +337,8 @@ export class HarnessSession {
       tags: this.tags.length ? this.tags : undefined,
       tagsManual: this.tagsManual || undefined,
       assistant: this.assistant || undefined,
+      parentId: this.parentId,
+      branchName: this.branchName,
       semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,
     };
@@ -387,6 +393,8 @@ export class HarnessSession {
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
       assistant: this.assistant || undefined,
+      parentId: this.parentId,
+      branchName: this.branchName,
       promptAudio: this.promptAudioSupported,
       handoffFrom: this.handoffFrom,
     };
@@ -404,6 +412,26 @@ export class HarnessSession {
   /** 收藏/取消收藏：落盘并广播（列表据 starred 置顶） */
   /** 设置标签（整体替换；空数组=清空）。manual=用户手动编辑（自动打标此后永不覆盖）；
    *  semantic=标记语义标签已打过（防重复触发）。落盘并广播。 */
+  /** 分支收编用：进程内尝试从源 acpSessionId fork 出上下文（成功=true，调用方跳过注入兜底） */
+  async tryForkFrom(srcAcpSessionId?: string): Promise<boolean> {
+    if (!srcAcpSessionId || !this.ctx) return false;
+    try {
+      const f = await this.ctx.request(acp.methods.agent.session.fork, {
+        sessionId: srcAcpSessionId,
+        cwd: this.cwd,
+        mcpServers: [],
+      });
+      const fid = (f as { sessionId?: string }).sessionId;
+      if (!fid) return false;
+      this.log(`分支已 fork 源上下文: ${srcAcpSessionId} → ${fid}`);
+      this.acpSessionId = fid;
+      return true;
+    } catch (err) {
+      this.log(`fork 源上下文不可用（走注入兜底）: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   setTags(tags: string[], opts?: { manual?: boolean; semantic?: boolean }): void {
     this.tags = tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20);
     if (opts?.manual !== undefined) this.tagsManual = opts.manual;

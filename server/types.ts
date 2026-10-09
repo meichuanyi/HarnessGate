@@ -70,6 +70,10 @@ export type SessionInfo = {
   utility?: boolean;
   /** 常驻助理会话（首页直达、永不回收） */
   assistant?: boolean;
+  /** 会话树：父会话 id（有值即为分支） */
+  parentId?: string;
+  /** 分支名 */
+  branchName?: string;
   /** 该会话的 harness 是否声明支持音频 prompt（promptCapabilities.audio）——决定通话能否「直传音频」 */
   promptAudio?: boolean;
   /** 本会话由哪次「接续」分叉而来（UI 显示「↩ 原会话」入口） */
@@ -159,6 +163,10 @@ export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; vars?: Record<string, string>; mcpServerIds?: string[]; assistant?: boolean }
   /** 确保助理会话存在（无则用默认 harness 创建）；hello 里带 assistantSessionId */
   | { type: "assistant-ensure"; harnessId?: string }
+  /** 从某会话分叉：继承其上下文（fork 优先，接续式注入兜底） */
+  | { type: "branch"; sessionId: string; branchName?: string; harnessId?: string; model?: string }
+  /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
+  | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
   | { type: "ping" }
   | { type: "resume"; sessionId: string }
@@ -408,6 +416,9 @@ export type ServerMsg =
       error?: string;
     }
   | { type: "update-applied"; version: string; message: string }
+  /** branch/adopt 完成 */
+  | { type: "branch-created"; from: string; to: string }
+  | { type: "branch-adopted"; branchId: string; mainId: string; summary: string }
   | { type: "pong" }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
   | { type: "settings"; settings: Record<string, unknown> }
