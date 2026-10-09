@@ -2356,6 +2356,7 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatCall" title="实时语音通话：全双工、可插话；接通自动切快速模型，挂断还原">📞 通话</button>
     ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
     <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
+    ${s.parentId ? `<button class="mini ghost" id="chatAdopt" title="把这个分支的结论蒸馏后收编回主线">⇱ 收编</button>` : `<button class="mini ghost" id="chatBranch" title="从这里分叉一个分支会话（继承当前上下文，探索不同想法）">⎇ 分支</button>`}
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
   const chatCall = $("chatCall");
@@ -2366,6 +2367,20 @@ function updateChatHeader() {
   if (chatHandoff) chatHandoff.onclick = () => openHandoffDialog(s.id);   // 对话框选 harness/模型；handoff_done 到达后自动跳进新会话
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
+  const chatBranch = $("chatBranch");
+  if (chatBranch) chatBranch.onclick = () => {
+    const name = prompt("分支名（比如：方案A / 试试rust / 换个思路）：", "");
+    if (name === null) return;
+    send({ type: "branch", sessionId: s.id, branchName: name.trim() || "分支" });
+    showToast(`正在创建分支「${name.trim() || "分支"}」（继承本会话上下文）…`, 4000);
+  };
+  const chatAdopt = $("chatAdopt");
+  if (chatAdopt) chatAdopt.onclick = () => {
+    if (!s.parentId) { showToast("该会话没有主线", 3000); return; }
+    if (!confirm("把这个分支的结论蒸馏后收编回主线？")) return;
+    send({ type: "adopt-branch", branchId: s.id, mainId: s.parentId });
+    showToast("正在蒸馏分支结论并注入主线…", 4000);
+  };
   const chatStar = $("chatStar");
   if (chatStar) chatStar.onclick = () => {
     const v = !s.starred;
