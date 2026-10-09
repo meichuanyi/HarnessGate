@@ -45,6 +45,8 @@ export type UtilitySessionDeps = {
   resolveHarness: (explicit?: string) => HarnessSpec | undefined;
   /** harness → 模型配置 configId（把 model value 经 chosen 下发用；无模型配置返回 undefined） */
   modelConfigIdOf: (harnessId: string) => string | undefined;
+  /** harness 默认模型（探活 currentValue）；设置未指定模型时显式钉住它，显示=实际 */
+  defaultModelFor?: (harnessId: string) => string | undefined;
   dataDir: string;
   maxConcurrent?: number;
   /** 自定义 API 通道（OpenAI 兼容）：非 null 时 ask() 直接 HTTP 调用，不起 harness 临时会话 */

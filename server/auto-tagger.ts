@@ -44,6 +44,8 @@ export class AutoTagger {
     private readonly settings: () => AppSettings,
     /** 打标成功后的回调（index.ts 里广播 session 更新） */
     private readonly onTags: (sessionId: string, tags: string[]) => void,
+    /** 探活显示的默认模型（utilityModel 未设置时的兜底） */
+    private readonly defaultModel: string | undefined,
   ) {}
 
   /** 创建会话时打项目标签（同步、确定性、不依赖任何开关以外的资源） */
@@ -106,7 +108,7 @@ export class AutoTagger {
       purpose: "auto-tagger",
       prompt,
       harnessId: wanted || undefined,
-      model: this.settings().utilityModel || undefined,
+      model: this.settings().utilityModel || this.defaultModel || undefined,
       timeoutMs: 90_000,
     });
     if (!r.ok) {

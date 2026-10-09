@@ -698,6 +698,23 @@ function authorized(req: {
   return typeof auth === "string" && auth === `Bearer ${TOKEN}`;
 }
 
+/** 探活时该 harness 上报的「当前模型」（UI 下拉显示的就是它）。
+ *  HG 新建会话若不显式钉模型，zcode 会落到自己的默认（GLM-5.3 max），与 UI 显示不符——
+ *  用户「以为在用 Flash 实际是 GLM-5.3」的困惑即源于此。 */
+function probeModelConfigId(harnessId: string): string | undefined {
+  const h = registry.harnesses.find((x) => x.id === harnessId);
+  if (!h) return undefined;
+  const cfgs = availability(h, trust, currentProbe()).configs ?? [];
+  return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id)))?.id;
+}
+
+function probeCurrentModel(harnessId: string): string | undefined {
+  const h = registry.harnesses.find((x) => x.id === harnessId);
+  if (!h) return undefined;
+  const cfgs = availability(h, trust, currentProbe()).configs ?? [];
+  return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id)))?.currentValue;
+}
+
 const utilitySessions = new UtilitySessions({
     store,
     audit,
@@ -712,12 +729,8 @@ const utilitySessions = new UtilitySessions({
       const s = registry.harnesses.find((h) => availability(h, trust, currentProbe()).available);
       return s ? specOf(s.id) : undefined;
     },
-    modelConfigIdOf: (harnessId: string) => {
-      const h = registry.harnesses.find((x) => x.id === harnessId);
-      if (!h) return undefined;
-      const cfgs = availability(h, trust, currentProbe()).configs ?? [];
-      return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
-    },
+    modelConfigIdOf: probeModelConfigId,
+    defaultModelFor: probeCurrentModel,
     dataDir: DATA_DIR,
     apiConfig: () => {
       const st = settingsStore.get();
@@ -732,7 +745,6 @@ autoTagger = new AutoTagger(
   utility,
   () => settingsStore.get(),
   (sid: string, tags: string[]) => {
-    // live 实例同步（否则实例下次 persist 会用旧 tags 盖掉 store）；存档会话直接广播
     const liveSess = live.get(sid);
     if (liveSess) {
       liveSess.setTags(tags, { semantic: true });
@@ -741,6 +753,7 @@ autoTagger = new AutoTagger(
       if (rec) broadcast({ type: "session", session: savedInfo(rec) });
     }
   },
+  probeCurrentModel("zcode"),
 );
 
 /** 助理会话 id：live 里找，退到 store（同一时刻只有一个 assistant 会话） */
@@ -876,6 +889,10 @@ wss.on("connection", (ws, req) => {
           if (msg.model) {
             const mc = currentProbe()[spec.id]?.configs?.find((c) => c.category === "model" && c.options.some((o) => o.value === msg.model));
             if (mc) record.chosen = { ...(record.chosen ?? {}), [mc.id]: msg.model };
+          } else {
+            const cm = probeCurrentModel(spec.id);
+            const mid = probeModelConfigId(spec.id);
+            if (cm && mid) record.chosen = { ...(record.chosen ?? {}), [mid]: cm };
           }
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           live.set(session.id, session);
@@ -1019,6 +1036,8 @@ wss.on("connection", (ws, req) => {
             break;
           }
           const record = HarnessSession.newRecord(spec, join(DATA_DIR, "assistant"));
+          const aModel = probeCurrentModel(spec.id);
+          if (aModel) record.chosen = { ...(record.chosen ?? {}), [probeModelConfigId(spec.id) ?? "model"]: aModel };
           record.assistant = true;
           record.title = "助理";
           record.tags = ["助理"];
@@ -1065,6 +1084,11 @@ wss.on("connection", (ws, req) => {
             }
           }
           if (msg.assistant) record.assistant = true;
+          // 钉住探活显示的模型：显示=实际，避免「看着是 Flash 实跑 GLM-5.3 max」
+          if (!record.chosen || !Object.keys(record.chosen).length) {
+            const cm = probeCurrentModel(spec.id);
+            if (cm) record.chosen = { [probeModelConfigId(spec.id) ?? "model"]: cm };
+          }
           autoTagger?.applyProjectTags(record);   // 必须在构造实例前改 record（实例构造时快照 tags）
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           if (msg.vars) session.vars = msg.vars;
