@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 应用内自更新：查 GitHub 最新 Release → 与本地版本比较 → 下载 APK → 调起系统安装。
 ///
@@ -11,6 +12,11 @@ import 'package:package_info_plus/package_info_plus.dart';
 /// 匿名调 GitHub API（公开仓库，限流 60 次/h/IP，启动静默检查一次 + 手动检查足够）。
 class AppUpdate {
   static const repo = 'meichuanyi/HarnessGate';
+
+  /// 已成功调起安装器的最新 tag（去 v）。发布方 pubspec 漏升版本时，APK 的 versionName
+  /// 会落后于 tag，check() 会永远判「有更新」→ 无限下载。用这个记住「这个 tag 已经装过」，
+  /// 打断循环；真正出了更新的 tag 仍然正常提示。
+  static const _kAppliedTag = 'hg_applied_update_tag';
 
   /// Release tag（含 v 前缀，如 v0.3.0）
   final String tag;
@@ -89,6 +95,18 @@ class AppUpdate {
     if (current != null && compareVersions(latest, current) <= 0) {
       return (update: null, message: manual ? '已是最新（v$current）' : null);
     }
+    // 这个 tag 已经装过（哪怕 APK 里的 versionName 因发布疏漏没跟上）→ 不再重复提示
+    try {
+      final applied = (await SharedPreferences.getInstance())
+              .getString(_kAppliedTag) ??
+          '';
+      if (applied.isNotEmpty && applied == latest) {
+        return (
+          update: null,
+          message: manual ? '已安装 $tag（本机版本号 $current，可能是发布时版本号未同步）' : null
+        );
+      }
+    } catch (_) {/* 读不到偏好：按未装过处理 */}
     return (
       update: AppUpdate(
         tag: tag,
@@ -167,10 +185,19 @@ class AppUpdate {
 
   /// 调起系统安装器（Android 8+ 首次需要授予「安装未知应用」权限，系统会引导）。
   /// 返回 ok=false 时通常是未授权，UI 应给出重试入口（授权回来后点重试即可，不必重新下载）。
-  static Future<({bool ok, String message})> install(String apkPath) async {
+  /// [tag] 传入时，调起成功后记为「已安装」，用于打断版本号不同步导致的无限更新循环。
+  static Future<({bool ok, String message})> install(String apkPath,
+      {String? tag}) async {
     final r = await OpenFilex.open(apkPath,
         type: 'application/vnd.android.package-archive');
-    return (ok: r.type == ResultType.done, message: r.message);
+    final ok = r.type == ResultType.done;
+    if (ok && tag != null && tag.isNotEmpty) {
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setString(_kAppliedTag, tag.replaceFirst('v', ''));
+      } catch (_) {/* 记不上也不影响安装 */}
+    }
+    return (ok: ok, message: r.message);
   }
 
   /// 版本号数字段比较（忽略 +build/-pre 后缀）：a<b 负、相等 0、a>b 正。

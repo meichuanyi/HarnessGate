@@ -59,7 +59,7 @@ Future<void> runUpdateFlow(BuildContext context, GateClient client, AppUpdate u)
 
 Future<void> _installWithRetry(BuildContext context, String tag, String path) async {
   while (context.mounted) {
-    final r = await AppUpdate.install(path);
+    final r = await AppUpdate.install(path, tag: tag);
     if (!context.mounted) return;
     if (r.ok) {
       ScaffoldMessenger.of(context).showSnackBar(

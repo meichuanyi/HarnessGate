@@ -124,7 +124,7 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
       ),
     );
     if (go == true) {
-      final r = await AppUpdate.install(path);
+      final r = await AppUpdate.install(path, tag: u.tag);
       if (!r.ok && ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
           SnackBar(content: Text('无法调起安装：${r.message}（若未授权「安装未知应用」，可到「我的」页重试）')),

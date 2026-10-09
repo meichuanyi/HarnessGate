@@ -704,7 +704,7 @@ const utilitySessions = new UtilitySessions({
     hub,
     makeHooks,
     resolveHarness: (explicit?: string) => {
-      const wanted = explicit || settingsStore.get().taggerHarnessId;
+      const wanted = explicit || settingsStore.get().utilityHarnessId;
       if (wanted) {
         const w = specOf(wanted);
         if (w) return w;
@@ -719,6 +719,11 @@ const utilitySessions = new UtilitySessions({
       return (cfgs.find((c) => c.category === "model") ?? cfgs.find((c) => /model/i.test(c.id) || /model/i.test(c.name ?? "")))?.id;
     },
     dataDir: DATA_DIR,
+    apiConfig: () => {
+      const st = settingsStore.get();
+      if (st.utilityMode !== "api" || !st.utilityApiBase || !st.utilityApiModel) return null;
+      return { baseUrl: st.utilityApiBase, apiKey: st.utilityApiKey, model: st.utilityApiModel };
+    },
 });
 const utility = utilitySessions;
 
@@ -927,9 +932,16 @@ wss.on("connection", (ws, req) => {
             return;
           }
           void (async () => {
-            // 分支台账蒸馏（用户/助手的结论为主，工具行只留标题）
+            // 分支台账蒸馏（用户/助手的结论为主，工具行只留标题）。
+            // 兜底路径的分支开头有注入的父上下文摘要（【分支会话】… + agent 确认）——
+            // 主线本来就懂这些，蒸馏只取分支自己的探索内容；fork 路径台账天然干净
+            let start = 0;
+            const firstU = branch.transcript[0] as { text?: string } | undefined;
+            if (branch.transcript[0]?.kind === "user" && (firstU?.text ?? "").startsWith("【分支会话】")) {
+              start = branch.transcript[1]?.kind === "assistant" ? 2 : 1;
+            }
             const lines: string[] = [];
-            for (const e of branch.transcript) {
+            for (const e of branch.transcript.slice(start)) {
               const a = e as unknown as Record<string, unknown>;
               if (e.kind === "user") lines.push(`用户: ${String(a.text ?? "").slice(0, 500)}`);
               else if (e.kind === "assistant") lines.push(`助手: ${String(a.text ?? "").slice(0, 800)}`);
@@ -1000,7 +1012,7 @@ wss.on("connection", (ws, req) => {
             audit.append({ session: asid!, op: "assistant.recreate", from: curRec!.harnessId, to: wantHid });
             broadcast({ type: "deleted", sessionId: asid } as unknown as ServerMsg);
           }
-          const hid = wantHid || settingsStore.get().taggerHarnessId || registry.harnesses.find((h) => availability(h, trust, currentProbe()).available)?.id;
+          const hid = wantHid || settingsStore.get().utilityHarnessId || registry.harnesses.find((h) => availability(h, trust, currentProbe()).available)?.id;
           const spec = hid ? specOf(hid) : undefined;
           if (!spec) {
             ws.send(JSON.stringify({ type: "error", message: "没有可用 harness，无法创建助理会话" } satisfies ServerMsg));

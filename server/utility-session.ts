@@ -47,6 +47,8 @@ export type UtilitySessionDeps = {
   modelConfigIdOf: (harnessId: string) => string | undefined;
   dataDir: string;
   maxConcurrent?: number;
+  /** 自定义 API 通道（OpenAI 兼容）：非 null 时 ask() 直接 HTTP 调用，不起 harness 临时会话 */
+  apiConfig?: () => { baseUrl: string; apiKey: string; model: string } | null;
 };
 
 export class UtilitySessions {
@@ -77,6 +79,33 @@ export class UtilitySessions {
 
   async ask(opts: UtilityAskOptions): Promise<UtilityAskResult> {
     const t0 = Date.now();
+    // 自定义 API 通道（设置里 utilityMode=api）：直接 HTTP，免 harness 进程——
+    // 打标/蒸馏这类一次性问答走 API 比临时会话快得多也省得多
+    const api = this.d.apiConfig?.();
+    if (api) {
+      try {
+        const res = await fetch(`${api.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${api.apiKey}` },
+          body: JSON.stringify({
+            model: api.model,
+            messages: [{ role: "user", content: opts.prompt }],
+            max_tokens: 1000,
+          }),
+          signal: AbortSignal.timeout(opts.timeoutMs ?? 90_000),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          return { ok: false, error: `API ${res.status}: ${body.slice(0, 200)}`, elapsedMs: Date.now() - t0 };
+        }
+        const j = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const text = (j.choices?.[0]?.message?.content ?? "").slice(0, opts.maxReplyChars ?? 4000);
+        if (!text.trim()) return { ok: false, error: "API 空回答", elapsedMs: Date.now() - t0 };
+        return { ok: true, text, harnessId: `api:${api.model}`, elapsedMs: Date.now() - t0 };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err), elapsedMs: Date.now() - t0 };
+      }
+    }
     const timeoutMs = opts.timeoutMs ?? 90_000;
     const maxChars = opts.maxReplyChars ?? 4000;
     await this.acquire();

@@ -95,7 +95,7 @@ export class AutoTagger {
     const title = rec.title ?? deriveTitle(rec.transcript);
     const firstUser = rec.transcript.find((e) => e.kind === "user");
     const body = firstUser?.text.slice(0, 500) ?? "";
-    const wanted = this.settings().taggerHarnessId;
+    const wanted = this.settings().utilityHarnessId;
 
     const prompt =
       `[HG-UTILITY:auto-tagger]\n` +
@@ -106,7 +106,7 @@ export class AutoTagger {
       purpose: "auto-tagger",
       prompt,
       harnessId: wanted || undefined,
-      model: this.settings().taggerModel || undefined,
+      model: this.settings().utilityModel || undefined,
       timeoutMs: 90_000,
     });
     if (!r.ok) {

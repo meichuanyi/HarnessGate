@@ -33,6 +33,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # versionCode = git 提交数，必须全量历史
+      - name: 校验 tag 与 app/pubspec.yaml 版本一致
+        # APP 自更新拿 Release tag 和 APK 的 versionName（来自 pubspec）比较；
+        # 二者不一致会「下载 N、装完仍是 N-1」→ 永远提示有更新（v0.6.29 / v0.6.31 踩过）。
+        run: |
+          PUB_VER="v$(sed -n 's/^version:[[:space:]]*//p' app/pubspec.yaml | head -1 | cut -d+ -f1)"
+          if [ "$PUB_VER" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} 与 app/pubspec.yaml 版本 ${PUB_VER} 不一致：升版本号后再打 tag"; exit 1
+          fi
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
