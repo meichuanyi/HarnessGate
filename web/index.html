@@ -1563,9 +1563,28 @@ function renderTree() {
       </div>
     </div>`;
   for (const h of harnesses.values()) {
-    const list = [...sessions.values()].filter((s) => s.harnessId === h.id);
-    list.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
-    const liveCount = list.filter((s) => s.live).length;
+    const all = [...sessions.values()].filter((s) => s.harnessId === h.id);
+    const liveCount = all.filter((s) => s.live).length;
+    // 树形排列：分支紧跟其主干行下方（同层仍按收藏>最近活跃排）；
+    // 主干不在本组/已删的分支退化为普通行
+    const roots = all.filter((s) => !s.parentId || !sessions.has(s.parentId));
+    roots.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+    const childrenOf = new Map();
+    for (const s of all) {
+      if (s.parentId && sessions.has(s.parentId)) {
+        const arr = childrenOf.get(s.parentId) ?? [];
+        arr.push(s);
+        childrenOf.set(s.parentId, arr);
+      }
+    }
+    for (const arr of childrenOf.values()) arr.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+    const list = [];
+    const seen = new Set();
+    for (const r of roots) {
+      list.push(r); seen.add(r.id);
+      for (const c of childrenOf.get(r.id) ?? []) { if (!seen.has(c.id)) { list.push(c); seen.add(c.id); } }
+    }
+    for (const s of all) if (!seen.has(s.id)) list.push(s);   // 兜底：环/异常不丢行
     const matchH = !filter || h.label.toLowerCase().includes(filter) || h.id.includes(filter);
     const matchedSessions = list.filter((s) =>
       matchH || (s.title && s.title.toLowerCase().includes(filter)) || s.cwd.toLowerCase().includes(filter) || s.id.includes(filter)
