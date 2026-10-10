@@ -1,6 +1,6 @@
 {
   "name": "harnessgate",
-  "version": "0.6.32",
+  "version": "0.6.33",
   "private": true,
   "type": "module",
   "description": "Self-hosted remote control plane for coding-agent harnesses (ACP client + thin web UI)",
@@ -17,10 +17,12 @@
   "license": "ISC",
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "croner": "^10.0.1",
     "node-edge-tts": "^1.2.10",
     "sherpa-onnx-node": "^1.13.8",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",

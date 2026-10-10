@@ -124,8 +124,19 @@ export type SchedulesFile = { version: 1; schedules: Schedule[] };
 export function loadSchedules(file: string): Schedule[] {
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as SchedulesFile;
-    return raw.schedules ?? [];
-  } catch {
+    const out: Schedule[] = [];
+    for (const s of raw.schedules ?? []) {
+      // 校验必填字段：agent 绕道直写本文件时可能写坏格式——坏条目跳过并告警，不拖垮整库
+      if (!s || typeof s.id !== "string" || typeof s.name !== "string" ||
+          typeof s.harnessId !== "string" || !s.cadence || typeof s.promptTemplate !== "string") {
+        console.error(`[schedules] 跳过坏条目（缺 id/name/harnessId/cadence/promptTemplate）: ${JSON.stringify(s).slice(0, 120)}`);
+        continue;
+      }
+      out.push(s);
+    }
+    return out;
+  } catch (err) {
+    console.error(`[schedules] 加载失败，按空库处理:`, err instanceof Error ? err.message : err);
     return [];
   }
 }
