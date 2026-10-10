@@ -3264,7 +3264,7 @@ function renderWorkspace(reports) {
     html += `<h3>${esc(r.cwd)}</h3><div class="meta2" style="margin-bottom:8px">${esc(r.note)}</div>`;
     html += `<h3>会话（${r.sessions.length}）</h3>`;
     for (const s of r.sessions) {
-      html += `<div class="wsRow"><div>${esc(s.harnessLabel)} <span class="badge">${s.mode === "worktree" ? "worktree " + esc(s.branch || "") : "共享目录"}</span>${s.inTurn ? '<span class="badge warn">正在干活</span>' : ""}</div>
+      html += `<div class="wsRow" data-wsid="${esc(s.id)}" style="cursor:pointer" title="点击进入该会话"><div>${esc(s.harnessLabel)} <span class="badge">${s.mode === "worktree" ? "worktree " + esc(s.branch || "") : "共享目录"}</span>${s.inTurn ? '<span class="badge warn">正在干活</span>' : ""}</div>
         <div class="meta2">#${s.id} · ${esc(s.cwd)}${s.changedFiles?.length ? ` · 改动 ${s.changedFiles.length} 个` : ""}</div>
         ${s.diffStat ? `<pre style="white-space:pre-wrap;font-size:11px;color:var(--dim2);margin:6px 0 0">${esc(s.diffStat)}</pre>` : ""}</div>`;
     }
@@ -3277,6 +3277,13 @@ function renderWorkspace(reports) {
     }
   }
   p.innerHTML = html;
+  // 点会话行 → 收抽屉进对话
+  p.querySelectorAll(".wsRow[data-wsid]").forEach((el) => {
+    el.onclick = () => {
+      p.hidden = true;
+      openSession(el.dataset.wsid);
+    };
+  });
 }
 
 /* =====================================================================
