@@ -1,6 +1,6 @@
 {
   "name": "harnessgate",
-  "version": "0.6.34",
+  "version": "0.6.36",
   "private": true,
   "type": "module",
   "description": "Self-hosted remote control plane for coding-agent harnesses (ACP client + thin web UI)",
