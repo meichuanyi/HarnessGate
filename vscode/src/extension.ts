@@ -48,15 +48,26 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       tree.refresh();
     }),
     vscode.commands.registerCommand("harnessgate.showLog", () => output.show(true)),
-    // 助理：ensure（无则创建，有则直达）
-    vscode.commands.registerCommand("harnessgate.assistantEnsure", () => {
+    // 助理：ensure（无则创建，有则直达）；可指定 harnessId（换芯重建：记忆保留）
+    vscode.commands.registerCommand("harnessgate.assistantEnsure", async (arg?: { harnessId?: string }) => {
       const asid = store.assistantSessionId;
-      if (asid) {
+      if (asid && !arg?.harnessId) {
         vscode.commands.executeCommand("harnessgate.openChat", asid);
-      } else {
-        client.send({ type: "assistant-ensure" });
-        vscode.window.showInformationMessage("正在创建助理会话…");
+        return;
       }
+      const cur = asid ? store.getSession(asid)?.harnessId : "";
+      const avail = store.harnesses.filter((h) => h.available);
+      const picks = avail.map((h) => ({
+        label: h.label,
+        description: h.id === cur ? "当前" : h.id,
+        hid: h.id,
+      }));
+      const picked = await vscode.window.showQuickPick(picks, {
+        placeHolder: "选择助理的 harness（换芯重建：长期记忆和台账保留）",
+      });
+      if (!picked) return;
+      client.send({ type: "assistant-ensure", harnessId: picked.hid });
+      vscode.window.showInformationMessage(`正在把助理切到 ${picked.label}（记忆保留）…`);
     }),
     // 会话标签：编辑（逗号分隔）
     vscode.commands.registerCommand("harnessgate.editTags", async (node?: { session?: SessionInfo; id?: string }) => {
