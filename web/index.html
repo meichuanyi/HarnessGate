@@ -283,7 +283,11 @@
     padding:18px 20px; width:min(430px,94vw); box-shadow:0 20px 50px rgba(0,0,0,.6); }
 
   /* ---------- 对话与消息 ---------- */
-  #chatWrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; }
+  /* contain:paint 把子树溢出封死在内部：chatHead 的徽章（停止会话/待审批/启动中）随 WS 状态
+     反复插入删除，瞬间内容会比盒子高出一截，逃逸溢出给 viewRoot 撑出 ~20px 可滚余量——
+     滚动定位/滚动链接会把它消费掉，整个会话页连输入框被滚上去（"会话框被拉上去"）。
+     常驻 live 的助理会话状态推送最频繁，最容易触发；归档静默的普通会话无瞬态所以无感 */
+  #chatWrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; contain:paint; }
   .chatHead { padding:10px 22px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; color:var(--dim); }
   /* 发言索引 + 搜索：贴在 chatHead 下面的一条导航栏 */
   .chatNav { display:flex; gap:6px; align-items:center; padding:6px 22px; border-bottom:1px solid var(--line); position:relative; flex-wrap:wrap; }
@@ -323,7 +327,7 @@
   .msg.cur { outline:2px solid var(--accent); outline-offset:2px; }
   mark.kw { background:var(--warn); color:#141414; border-radius:3px; padding:0 1px; }
   .msg.cur mark.kw { background:var(--accent); color:#06101f; }
-  #stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; }
+  #stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
   .msg { margin:0 0 14px; max-width:min(900px,100%); }
   .msg .who { font-size:11.5px; color:var(--dim2); margin-bottom:4px; letter-spacing:.02em; }
   .bubble.md { white-space:normal; }
