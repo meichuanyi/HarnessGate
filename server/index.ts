@@ -391,6 +391,13 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     autoApprove: rec.autoApprove,
     starred: rec.starred,
     tags: rec.tags,
+    // 树形关系字段必须随存档态下发，否则「会话一关，侧栏分支缩进就没了」
+    assistant: rec.assistant || undefined,
+    parentId: rec.parentId,
+    branchName: rec.branchName,
+    handoffFrom: rec.handoffFrom,
+    roomId: rec.roomId,
+    worktree: rec.worktree,
     configOptions: applyChosen(currentProbe()[rec.harnessId]?.configs, rec.chosen),
   };
 }
