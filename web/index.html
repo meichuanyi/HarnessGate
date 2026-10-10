@@ -1546,6 +1546,7 @@ function renderTree() {
         <span class="dot ${asst?.live ? "on" : ""}"></span>
         <span class="nm">✨ 助理</span>
         <span class="ct">${asid ? (asst?.live ? "在线" : "唤醒") : "创建"}</span>
+        <button class="mini ghost" data-asst-swap="1" title="更换助理的 harness（换芯重建：记忆和台账保留）" style="margin-left:6px;padding:0 4px">⇄</button>
       </div>
     </div>`;
   for (const h of harnesses.values()) {
@@ -1590,6 +1591,31 @@ function renderTree() {
 
   tree.querySelectorAll(".hRow").forEach((el) => {
     el.onclick = (e) => {
+      if (e.target.closest("[data-asst-swap]")) {
+        e.stopPropagation();
+        const cur = assistantSessionId ? sessions.get(assistantSessionId)?.harnessId : "";
+        const avail = [...harnesses.values()].filter((h) => h.available);
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99;display:flex;align-items:center;justify-content:center";
+        const opts = avail.map((h) => `<option value="${esc(h.id)}" ${h.id === cur ? "selected" : ""}>${esc(h.label)}</option>`).join("");
+        wrap.innerHTML = `<div style="background:var(--bg,#0b0d12);border:1px solid var(--line,#333);border-radius:10px;padding:16px;min-width:280px">
+          <div style="font-weight:600;margin-bottom:8px">助理换 harness</div>
+          <div class="meta2" style="margin-bottom:8px">换芯重建：长期记忆和台账保留，底层模型驱动更换</div>
+          <select id="asstSwapPick" style="width:100%;padding:6px">${opts}</select>
+          <div style="margin-top:10px;text-align:right"><button class="mini" id="asstSwapCancel">取消</button> <button class="mini primary" id="asstSwapGo">切换</button></div>
+        </div></div>`;
+        document.body.appendChild(wrap);
+        wrap.querySelector("#asstSwapCancel").onclick = () => wrap.remove();
+        wrap.querySelector("#asstSwapGo").onclick = () => {
+          const hid = wrap.querySelector("#asstSwapPick").value;
+          const h = avail.find((x) => x.id === hid);
+          wrap.remove();
+          if (!hid || hid === cur) return;
+          send({ type: "assistant-ensure", harnessId: hid });
+          showToast(`正在把助理切到 ${h ? h.label : hid}（记忆保留）…`, 4000);
+        };
+        return;
+      }
       if (el.dataset.asst) {
         if (assistantSessionId) openSession(assistantSessionId);
         else { send({ type: "assistant-ensure" }); pendingAssistantCreate = true; }
