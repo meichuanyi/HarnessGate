@@ -445,6 +445,19 @@
   .toolBody.collapsed {
     display: none;
   }
+  /* 权限条目的 title/context 是 agent 的自述+意图，长的能到几千字——不限高会撑爆
+     stream（表现为"会话框被拉上去"）。折叠为两行省略，详情点开 details 看 */
+  .msg.permission .bubble {
+    display: -webkit-box;
+    -webkit-line-clamp: 6;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .msg.permission .bubble.openfull {
+    display: block;
+    overflow: auto;
+    max-height: 240px;
+  }
   .toolSec {
     display: flex;
     flex-direction: column;
@@ -2757,6 +2770,12 @@ function paint(el, e) {
     }
   } else if (e.kind === "permission") {
     b.textContent = (e.danger ? "⚠️ " : "") + (e.task ? `【${e.task}】` : "") + (e.permKind ? `[${e.permKind}] ` : "") + e.title + (e.answered ? `  → ${e.answered}${e.auto ? "（自动决策）" : ""}` : "");
+    // 超长授权描述：默认 6 行截断，点气泡展开全文（防撑爆 stream）
+    if ((e.title || "").length + (e.context || "").length > 300) {
+      b.style.cursor = "zoom-in";
+      b.title = "点击展开/折叠全文";
+      b.addEventListener("click", () => b.classList.toggle("openfull"));
+    }
     if (e.danger) b.style.color = "var(--warn)";
     if (e.locations?.length) {
       const f = document.createElement("div");
