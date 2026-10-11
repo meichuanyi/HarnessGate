@@ -964,6 +964,8 @@ function connect() {
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
+      lastAliveAt = Date.now();   // 任何入站消息都证明链路活着
+      if (msg.type === "pong") confirmPending();
       if (msg.type === "hello" && gateOn) { gateSubmitted = false; hideGate(); }   // hello = 认证真正通过
       handleServer(msg);
     } catch (e) {
@@ -977,6 +979,74 @@ function send(obj) {
     return true;
   }
   return false;
+}
+/* ============ 连接健壮性：心跳探活 + prompt 送达确认 + 断线补发 ============
+   「发出去的消息刷新后消失」的根因：半开连接（链路已死但 readyState 仍 OPEN）上
+   ws.send 只进本地缓冲、不报错，消息看似发出实际永不到达；刷新后按服务端台账
+   重画，那条消息就不见了。对策三层：
+   ① 心跳：20s 一次 ping，45s 无任何入站即判死，强断重连（后台标签恢复计时器
+      后会立即触发，顺带解决手机休眠唤醒后的假连接）；
+   ② 送达确认：prompt 发出后补发一个 ping——TCP 有序，pong 回来即证明之前的
+      prompt 帧已到达服务器；
+   ③ 补发：未确认的 prompt 存 sessionStorage（刷新不丢），重连且台账到位后
+      与服务端记录查重，确实没到的自动补发。 */
+let lastAliveAt = Date.now();
+let pendingPrompts = [];
+try { pendingPrompts = JSON.parse(sessionStorage.getItem("hg_pending_prompts") || "[]"); } catch {}
+const PROMPT_ACK_TTL = 10 * 60_000;   // 超过 10 分钟仍未确认就放弃自动补发
+const transcriptSeen = new Set();      // 本页加载后已收到过台账的会话（空台账才是可信的空）
+function savePending() {
+  try { sessionStorage.setItem("hg_pending_prompts", JSON.stringify(pendingPrompts)); } catch {}
+}
+function trackPrompt(sid, text, attachments, sent) {
+  pendingPrompts.push({ sid, text, attachments, at: Date.now(), confirmed: false });
+  savePending();
+  if (sent) send({ type: "ping" });   // pong 回来即可确认送达（含更早的 prompt 帧）
+}
+function confirmPending() {
+  if (!pendingPrompts.some((p) => !p.confirmed)) return;
+  for (const p of pendingPrompts) p.confirmed = true;
+  savePending();
+}
+function forceReconnect() {
+  try { if (ws) { ws.onclose = null; ws.onerror = null; ws.close(); } } catch {}
+  ws = null;
+  $("conn").textContent = "重连中";
+  $("conn").className = "pill idle";
+  setTimeout(connect, 300);
+}
+setInterval(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (Date.now() - lastAliveAt > 45000) {   // 半开连接：判死强断（onclose 已掐掉，这里自己重连）
+    const n = pendingPrompts.filter((p) => !p.confirmed).length;
+    if (n && state.view === "chat") pushEntry({ kind: "error", message: `连接已无响应，${n} 条未确认消息将在重连后自动补发` });
+    forceReconnect();
+    return;
+  }
+  send({ type: "ping" });
+}, 20000);
+let flushTimer = null;
+function flushSoon() { clearTimeout(flushTimer); flushTimer = setTimeout(flushPending, 2500); }   // 等 hello 后的台账回包
+function flushPending() {
+  const nowMs = Date.now();
+  const keep = [];
+  for (const p of pendingPrompts) {
+    if (p.confirmed) continue;
+    if (nowMs - p.at > PROMPT_ACK_TTL) {
+      if (state.sessionId === p.sid && state.view === "chat") pushEntry({ kind: "error", message: "有一条消息始终未确认送达（已停止自动补发），请检查后手动重发" });
+      continue;
+    }
+    // 台账还没到（刚重连/未打开过该会话）→ 这轮先跳过，等 transcript 触发的下一轮
+    const known = p.sid === state.sessionId ? (transcriptSeen.has(p.sid) ? entries : null) : cacheGet(p.sid);
+    if (p.sid === state.sessionId && !transcriptSeen.has(p.sid)) { keep.push(p); continue; }
+    // 查重：台账里已有同文本 user 条目（不早于发送时刻）→ 其实已送达，只是回执没见到
+    if (known?.length && known.some((e) => e.kind === "user" && e.text === p.text && new Date(e.ts).getTime() >= p.at - 2000)) continue;
+    send({ type: "prompt", sessionId: p.sid, text: p.text, attachments: p.attachments || [] });
+    p.at = nowMs;
+    keep.push(p);
+  }
+  pendingPrompts = keep;
+  savePending();
 }
 connect();
 
@@ -1167,6 +1237,7 @@ function handleServer(msg) {
       render();
       if (navBoot) { const n = navBoot; navBoot = null; applyNav(n); }   // 刷新/分享链接带 #/s/<id> 等时恢复视图
       if (pendingOpenOnHello) { const pid = pendingOpenOnHello; pendingOpenOnHello = null; openSession(pid); }
+      flushSoon();   // 重连完成：未确认的 prompt 等台账到位后补发
       break;
     case "mcp": /* 受管 MCP 服务器（设置抽屉/新建会话选择用） */
       mcpServers = msg.servers || [];
@@ -1258,6 +1329,8 @@ function handleServer(msg) {
         } else {
           entries = incoming;
           renderAll();
+          transcriptSeen.add(msg.sessionId);   // 本页已见过该会话的权威台账（空台账也可信）
+          flushSoon();   // 台账到位：查重并补发未确认消息
         }
       }
       break;
@@ -3273,8 +3346,10 @@ function doSend() {
   const atts = pendingFiles.slice();
   if (!s.title) { s.title = text.slice(0, 40); renderTree(); }
   pushEntry({ kind:"user", text, attachments: atts.map((a) => ({ name:a.name, mimeType:a.mimeType })) });
-  if (!send({ type:"prompt", sessionId: state.sessionId, text, attachments: atts })) {
-    pushEntry({ kind:"error", message:"连接已断开，这条消息没有发出去（正在自动重连，稍后重发即可）" });
+  const sentOk = send({ type:"prompt", sessionId: state.sessionId, text, attachments: atts });
+  trackPrompt(state.sessionId, text, atts, sentOk);   // 送达确认：pong 回来才移出待确认
+  if (!sentOk) {
+    pushEntry({ kind:"error", message:"连接断开，这条消息已排队，重连后自动补发" });
   }
   pendingFiles = []; renderChips();
 }
