@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../core/client.dart';
+import '../core/config.dart';
 import '../core/protocol.dart';
+import '../core/applog.dart';
 import 'chat_page.dart';
 import 'connect_page.dart';
 import 'new_session_page.dart';
@@ -215,6 +217,40 @@ class _SessionsPageState extends State<SessionsPage> {
       appBar: AppBar(
         title: const Text('会话'),
         actions: [
+          IconButton(
+            tooltip: '应用日志（定位连接问题）',
+            icon: const Icon(Icons.receipt_long_outlined, size: 20),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('应用日志（最近 400 条）'),
+                  content: SizedBox(
+                    width: double.maxFinite,
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        AppLog.I.dump(),
+                        style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () async {
+                        final cfg = await ServerConfig.load();
+                        final r = await AppLog.I.upload(cfg.url, cfg.token);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r == null ? '上传失败' : '日志已上传到服务器')));
+                        }
+                      },
+                      child: const Text('上传到服务器'),
+                    ),
+                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+                  ],
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: '服务器配置',
             icon: const Icon(Icons.settings_outlined, size: 20),

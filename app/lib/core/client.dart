@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'protocol.dart';
+import 'applog.dart';
 import 'update.dart';
 import 'transcript_cache.dart';
 import 'voice.dart';
@@ -90,7 +91,7 @@ class GateClient {
     _url = normalizeBaseUrl(baseUrl);
     _token = token.trim();
     _closedByUs = false;
-    _doConnect();
+    AppLog.I.log('connect: host=${Uri.parse(_url).host} token=${_token.isEmpty ? '无' : '有'}');
   }
 
   /// 用户输入容错：粘贴网页完整链接（带路径/hash/尾部斜杠）也能用——只保留 协议+主机+端口。
@@ -142,6 +143,7 @@ class GateClient {
 
   void _doConnect() {
     if (_url.isEmpty) return;
+    AppLog.I.log('ws connecting…');
     _stateCtrl.add('connecting');
     try {
       // 连接必须带硬超时：WS 升级被网络中间设备挂起时 pending 永不触发事件，
@@ -156,6 +158,7 @@ class GateClient {
         (data) {
           _lastReceived = DateTime.now();
           _stateCtrl.add('connected');
+          AppLog.I.log('ws connected');
           _retry?.cancel();
           try {
             final m = jsonDecode(data as String) as Map<String, dynamic>;
@@ -164,16 +167,30 @@ class GateClient {
           } catch (_) {}
         },
         onDone: () {
+          AppLog.I.log('ws 连接关闭 code 见 onDone 参数');
+          final code = _ws?.closeCode;
           _ws = null;
           _stopHeartbeat();
           if (!_closedByUs) {
+            if (code != null && code != 1000 && code != 1005) {
+              _lastError = code == 4401
+                  ? '服务端拒绝（4401）：token 缺失或不正确'
+                  : '连接被服务端关闭（code $code）';
+              AppLog.I.log(_lastError);
+            }
             _stateCtrl.add('error');
             _scheduleRetry();
           } else {
             _stateCtrl.add('idle');
           }
         },
-        onError: (_) {
+        onError: (e) {
+          AppLog.I.log('ws error: $e');
+          _lastError = e
+              .toString()
+              .split('\n')
+              .first
+              .replaceFirst(RegExp(r'^\w+Exception:\s*'), '');
           _ws = null;
           _stopHeartbeat();
           _stateCtrl.add('error');
@@ -181,10 +198,15 @@ class GateClient {
         },
       );
     } catch (e) {
+      _lastError = e.toString().split('\n').first;
       _stateCtrl.add('error');
       _scheduleRetry();
     }
   }
+
+  /// 最近一次连接失败的原因（connect 页直接展示，别再只给笼统的「连接失败」）
+  String _lastError = '';
+  String get lastError => _lastError;
 
   void _scheduleRetry() {
     _retry?.cancel();
@@ -298,7 +320,10 @@ class GateClient {
       if (m['sessionId'] == assistantSessionId) assistantSessionId = null;
       changed = true;
     }
-    if (changed) _sessionsCtrl.add(null);
+    if (changed) {
+      AppLog.I.log('sessions 同步: ${sessions.length} 个');
+      _sessionsCtrl.add(null);
+    }
   }
 
   void send(Map<String, dynamic> msg) {

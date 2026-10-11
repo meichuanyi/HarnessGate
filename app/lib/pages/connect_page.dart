@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/config.dart';
+import '../core/applog.dart';
 import '../core/client.dart';
 import 'home_page.dart';
 
@@ -44,7 +45,11 @@ class _ConnectPageState extends State<ConnectPage> {
     _stateSub = widget.client.state.listen((st) {
       if (st == 'error' && _busy && mounted) {
         _timeout?.cancel();
-        setState(() { _busy = false; _error = '连接失败：地址不可达或 token 无效'; });
+        final why = widget.client.lastError;
+        setState(() {
+          _busy = false;
+          _error = '连接失败：${why.isNotEmpty ? why : '地址不可达或 token 无效'}';
+        });
       }
     });
     // 已有配置：直连并跳过本页
@@ -74,6 +79,37 @@ class _ConnectPageState extends State<ConnectPage> {
         setState(() { _busy = false; _error = '连接超时：地址不可达或 token 无效'; });
       }
     });
+  }
+
+  void _showLog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('应用日志（最近 400 条）'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              AppLog.I.dump(),
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final c = await ServerConfig.load();
+              final r = await AppLog.I.upload(c.url, c.token);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r == null ? '上传失败' : '已上传')));
+              }
+            },
+            child: const Text('上传到服务器'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+        ],
+      ),
+    );
   }
 
   void _connect() {
@@ -144,6 +180,26 @@ class _ConnectPageState extends State<ConnectPage> {
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Text('连接'),
                     ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      TextButton(
+                        onPressed: () => _showLog(context),
+                        child: const Text('📋 查看日志', style: TextStyle(fontSize: 12)),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          final c = await ServerConfig.load();
+                          final r = await AppLog.I.upload(c.url, c.token);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r == null ? '上传失败' : '日志已上传到服务器')));
+                          }
+                        },
+                        child: const Text('⬆ 上传日志到服务器', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
                   ),
                 ],
               ),

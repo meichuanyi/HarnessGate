@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import '../core/applog.dart';
 import '../core/client.dart';
+import '../core/config.dart';
 import '../core/notify.dart';
 import '../core/system_overlay.dart';
 import '../core/update.dart';
@@ -129,6 +132,47 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// 日志弹窗：查看 + 复制 + 上传到服务器（服务端 /applog 落盘，远程定位用）
+  void _showLog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('应用日志（最近 400 条）'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              AppLog.I.dump(),
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: AppLog.I.dump()));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制到剪贴板')));
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final cfg = await ServerConfig.load();
+              final r = await AppLog.I.upload(cfg.url, cfg.token);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(r == null ? '上传失败（检查网络/服务器可达）' : '已上传到服务器：$r')),
+                );
+              }
+            },
+            child: const Text('上传到服务器'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
     if (s == AppLifecycleState.resumed) _refreshOverlayPerm(); // 从系统设置页回来重新判定
@@ -214,6 +258,13 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
                       c.serverVersion.isEmpty ? '未连接' : 'v${c.serverVersion} · ${c.serverCommit}',
                       style: TextStyle(fontSize: 12, color: Colors.grey[400]),
                     ),
+                  ),
+                  // 连不上/行为异常时：看日志 → 一键上传到服务器（服务端 /applog 落盘），方便远程定位
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.receipt_long_outlined, size: 20),
+                    title: const Text('应用日志（定位连接问题）', style: TextStyle(fontSize: 13.5)),
+                    onTap: () => _showLog(context),
                   ),
                 ],
               ),
