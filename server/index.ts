@@ -140,7 +140,11 @@ function ghDownloadApk(tag: string, name: string): Promise<boolean> {
   const url = `https://github.com/meichuanyi/HarnessGate/releases/download/${tag}/${name}`;
   const run = (resume: boolean): Promise<boolean> =>
     new Promise((resolve) => {
-      const args = ["-sL", "-m", "3600", "-o", tmp, url];
+      // 本机直连 github.com release 下载会挂死（api.github.com 却能通），v0.6.29 起
+      // 中转下载一直失败且 -s 把报错吞成空串；实测走本地 sing-box 秒下。可用 env 换/关。
+      const proxy = process.env.HG_GH_PROXY ?? "http://127.0.0.1:7890";
+      const args = ["-sSL", "-m", "3600", "-o", tmp, url];
+      if (proxy && proxy !== "off") args.splice(1, 0, "--proxy", proxy);
       if (resume) args.unshift("-C", "-");
       const child = spawn("curl", args);
       let err = "";
