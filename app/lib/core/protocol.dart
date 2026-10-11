@@ -483,6 +483,15 @@ Map<String, dynamic> msgDelete(String sessionId) =>
 /// 接续：把历史复制进一个新会话继续跑（server 回 handoff_done）
 Map<String, dynamic> msgHandoff(String sessionId) =>
     {'type': 'handoff', 'sessionId': sessionId};
+
+/// 分支：继承本会话上下文开一条分支（server 回 branch-created{from,to} + session 广播）
+Map<String, dynamic> msgBranch(String sessionId, String branchName) =>
+    {'type': 'branch', 'sessionId': sessionId, 'branchName': branchName};
+
+/// 收编：把分支结论蒸馏后注入主线（server 广播 branch-adopted{branchId,mainId,summary}）
+Map<String, dynamic> msgAdoptBranch(String branchId, String mainId) =>
+    {'type': 'adopt-branch', 'branchId': branchId, 'mainId': mainId};
+
 Map<String, dynamic> msgMode(String sessionId, String modeId) =>
     {'type': 'mode', 'sessionId': sessionId, 'modeId': modeId};
 

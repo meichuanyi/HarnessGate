@@ -386,6 +386,33 @@ class _ChatPageState extends State<ChatPage> {
           );
         }
         break;
+      case 'branch-created':
+        // 分支创建成功：不自动跳转（对齐 web），新分支挂在列表树本会话下方（⎇）
+        if (m['from'] == widget.sessionId) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('✅ 分支已创建，在会话列表本会话下方（⎇）')),
+          );
+        }
+        break;
+      case 'branch-adopted':
+        // 收编完成（入口在分支页，发起者即当前页）：展示蒸馏出的摘要
+        if (m['branchId'] == widget.sessionId && mounted) {
+          final summary = m['summary'] as String? ?? '';
+          showDialog<void>(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('✅ 已收编回主线'),
+              content: SingleChildScrollView(
+                child: SelectableText(
+                  summary.isEmpty ? '（server 未返回摘要，主线已收到注入）' : summary,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('知道了'))],
+            ),
+          );
+        }
+        break;
       case 'session-detail':
         if (sid == widget.sessionId) _detail.value = m;
         break;
@@ -830,6 +857,64 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  /// ⎇ 分支：继承本会话上下文开一条分支（对齐 web 对话页顶栏 ⎇ 分支；server 起会话后
+  /// 注入蒸馏上下文，回 branch-created + session 广播，新分支挂在列表树本会话下方）
+  Future<void> _branchFromSession() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('⎇ 创建分支'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 20, // server 侧 branchName 也截 20
+          decoration: const InputDecoration(
+            labelText: '分支名',
+            hintText: '比如：方案A / 试试rust / 换个思路',
+            counterText: '',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('创建')),
+        ],
+      ),
+    );
+    if (name == null) return;
+    final trimmed = name.trim().isEmpty ? '分支' : name.trim();
+    widget.client.send(msgBranch(widget.sessionId, trimmed));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('正在创建分支「$trimmed」（继承本会话上下文）…')));
+    }
+  }
+
+  /// ⇱ 收编：把本分支的关键结论蒸馏成摘要注入主线（仅分支会话可见入口，对齐 web）
+  Future<void> _adoptToMain() async {
+    final mainId = _session?.parentId;
+    if (mainId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该会话没有主线，无法收编')));
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('⇱ 收编回主线'),
+        content: const Text('把这个分支探索的关键结论蒸馏成摘要，注入主线会话继续？完成后分支会标记为「✓已收编」。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('收编')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    widget.client.send(msgAdoptBranch(widget.sessionId, mainId));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在蒸馏分支结论并注入主线…')));
+    }
+  }
+
   /// 状态胶囊（运行中/空闲/待审批/已存档…）——不用点开任何东西就能看到会话当前状态
   Widget _statusPill(SessionInfo? s) {
     if (s == null) return const SizedBox.shrink();
@@ -1047,6 +1132,8 @@ class _ChatPageState extends State<ChatPage> {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在把历史复制到新会话…')));
                   widget.client.send(msgHandoff(widget.sessionId));
                   break;
+                case 'branch': _branchFromSession(); break;
+                case 'adopt': _adoptToMain(); break;
               }
             },
             itemBuilder: (_) => [
@@ -1057,6 +1144,9 @@ class _ChatPageState extends State<ChatPage> {
               const PopupMenuItem(value: 'changes', child: Text('📄 改动文件')),
               PopupMenuItem(value: 'star', child: Text((s?.starred ?? false) ? '★ 取消收藏' : '☆ 收藏置顶')),
               const PopupMenuItem(value: 'handoff', child: Text('➡️ 接续到新会话')),
+              const PopupMenuItem(value: 'branch', child: Text('⎇ 分支（继承上下文）')),
+              // 收编只对分支会话有意义（web 同规则：顶栏 ⇱ 收编仅 parentId 非空时出现）
+              if (s?.parentId != null) const PopupMenuItem(value: 'adopt', child: Text('⇱ 收编回主线')),
               if (s?.live == true) const PopupMenuItem(value: 'stop', child: Text('停止进程')),
               if (s != null && !s.live && s.resumable) const PopupMenuItem(value: 'resume', child: Text('恢复会话')),
               const PopupMenuItem(value: 'delete', child: Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
