@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../core/client.dart';
 import '../core/protocol.dart';
 import 'chat_page.dart';
+import 'connect_page.dart';
 import 'new_session_page.dart';
 
 /// 会话列表的一个 harness 分组（对齐 web 侧栏的树形结构）
@@ -55,19 +56,48 @@ class SessionsPage extends StatefulWidget {
     }
 
     final groups = byHarness.entries.map((e) {
-      final list = e.value.toList()
-        ..sort((a, b) {
-          final as = (a.starred ?? false) ? 1 : 0;
-          final bs = (b.starred ?? false) ? 1 : 0;
-          if (as != bs) return bs - as;
-          return b.lastActiveAt.compareTo(a.lastActiveAt);
-        });
+      // 树形排列：分支紧跟其主干行下方（对齐 web 侧栏），同层仍按收藏>最近活跃排；
+      // 主干不在本组/找不到的分支退化为普通行（兜底不丢行）
+      final idsAll = all.map((s) => s.id).toSet();
+      int byStarActive(SessionInfo a, SessionInfo b) {
+        final as = (a.starred ?? false) ? 1 : 0;
+        final bs = (b.starred ?? false) ? 1 : 0;
+        if (as != bs) return bs - as;
+        return b.lastActiveAt.compareTo(a.lastActiveAt);
+      }
+
+      final roots = e.value
+          .where((s) => s.parentId == null || !idsAll.contains(s.parentId))
+          .toList()
+        ..sort(byStarActive);
+      final childrenOf = <String, List<SessionInfo>>{};
+      for (final s in e.value) {
+        final p = s.parentId;
+        if (p != null && idsAll.contains(p)) {
+          childrenOf.putIfAbsent(p, () => []).add(s);
+        }
+      }
+      for (final l in childrenOf.values) {
+        l.sort((a, b) => b.lastActiveAt.compareTo(a.lastActiveAt));
+      }
+      final ordered = <SessionInfo>[];
+      final seen = <String>{};
+      for (final r in roots) {
+        ordered.add(r);
+        seen.add(r.id);
+        for (final c in childrenOf[r.id] ?? const <SessionInfo>[]) {
+          if (seen.add(c.id)) ordered.add(c);
+        }
+      }
+      for (final s in e.value) {
+        if (seen.add(s.id)) ordered.add(s);
+      }
       return SessionGroup(
         harnessId: e.key,
-        label: list.first.harnessLabel,
-        latestActive: maxActive(list),
-        liveCount: list.where((s) => s.live).length,
-        sessions: list,
+        label: ordered.first.harnessLabel,
+        latestActive: maxActive(e.value),
+        liveCount: e.value.where((s) => s.live).length,
+        sessions: ordered,
         collapsed: collapsed.contains(e.key),
       );
     }).toList()
@@ -185,6 +215,17 @@ class _SessionsPageState extends State<SessionsPage> {
       appBar: AppBar(
         title: const Text('会话'),
         actions: [
+          IconButton(
+            tooltip: '服务器配置',
+            icon: const Icon(Icons.settings_outlined, size: 20),
+            onPressed: () {
+              widget.client.dispose();
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                    builder: (_) => ConnectPage(client: widget.client)),
+              );
+            },
+          ),
           IconButton(
             tooltip: _starredOnly ? '显示全部会话' : '只看收藏',
             icon: Icon(
@@ -325,7 +366,9 @@ class _SessionsPageState extends State<SessionsPage> {
       ..sort((a, b) {
         final ap = a.probedOk ? 0 : (a.available ? 1 : 2);
         final bp = b.probedOk ? 0 : (b.available ? 1 : 2);
-        return ap.compareTo(bp) != 0 ? ap.compareTo(bp) : a.label.compareTo(b.label);
+        return ap.compareTo(bp) != 0
+            ? ap.compareTo(bp)
+            : a.label.compareTo(b.label);
       });
     showModalBottomSheet<void>(
       context: context,
@@ -335,7 +378,8 @@ class _SessionsPageState extends State<SessionsPage> {
           children: [
             Padding(
               padding: const EdgeInsets.all(10),
-              child: Text(cur == null ? '创建助理 · 选择 harness' : '助理 harness（当前：$cur）',
+              child: Text(
+                  cur == null ? '创建助理 · 选择 harness' : '助理 harness（当前：$cur）',
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
             Padding(
@@ -351,18 +395,23 @@ class _SessionsPageState extends State<SessionsPage> {
                     ListTile(
                       dense: true,
                       leading: Icon(
-                        h.id == cur ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                        h.id == cur
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
                         size: 20,
                         color: h.id == cur ? const Color(0xFF5B9CF8) : null,
                       ),
-                      title: Text(h.label, style: const TextStyle(fontSize: 13.5)),
-                      subtitle: Text(h.id, style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                      title:
+                          Text(h.label, style: const TextStyle(fontSize: 13.5)),
+                      subtitle: Text(h.id,
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.grey[500])),
                       onTap: () {
                         Navigator.pop(ctx);
                         if (h.id == cur) return;
                         widget.client.send(msgAssistantEnsure(harnessId: h.id));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('正在把助理切到 ${h.label}（记忆保留）…')));
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text('正在把助理切到 ${h.label}（记忆保留）…')));
                       },
                     ),
                 ],
@@ -485,7 +534,8 @@ class _SessionsPageState extends State<SessionsPage> {
         }
         final s = data as SessionInfo;
         final (color, label) = _pill(s);
-        return ListTile(
+        final branched = s.parentId != null;
+        final row = ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
           leading: Container(
@@ -496,6 +546,11 @@ class _SessionsPageState extends State<SessionsPage> {
           ),
           title: Row(
             children: [
+              if (branched)
+                const Padding(
+                    padding: EdgeInsets.only(right: 3),
+                    child: Text('⎇',
+                        style: TextStyle(fontSize: 12, color: Colors.grey))),
               if (s.starred ?? false)
                 const Padding(
                     padding: EdgeInsets.only(right: 4),
@@ -531,7 +586,7 @@ class _SessionsPageState extends State<SessionsPage> {
             ],
           ),
           subtitle: Text(
-              '$label · ${SessionsPage.timeAgo(s.lastActiveAt)} · ${s.cwd.split('/').last.isEmpty ? s.cwd : s.cwd.split('/').last}',
+              '${branched && (s.branchName?.isNotEmpty ?? false) ? '⎇${s.branchName} · ' : ''}$label · ${SessionsPage.timeAgo(s.lastActiveAt)} · ${s.cwd.split('/').last.isEmpty ? s.cwd : s.cwd.split('/').last}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12)),
@@ -574,6 +629,11 @@ class _SessionsPageState extends State<SessionsPage> {
                       Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
             ],
           ),
+        );
+        // 分支行整体缩进（对齐 web 侧栏的挂树效果）
+        return Padding(
+          padding: EdgeInsets.only(left: branched ? 18 : 0),
+          child: row,
         );
       },
     );

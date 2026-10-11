@@ -77,6 +77,10 @@ class SessionInfo {
   final String? autoApprove; // off/readonly/all
   final String? roomId;
   final String? error;
+
+  /// 分支关系（树形显示用）：父会话 id / 分支名（收编后带 ✓已收编 后缀）
+  final String? parentId;
+  final String? branchName;
   final String lastActiveAt;
   final List<ConfigOption> configOptions;
   final PendingPermission? pendingPermission;
@@ -99,6 +103,8 @@ class SessionInfo {
     this.autoApprove,
     this.roomId,
     this.error,
+    this.parentId,
+    this.branchName,
     required this.lastActiveAt,
     this.configOptions = const [],
     this.pendingPermission,
@@ -123,6 +129,8 @@ class SessionInfo {
         autoApprove: j['autoApprove'] as String?,
         roomId: j['roomId'] as String?,
         error: j['error'] as String?,
+        parentId: j['parentId'] as String?,
+        branchName: j['branchName'] as String?,
         lastActiveAt: j['lastActiveAt'] as String? ?? '',
         configOptions: ((j['configOptions'] as List<dynamic>?) ?? [])
             .whereType<Map<String, dynamic>>()
@@ -167,6 +175,8 @@ class SessionInfo {
         autoApprove: autoApprove ?? this.autoApprove,
         roomId: roomId,
         error: error ?? this.error,
+        parentId: parentId,
+        branchName: branchName,
         lastActiveAt: lastActiveAt,
         configOptions: configOptions ?? this.configOptions,
         pendingPermission: pendingPermission ?? this.pendingPermission,
@@ -485,8 +495,10 @@ Map<String, dynamic> msgRoomStop(String roomId) =>
     {'type': 'room-stop', 'roomId': roomId};
 
 /// 确保助理会话存在（无则创建；harnessId 与现役不同时服务端换芯重建——长期记忆与台账保留）
-Map<String, dynamic> msgAssistantEnsure({String? harnessId}) =>
-    {'type': 'assistant-ensure', if (harnessId != null && harnessId.isNotEmpty) 'harnessId': harnessId};
+Map<String, dynamic> msgAssistantEnsure({String? harnessId}) => {
+      'type': 'assistant-ensure',
+      if (harnessId != null && harnessId.isNotEmpty) 'harnessId': harnessId
+    };
 
 /// 设置标签（整体替换；空数组=清空）
 Map<String, dynamic> msgSetTags(String sessionId, List<String> tags) =>
@@ -693,7 +705,10 @@ Map<String, dynamic> msgVoiceLiveChunk(String pcmBase64) =>
 Map<String, dynamic> msgVoiceLiveBarge() => {'type': 'voice-live-barge'};
 Map<String, dynamic> msgVoiceLiveStop() => {'type': 'voice-live-stop'};
 Map<String, dynamic> msgCreate(String harnessId,
-        {String? cwd, bool? isolate, Map<String, String>? vars, List<String>? mcpServerIds}) =>
+        {String? cwd,
+        bool? isolate,
+        Map<String, String>? vars,
+        List<String>? mcpServerIds}) =>
     {
       'type': 'create',
       'harnessId': harnessId,
@@ -734,15 +749,23 @@ class McpServerInfo {
         name: j['name'] as String? ?? '',
         type: j['type'] as String? ?? 'stdio',
         command: j['command'] as String?,
-        args: ((j['args'] as List<dynamic>?) ?? []).map((a) => a.toString()).toList(),
+        args: ((j['args'] as List<dynamic>?) ?? [])
+            .map((a) => a.toString())
+            .toList(),
         env: ((j['env'] as List<dynamic>?) ?? [])
             .whereType<Map<String, dynamic>>()
-            .map((e) => (name: e['name'] as String? ?? '', value: e['value'] as String? ?? ''))
+            .map((e) => (
+                  name: e['name'] as String? ?? '',
+                  value: e['value'] as String? ?? ''
+                ))
             .toList(),
         url: j['url'] as String?,
         headers: ((j['headers'] as List<dynamic>?) ?? [])
             .whereType<Map<String, dynamic>>()
-            .map((e) => (name: e['name'] as String? ?? '', value: e['value'] as String? ?? ''))
+            .map((e) => (
+                  name: e['name'] as String? ?? '',
+                  value: e['value'] as String? ?? ''
+                ))
             .toList(),
         enabled: j['enabled'] as bool? ?? true,
         note: j['note'] as String?,
@@ -769,17 +792,24 @@ Map<String, dynamic> msgMcpSave(McpServerInfo s) => {
         if (s.type == 'stdio') ...{
           if (s.command != null && s.command!.isNotEmpty) 'command': s.command,
           if (s.args.isNotEmpty) 'args': s.args,
-          if (s.env.isNotEmpty) 'env': [for (final e in s.env) {'name': e.name, 'value': e.value}],
+          if (s.env.isNotEmpty)
+            'env': [
+              for (final e in s.env) {'name': e.name, 'value': e.value}
+            ],
         } else ...{
           if (s.url != null && s.url!.isNotEmpty) 'url': s.url,
-          if (s.headers.isNotEmpty) 'headers': [for (final h in s.headers) {'name': h.name, 'value': h.value}],
+          if (s.headers.isNotEmpty)
+            'headers': [
+              for (final h in s.headers) {'name': h.name, 'value': h.value}
+            ],
         },
         'enabled': s.enabled,
         if (s.note != null && s.note!.isNotEmpty) 'note': s.note,
       },
     };
 
-Map<String, dynamic> msgMcpDelete(String id) => {'type': 'mcp-delete', 'id': id};
+Map<String, dynamic> msgMcpDelete(String id) =>
+    {'type': 'mcp-delete', 'id': id};
 
 /// 技能：主库条目（挂载状态随快照更新）
 class SkillInfo {
@@ -787,13 +817,19 @@ class SkillInfo {
   final String description;
   final int tokens; // 常驻系统提示词的 token 估算
   final List<String> mountedOn;
-  SkillInfo({required this.name, required this.description, required this.tokens, this.mountedOn = const []});
+  SkillInfo(
+      {required this.name,
+      required this.description,
+      required this.tokens,
+      this.mountedOn = const []});
 
   factory SkillInfo.fromJson(Map<String, dynamic> j) => SkillInfo(
         name: j['name'] as String? ?? '',
         description: j['description'] as String? ?? '',
         tokens: (j['tokens'] as num?)?.toInt() ?? 0,
-        mountedOn: ((j['mountedOn'] as List<dynamic>?) ?? []).map((e) => e.toString()).toList(),
+        mountedOn: ((j['mountedOn'] as List<dynamic>?) ?? [])
+            .map((e) => e.toString())
+            .toList(),
       );
 }
 
@@ -802,7 +838,10 @@ class SkillMountInfo {
   final String harnessId;
   final List<({String name, bool native, int tokens})> skills;
   final int totalTokens;
-  SkillMountInfo({required this.harnessId, required this.skills, required this.totalTokens});
+  SkillMountInfo(
+      {required this.harnessId,
+      required this.skills,
+      required this.totalTokens});
 
   factory SkillMountInfo.fromJson(Map<String, dynamic> j) => SkillMountInfo(
         harnessId: j['harnessId'] as String? ?? '',
@@ -819,11 +858,19 @@ class SkillMountInfo {
 }
 
 Map<String, dynamic> msgSkills() => {'type': 'skills'};
-Map<String, dynamic> msgSkillsSave(String name, String description, String body, {String? renameFrom}) => {
+Map<String, dynamic> msgSkillsSave(String name, String description, String body,
+        {String? renameFrom}) =>
+    {
       'type': 'skills-save',
-      'skill': {'name': name, 'description': description, 'body': body, if (renameFrom != null) 'renameFrom': renameFrom},
+      'skill': {
+        'name': name,
+        'description': description,
+        'body': body,
+        if (renameFrom != null) 'renameFrom': renameFrom
+      },
     };
-Map<String, dynamic> msgSkillsDelete(String name) => {'type': 'skills-delete', 'name': name};
+Map<String, dynamic> msgSkillsDelete(String name) =>
+    {'type': 'skills-delete', 'name': name};
 Map<String, dynamic> msgSkillsMount(String name, String harnessId, bool on) =>
     {'type': 'skills-mount', 'name': name, 'harnessId': harnessId, 'on': on};
 Map<String, dynamic> msgSkillsRead(String name, {String? nativeHarness}) => {
