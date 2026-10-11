@@ -535,6 +535,35 @@ const http = createServer(async (req, res) => {
   }
   // 交付件下载：/download?room=<id>&task=<id>&path=<相对路径>（单文件）
   //           /download?room=<id>&task=<id>&all=1（任务全部产物打包 tar.gz）
+  // APP 诊断日志上报：POST /applog?device=<设备名>（Bearer token 鉴权）
+  if (url.pathname === "/applog" && req.method === "POST") {
+    if (!authorized(req)) {
+      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.end("unauthorized");
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      chunks.push(c);
+      if (chunks.reduce((n, b) => n + b.length, 0) > 5 * 1024 * 1024) req.destroy();   // 上限 5MB
+    });
+    req.on("end", () => {
+      try {
+        const dir = join(DATA_DIR, "applogs");
+        mkdirSync(dir, { recursive: true });
+        const dev = (url.searchParams.get("device") ?? "device").replace(/[^\w.-]/g, "").slice(0, 40) || "device";
+        const file = `${dev}-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
+        writeFileSync(join(dir, file), Buffer.concat(chunks));
+        audit.append({ op: "applog.upload", device: dev, file, bytes: Buffer.concat(chunks).length });
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end(file);
+      } catch (err) {
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        res.end(err instanceof Error ? err.message : String(err));
+      }
+    });
+    return;
+  }
   if (url.pathname === "/release-apk") {
     if (!authorized(req)) {
       res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
