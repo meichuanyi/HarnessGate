@@ -92,6 +92,7 @@ class GateClient {
     _token = token.trim();
     _closedByUs = false;
     AppLog.I.log('connect: host=${Uri.parse(_url).host} token=${_token.isEmpty ? '无' : '有'}');
+    _doConnect();
   }
 
   /// 用户输入容错：粘贴网页完整链接（带路径/hash/尾部斜杠）也能用——只保留 协议+主机+端口。

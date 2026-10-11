@@ -71,6 +71,13 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
         Notifier.show(sid, '🔐 等待授权', m['title'] as String? ?? '有操作在等你决定');
       }
     });
+    // 启动即静默检查应用更新（GitHub 直连，不依赖连上服务器）：有新版后台下载，
+    // 前台弹安装/后台发通知。放在 app 级而不是 HomePage——更新通道不能跟着连接一起死，
+    // 卡在连接页的旧版也要能发现新包自救（v0.6.38 连接回归时只能手动装包的教训）
+    Timer(const Duration(seconds: 3), () async {
+      final r = await AppUpdate.check();
+      if (r.update != null) await UpdateManager.autoDownload(client, r.update!);
+    });
   }
 
   @override

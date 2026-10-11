@@ -1,9 +1,5 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import '../core/client.dart';
-import '../core/update.dart';
-import '../core/update_manager.dart';
 import 'profile_page.dart';
 import 'roundtable_page.dart';
 import 'schedules_page.dart';
@@ -21,16 +17,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _tab = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    // 启动静默检查一次应用更新（GitHub Release）；有新版直接后台下载，不弹阻塞对话框
-    Timer(const Duration(seconds: 3), () async {
-      final r = await AppUpdate.check();
-      if (r.update != null) await UpdateManager.autoDownload(widget.client, r.update!);
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
