@@ -401,4 +401,17 @@ class GateClient {
     _stateCtrl.close();
     _sessionsCtrl.close();
   }
+
+  /// 「服务器配置」入口用：断开 + 停重连，但保留消息/状态流。
+  /// dispose 是终局——控制器关了，回连后服务器的 hello 再也送不进页面，
+  /// 连接页只能干等 12s 超时（齿轮进连接页后必卡死的根因）；软复位才能原地回来。
+  void softReset() {
+    _closedByUs = true;
+    _retry?.cancel();
+    _stopHeartbeat();
+    try {
+      _ws?.sink.close();
+    } catch (_) {}
+    _ws = null;
+  }
 }

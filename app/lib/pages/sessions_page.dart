@@ -255,7 +255,7 @@ class _SessionsPageState extends State<SessionsPage> {
             tooltip: '服务器配置',
             icon: const Icon(Icons.settings_outlined, size: 20),
             onPressed: () {
-              widget.client.dispose();
+              widget.client.softReset();
               Navigator.of(context).pushReplacement(
                 MaterialPageRoute(
                     builder: (_) => ConnectPage(client: widget.client)),
