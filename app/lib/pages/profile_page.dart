@@ -94,6 +94,7 @@ class ProfilePage extends StatefulWidget {
 class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   String _appVersion = '…';
   bool _canOverlay = false;
+  StreamSubscription<Map<String, dynamic>>? _msgSub;
 
   @override
   void initState() {
@@ -103,10 +104,27 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
       if (mounted) setState(() => _appVersion = 'v${i.version}');
     });
     _refreshOverlayPerm();
+    // harness 安装/升级报告：刷新按钮态 + 弹结果提示
+    _msgSub = widget.client.messages.listen((m) {
+      if (m['type'] != 'harness-managed' || !mounted) return;
+      final h = widget.client.harnesses[m['harnessId']];
+      if (h != null) {
+        h.manageBusy = false;
+        if (m['ok'] == true && m['to'] != null) h.installedVersion = m['to'] as String;
+      }
+      setState(() {});
+      final ok = m['ok'] == true;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok
+            ? '✅ ${m['action'] == 'install' ? '安装' : '升级'}完成${m['to'] != null ? '：v${m['to']}' : ''}（新会话生效）'
+            : '❌ 管理失败：${(m['output'] ?? '未知错误').toString().split('\n').last}'),
+      ));
+    });
   }
 
   @override
   void dispose() {
+    _msgSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -201,6 +219,49 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
               ),
             ),
           ),
+          // Harness 管理：本机版本 → 上游最新版，一键安装/升级
+          if (c.harnesses.values.any((h) => h.manageSupported))
+            Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                child: Column(
+                  children: [
+                    const ListTile(
+                      dense: true,
+                      leading: Icon(Icons.system_update_outlined, color: Color(0xFF5B9CF8)),
+                      title: Text('Harness 管理', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                      subtitle: Text('一键安装/升级服务器上的 harness（新会话生效）', style: TextStyle(fontSize: 11.5)),
+                    ),
+                    for (final h in c.harnesses.values.where((h) => h.manageSupported))
+                      ListTile(
+                        dense: true,
+                        title: Text(h.label, style: const TextStyle(fontSize: 13.5)),
+                        subtitle: Text(() {
+                          final i = h.installedVersion;
+                          final l = h.latestVersion;
+                          if (i == null) return l == null ? '无版本信息' : '未安装 · 最新 v$l';
+                          return i == l ? 'v$i · 已是最新' : 'v$i → v$l';
+                        }(), style: const TextStyle(fontSize: 11.5)),
+                        trailing: h.manageBusy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                            : TextButton(
+                                onPressed: () => c.send({
+                                  'type': 'harness-manage',
+                                  'harnessId': h.id,
+                                  'action': h.installedVersion == null ? 'install' : 'update',
+                                }),
+                                child: Text(
+                                  h.installedVersion == null
+                                      ? '安装'
+                                      : (h.latestVersion != null && h.installedVersion != h.latestVersion ? '升级' : '重装'),
+                                ),
+                              ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
           // 通知
           Card(
             margin: const EdgeInsets.only(bottom: 12),

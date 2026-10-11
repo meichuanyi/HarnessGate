@@ -216,6 +216,13 @@ class HarnessInfo {
   final bool experimental;
   final List<String> extraAgents;
   final List<ConfigOption> configs;
+
+  /// 版本管理（harness.json manage 声明的才参与）；installedVersion/manageBusy
+  /// 会被 harness-managed 报告就地更新，所以不设 final
+  String? installedVersion;
+  final String? latestVersion;
+  bool manageBusy = false;
+  final bool manageSupported;
   HarnessInfo({
     required this.id,
     required this.label,
@@ -225,6 +232,10 @@ class HarnessInfo {
     this.experimental = false,
     this.extraAgents = const [],
     this.configs = const [],
+    this.installedVersion,
+    this.latestVersion,
+    this.manageBusy = false,
+    this.manageSupported = false,
   });
 
   /// 探活通过（可用且真跑通过一次对话）
@@ -244,6 +255,10 @@ class HarnessInfo {
             .whereType<Map<String, dynamic>>()
             .map(ConfigOption.fromJson)
             .toList(),
+        installedVersion: j['installedVersion'] as String?,
+        latestVersion: j['latestVersion'] as String?,
+        manageBusy: j['manageBusy'] as bool? ?? false,
+        manageSupported: j['manageSupported'] as bool? ?? false,
       );
 }
 

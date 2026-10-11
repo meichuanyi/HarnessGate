@@ -1498,6 +1498,18 @@ function handleServer(msg) {
     case "branch-adopted":
       showToast("✅ 分支已收编回主线（主线已收到结论摘要）", 5000);
       break;
+    case "harness-managed": {
+      const mh = harnesses.get(msg.harnessId);
+      if (mh) {
+        mh.manageBusy = false;
+        if (msg.ok && msg.to) mh.installedVersion = msg.to;
+      }
+      renderSetPanel();
+      showToast(msg.ok
+        ? `✅ ${msg.action === "install" ? "安装" : "升级"}完成${msg.to ? `：v${msg.to}` : ""}（新会话生效）`
+        : `❌ ${msg.action === "install" ? "安装" : "升级"}失败：${(msg.output || "未知错误").slice(-160)}`, 6000);
+      break;
+    }
     case "voice-stt-result":   // 本地识别结果：追加进输入框
       setVoiceUI("idle");
       if (msg.error) showToast("🎙 " + msg.error, 6000);
@@ -1677,6 +1689,7 @@ function renderTree() {
           <span class="caret" data-toggle="${h.id}">${collapsed ? "▸" : "▾"}</span>
           <span class="dot ${liveCount ? "on" : ""}"></span>
           <span class="nm">${esc(h.label)}</span>
+          ${h.manageSupported && h.installedVersion && h.latestVersion && h.installedVersion !== h.latestVersion ? `<span class="tag" style="color:#f5b942" title="有新版本，设置里可一键升级">↑ v${esc(h.latestVersion)}</span>` : ""}
           <span class="ct">${list.length}</span>
         </div>
         ${!collapsed ? `
@@ -3538,6 +3551,26 @@ function renderSetPanel() {
   p.innerHTML = `
     <div class="hd"><b>⚙ 设置</b><button class="mini ghost" onclick="document.getElementById('setPanel').hidden=true">关闭</button></div>
     <div class="wsRow">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">Harness 管理</div>
+      ${(() => {
+        const ms = [...harnesses.values()].filter((h) => h.manageSupported);
+        if (!ms.length) return '<div class="meta2">没有可管理的 harness（harness.json 未声明 manage）</div>';
+        return ms.map((h) => {
+          const missing = !h.installedVersion;
+          const up = !missing && h.latestVersion && h.installedVersion !== h.latestVersion;
+          const ver = missing
+            ? (h.latestVersion ? `未安装 · 最新 v${esc(h.latestVersion)}` : "无版本信息")
+            : up ? `v${esc(h.installedVersion)} → v${esc(h.latestVersion)}`
+                 : `v${esc(h.installedVersion)} · 已是最新`;
+          return `<div style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin:6px 0">
+            <span style="min-width:92px;font-weight:600">${esc(h.label)}</span>
+            <span class="meta2" style="flex:1">${ver}</span>
+            <button class="mini ${up || missing ? "primary" : ""}" data-hmanage="${esc(h.id)}" ${h.manageBusy ? "disabled" : ""}>${h.manageBusy ? "进行中…" : missing ? "安装" : up ? "升级" : "重装"}</button>
+          </div>`;
+        }).join("");
+      })()}
+    </div>
+    <div class="wsRow">
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">后台智能（打标 / 分支蒸馏 / 收编摘要）</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:6px 0">
         <input type="checkbox" id="setProjTags" style="width:auto" ${st.autoProjectTags !== false ? "checked" : ""} />
@@ -3666,11 +3699,20 @@ function renderSetPanel() {
     $("utilHarnessCfg").style.display = api ? "none" : "";
     $("utilApiCfg").style.display = api ? "" : "none";
   };
+  p.querySelectorAll("[data-hmanage]").forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.hmanage;
+      const h = harnesses.get(id);
+      const act = h && !h.installedVersion ? "install" : "update";
+      b.disabled = true;
+      b.textContent = "进行中…";
+      send({ type: "harness-manage", harnessId: id, action: act });
+    };
+  });
   $("setSave").onclick = () => {
     send({
       type: "settings-set",
-      patch: {
-        autoProjectTags: $("setProjTags").checked,
+      patch: {        autoProjectTags: $("setProjTags").checked,
         autoSemanticTags: $("setSemTags").checked,
         utilityMode: $("setUtilMode").value,
         utilityHarnessId: $("setTagger").value,

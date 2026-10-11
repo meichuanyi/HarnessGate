@@ -13,7 +13,11 @@
         "acp"
       ],
       "proxy": "http://127.0.0.1:7890",
-      "note": "原生 ACP，本机已装 1.18.13。模型推理网关 models.opencode.ai 直连不响应，必须走本机 sing-box 代理"
+      "note": "原生 ACP，本机已装 1.18.13。模型推理网关 models.opencode.ai 直连不响应，必须走本机 sing-box 代理",
+      "manage": {
+        "versionCmd": "opencode --version",
+        "updateCmd": "opencode upgrade"
+      }
     },
     {
       "id": "zcode",
@@ -36,14 +40,20 @@
       "label": "Claude Code",
       "cmd": "claude-agent-acp",
       "args": [],
-      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）"
+      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）",
+      "manage": {
+        "pkg": "@agentclientprotocol/claude-agent-acp"
+      }
     },
     {
       "id": "codex",
       "label": "Codex",
       "cmd": "codex-acp",
       "args": [],
-      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）"
+      "note": "官方 CLI + 官方 ACP 适配器（已全局安装）",
+      "manage": {
+        "pkg": "@agentclientprotocol/codex-acp"
+      }
     },
     {
       "id": "qoder",
@@ -85,14 +95,20 @@
         "content-writer",
         "agent-ops",
         "steward"
-      ]
+      ],
+      "manage": {
+        "pkg": "openclaw"
+      }
     },
     {
       "id": "deepseek",
       "label": "DeepSeek Harness",
       "cmd": "/usr/local/bin/deepseek-acp-wrapper",
       "args": [],
-      "note": "经 dsh-acp 桥接 DeepSeek Harness（dsh）。API key 放 /root/.harnessgate/deepseek-api-key（600，一行；web Models 页配置的 key 各 profile 不互通，所以走这个文件）"
+      "note": "经 dsh-acp 桥接 DeepSeek Harness（dsh）。API key 放 /root/.harnessgate/deepseek-api-key（600，一行；web Models 页配置的 key 各 profile 不互通，所以走这个文件）",
+      "manage": {
+        "pkg": "dsh-acp"
+      }
     }
   ]
 }

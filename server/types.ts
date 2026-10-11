@@ -23,6 +23,9 @@ export type HarnessSpec = {
   repository?: string;
   requiresDownload?: boolean;
   download?: { archive: string; cmd: string };
+  /** 一键安装/升级（可选）：npm 包名，或自定义版本/更新命令。不声明则该 harness 不参与版本管理。
+      只执行这里预声明的内容——客户端不能传任意命令。 */
+  manage?: { pkg?: string; versionCmd?: string; updateCmd?: string };
 };
 
 export type Registry = {
@@ -157,6 +160,11 @@ export type HarnessAvailability = {
     currentValue?: string;
     options: Array<{ value: string; name: string }>;
   }>;
+  /** 版本管理：本机已装版本 / 上游最新版 / 管理动作进行中 / 是否支持一键管理 */
+  installedVersion?: string;
+  latestVersion?: string;
+  manageBusy?: boolean;
+  manageSupported?: boolean;
 };
 
 export type ClientMsg =
@@ -165,6 +173,8 @@ export type ClientMsg =
   | { type: "assistant-ensure"; harnessId?: string }
   /** 从某会话分叉：继承其上下文（fork 优先，接续式注入兜底） */
   | { type: "branch"; sessionId: string; branchName?: string; harnessId?: string; model?: string }
+  /** harness 一键安装/升级：只允许执行 harness.json manage 里预声明的包/命令 */
+  | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
   /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
   | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
@@ -420,6 +430,8 @@ export type ServerMsg =
   | { type: "branch-created"; from: string; to: string }
   | { type: "branch-adopted"; branchId: string; mainId: string; summary: string }
   | { type: "pong" }
+  /** harness 一键安装/升级的执行报告（broadcast，所有客户端同步按钮态） */
+  | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
   | { type: "settings"; settings: Record<string, unknown> }
   /** utility-cleanup 的回复：各源的扫描/删除结果 */

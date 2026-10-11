@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyOverrides, saveOverrides } from "./registry.ts";
+import { initManage, manageInfo, manageRun } from "./harness-manage.ts";
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
@@ -778,7 +779,7 @@ function helloPayload(): ServerMsg {
     providers: history.availableProviders(),
     version: VERSION,
     commit: GIT_COMMIT,
-    harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
+    harnesses: registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()))),
     mcpServers: mcpStore.list(),
     skills: skillsSnapshot(),
     sessions: sessionList(),
@@ -786,6 +787,15 @@ function helloPayload(): ServerMsg {
     rooms: rooms.list(),
   };
 }
+
+/** 把版本管理信息（已装/最新/支持一键管理）并进 availability 下发 */
+function availWithManage(a: ReturnType<typeof availability>): ReturnType<typeof availability> {
+  const mi = manageInfo(a.id);
+  return { ...a, installedVersion: mi.installed, latestVersion: mi.latest, manageBusy: mi.busy, manageSupported: mi.supported };
+}
+
+// harness 版本管理：启动时探测本机/上游版本 + 6h 刷新（harness.json manage 声明的才参与）
+initManage(registry.harnesses, () => {});
 
 wss.on("connection", (ws, req) => {
   if (!authorized(req as never)) {
@@ -1011,6 +1021,27 @@ wss.on("connection", (ws, req) => {
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
           })();
+          break;
+        }
+
+        case "harness-manage": {
+          // 一键安装/升级：只跑 harness.json manage 里预声明的内容；报告广播给所有客户端
+          const mSpec = registry.harnesses.find((h) => h.id === msg.harnessId);
+          if (!mSpec) {
+            ws.send(JSON.stringify({ type: "error", message: "没有这个 harness" } satisfies ServerMsg));
+            break;
+          }
+          void manageRun(mSpec.id, msg.action).then((r) => {
+            broadcast({
+              type: "harness-managed",
+              harnessId: mSpec.id,
+              action: msg.action,
+              ok: r.ok,
+              from: r.from,
+              to: r.to,
+              output: r.output,
+            } satisfies ServerMsg);
+          });
           break;
         }
 
