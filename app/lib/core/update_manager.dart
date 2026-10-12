@@ -38,6 +38,7 @@ class UpdateManager {
           }
         },
         relayBaseUrl: client.httpBase,
+        token: client.token,
       );
       await Notifier.cancelUpdateProgress();
       _lastPath = path;

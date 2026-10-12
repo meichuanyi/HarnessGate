@@ -75,7 +75,8 @@ class _HarnessGateAppState extends State<HarnessGateApp> with WidgetsBindingObse
     // 前台弹安装/后台发通知。放在 app 级而不是 HomePage——更新通道不能跟着连接一起死，
     // 卡在连接页的旧版也要能发现新包自救（v0.6.38 连接回归时只能手动装包的教训）
     Timer(const Duration(seconds: 3), () async {
-      final r = await AppUpdate.check();
+      final r = await AppUpdate.check(
+        relayBaseUrl: client.httpBase, token: client.token);
       if (r.update != null) await UpdateManager.autoDownload(client, r.update!);
     });
   }

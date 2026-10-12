@@ -142,6 +142,9 @@ class GateClient {
   String get tokenQuery =>
       _token.isEmpty ? '' : 'token=${Uri.encodeComponent(_token)}';
 
+  /// 原始 token（更新检查/下载走服务器中转时拼鉴权用）
+  String get token => _token;
+
   void _doConnect() {
     if (_url.isEmpty) return;
     AppLog.I.log('ws connecting…');

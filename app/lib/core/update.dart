@@ -42,8 +42,10 @@ class AppUpdate {
 
   /// 检查更新：有新版本返回 update；已是最新/失败/无 APK 时 update 为空，
   /// [manual] = true 时把原因放进 message（弹窗展示），静默检查则全部无声。
+  /// GitHub 匿名 API 对私有仓库 404 → 提供 [relayBaseUrl]+[token] 时回退服务器
+  /// 元数据端点 /release-apk-meta（owner 鉴权），私有仓库时代的主通道。
   static Future<({AppUpdate? update, String? message})> check(
-      {bool manual = false}) async {
+      {bool manual = false, String? relayBaseUrl, String? token}) async {
     String? current;
     try {
       current = (await PackageInfo.fromPlatform()).version;
@@ -56,9 +58,13 @@ class AppUpdate {
         headers: {'Accept': 'application/vnd.github+json'},
       ).timeout(const Duration(seconds: 15));
     } catch (e) {
+      final fb = await _checkViaRelay(relayBaseUrl, token, current, manual);
+      if (fb != null) return fb;
       return (update: null, message: manual ? '连不上 GitHub（$e）' : null);
     }
     if (res.statusCode != 200) {
+      final fb = await _checkViaRelay(relayBaseUrl, token, current, manual);
+      if (fb != null) return fb;
       return (
         update: null,
         message: manual ? 'GitHub API ${res.statusCode}（限流？稍后再试）' : null
@@ -119,12 +125,61 @@ class AppUpdate {
     );
   }
 
+  /// 经服务器查最新 Release 元数据（/release-apk-meta）。失败返回 null，调用方维持原失败文案。
+  static Future<({AppUpdate? update, String? message})?> _checkViaRelay(
+      String? relayBase, String? token, String? current, bool manual) async {
+    if (relayBase == null || relayBase.isEmpty) return null;
+    final base = relayBase.replaceAll(RegExp(r'/+$'), '');
+    final tq = (token != null && token.trim().isNotEmpty)
+        ? 'token=${Uri.encodeComponent(token.trim())}'
+        : '';
+    try {
+      final res = await http
+          .get(Uri.parse('$base/release-apk-meta${tq.isEmpty ? '' : '?$tq'}'))
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) {
+        return (update: null,
+            message: manual ? '服务器查询更新失败（HTTP ${res.statusCode}）' : null);
+      }
+      final j = jsonDecode(res.body) as Map<String, dynamic>;
+      final tag = j['tag'] as String?;
+      if (tag == null) {
+        return (update: null, message: manual ? '服务器上还没有 Release' : null);
+      }
+      final latest = tag.replaceFirst('v', '');
+      if (current != null && compareVersions(latest, current) <= 0) {
+        return (update: null, message: manual ? '已是最新（v$current）' : null);
+      }
+      final applied =
+          (await SharedPreferences.getInstance()).getString(_kAppliedTag) ?? '';
+      if (applied.isNotEmpty && applied == latest) {
+        return (update: null, message: manual ? '已安装 $tag' : null);
+      }
+      return (
+        update: AppUpdate(
+          tag: tag,
+          name: j['apkName'] as String? ?? tag,
+          notes: '（经服务器中转检查：私有仓库）',
+          // 下载走中转并带上 token（中转需要鉴权；直连 GitHub 对私有仓库已不可行）
+          apkUrl: Uri.parse(
+              '$base/release-apk?tag=$tag${tq.isEmpty ? '' : '&$tq'}'),
+          sizeBytes: (j['size'] as num?)?.toInt() ?? 0,
+        ),
+        message: null,
+      );
+    } catch (_) {
+      return null;   // 回退也失败：交回原失败文案
+    }
+  }
+
   /// 下载 APK 到应用缓存目录，返回文件路径。[onProgress] 汇报字节进度（done, total）。
   /// [relayBaseUrl] 非空时优先走服务器中转（手机直连 GitHub 慢），失败自动回退 GitHub 直链。
+  /// [token] 拼进中转 URL——中转需要鉴权，缺 token 会 4401 后白白回退直连。
   static Future<String> download(
     AppUpdate u,
     void Function(int done, int total) onProgress, {
     String? relayBaseUrl,
+    String? token,
   }) async {
     final fileName = 'harnessgate-${u.tag}.apk';
     // 之前下载过且大小吻合 → 直接复用（点"更新"不再重复下载）
@@ -138,7 +193,8 @@ class AppUpdate {
 
     final urls = <Uri>[
       if (relayBaseUrl != null && relayBaseUrl.isNotEmpty)
-        Uri.parse('$relayBaseUrl/release-apk?tag=${u.tag}'),
+        Uri.parse('$relayBaseUrl/release-apk?tag=${u.tag}'
+            '${token != null && token.trim().isNotEmpty ? '&token=${Uri.encodeComponent(token.trim())}' : ''}'),
       u.apkUrl,
     ];
     Object? lastErr;

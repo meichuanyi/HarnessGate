@@ -185,7 +185,10 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
 
   Future<void> _manualCheck() async {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在检查更新…'), duration: Duration(seconds: 1)));
-    final r = await AppUpdate.check(manual: true);
+    final r = await AppUpdate.check(
+        manual: true,
+        relayBaseUrl: widget.client.httpBase,
+        token: widget.client.token);
     if (!mounted) return;
     if (r.update != null) {
       _offerUpdate(r.update!);
