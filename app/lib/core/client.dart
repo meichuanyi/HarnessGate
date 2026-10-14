@@ -96,18 +96,36 @@ class GateClient {
   }
 
   /// 用户输入容错：粘贴网页完整链接（带路径/hash/尾部斜杠）也能用——只保留 协议+主机+端口。
-  /// 裸地址默认补 http（局域网填 IP:端口 的场景最多）。
+  /// 裸地址按主机类型补协议：本机/内网 IP → http（无证书场景）；
+  /// 公网域名 → https（443/TLS 全链路验证过通）。之前一律补 http，
+  /// 公网域名会落到 ws://80 明文链路——服务器侧通，但手机运营商网络常把明文
+  /// WebSocket 拦成黑洞，表现为「连接发起后永远等不到任何回调」。
   static String normalizeBaseUrl(String input) {
     final s = input.trim();
     if (s.isEmpty) return '';
     try {
-      final u = Uri.parse(s.contains('://') ? s : 'http://$s');
+      final hasScheme = s.contains('://');
+      final u = Uri.parse(hasScheme ? s : 'http://$s');
+      var scheme = u.scheme;
+      if (!hasScheme) {
+        final h = u.host;
+        final isLocal = h == 'localhost' ||
+            h.startsWith('127.') ||
+            h.startsWith('192.168.') ||
+            h.startsWith('10.') ||
+            h.startsWith('fe80:') ||
+            h.endsWith('.local') ||
+            RegExp(r'^172\.(1[6-9]|2\d|3[01])\.').hasMatch(h);
+        // 公网域名带非 443 端口多半是直连源站（无 TLS），也按 http 走
+        final tlsOk = !isLocal && (!u.hasPort || u.port == 443);
+        scheme = tlsOk ? 'https' : 'http';
+      }
       final port = u.hasPort &&
-              !((u.scheme == 'http' && u.port == 80) ||
-                  (u.scheme == 'https' && u.port == 443))
+              !((scheme == 'http' && u.port == 80) ||
+                  (scheme == 'https' && u.port == 443))
           ? ':${u.port}'
           : '';
-      return '${u.scheme}://${u.host}$port';
+      return '$scheme://${u.host}$port';
     } catch (_) {
       return s.replaceAll(RegExp(r'/+$'), '');
     }
@@ -158,8 +176,26 @@ class GateClient {
       );
       _ws = ws;
       _startHeartbeat();
+      // 包内 connectTimeout 实测在部分手机网络下不回调（日志只有 connecting 一行、
+      // 无 error 无重试）——自己再兜一层看门狗，12s 没握手成功就强制掐掉重来
+      _handshakeDone = false;
+      _connectWatch?.cancel();
+      _connectWatch = Timer(const Duration(seconds: 12), () {
+        if (_handshakeDone || _ws == null) return;
+        AppLog.I.log('ws 连接 12s 无进展（网络拦截/服务器不可达/明文 WS 被丢包），强制重试');
+        _lastError = '连接超时：服务器不可达，或当前网络拦截了这个连接';
+        _ws = null;
+        _stopHeartbeat();
+        _stateCtrl.add('error');
+        _scheduleRetry();
+      });
       ws.stream.listen(
         (data) {
+          if (!_handshakeDone) {
+            _handshakeDone = true;
+            _connectWatch?.cancel();
+            _backoffN = 0;
+          }
           _lastReceived = DateTime.now();
           _stateCtrl.add('connected');
           AppLog.I.log('ws connected');
@@ -173,6 +209,7 @@ class GateClient {
         onDone: () {
           AppLog.I.log('ws 连接关闭 code 见 onDone 参数');
           final code = _ws?.closeCode;
+          _connectWatch?.cancel();
           _ws = null;
           _stopHeartbeat();
           if (!_closedByUs) {
@@ -195,6 +232,7 @@ class GateClient {
               .split('\n')
               .first
               .replaceFirst(RegExp(r'^\w+Exception:\s*'), '');
+          _connectWatch?.cancel();
           _ws = null;
           _stopHeartbeat();
           _stateCtrl.add('error');
@@ -212,9 +250,20 @@ class GateClient {
   String _lastError = '';
   String get lastError => _lastError;
 
+  /// 握手看门狗：包内 connectTimeout 在部分网络下不回调（真机日志实证），自己兜底
+  Timer? _connectWatch;
+  bool _handshakeDone = false;
+
+  /// 断线重连退避：4s → 7s → 12s → 20s → 30s 封顶（连上即归零）——
+  /// 服务器/网络真不可达时不再每 4s 干嚎一枪，省电也不刷日志
+  int _backoffN = 0;
+  static const _backoffSecs = [4, 7, 12, 20, 30];
+
   void _scheduleRetry() {
     _retry?.cancel();
-    _retry = Timer(const Duration(seconds: 4), _doConnect);
+    final d = Duration(seconds: _backoffSecs[_backoffN.clamp(0, _backoffSecs.length - 1)]);
+    _backoffN++;
+    _retry = Timer(d, _doConnect);
   }
 
   void _applySessions(Map<String, dynamic> m) {
@@ -398,6 +447,7 @@ class GateClient {
   void dispose() {
     _closedByUs = true;
     _retry?.cancel();
+    _connectWatch?.cancel();
     _ws?.sink.close();
     voice.dispose();
     _messages.close();
@@ -411,6 +461,7 @@ class GateClient {
   void softReset() {
     _closedByUs = true;
     _retry?.cancel();
+    _connectWatch?.cancel();
     _stopHeartbeat();
     try {
       _ws?.sink.close();
