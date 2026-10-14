@@ -165,7 +165,12 @@ class GateClient {
 
   void _doConnect() {
     if (_url.isEmpty) return;
-    AppLog.I.log('ws connecting…');
+    _attemptN++;
+    final wsUrl = buildWsUrl(_url, _token);
+    _connectStartedAt = DateTime.now();
+    // 日志里绝不落 token 明文；带序号和完整 ws 地址，才能看出 scheme/端口/重试节奏
+    AppLog.I.log(
+        'ws connecting #$_attemptN → ${wsUrl.replaceAll(RegExp(r'token=[^&]+'), 'token=***')}');
     _stateCtrl.add('connecting');
     try {
       // 连接必须带硬超时：WS 升级被网络中间设备挂起时 pending 永不触发事件，
@@ -195,10 +200,11 @@ class GateClient {
             _handshakeDone = true;
             _connectWatch?.cancel();
             _backoffN = 0;
+            final ms = DateTime.now().difference(_connectStartedAt).inMilliseconds;
+            AppLog.I.log('ws connected（握手 $ms ms，第 $_attemptN 次尝试）');
           }
           _lastReceived = DateTime.now();
           _stateCtrl.add('connected');
-          AppLog.I.log('ws connected');
           _retry?.cancel();
           try {
             final m = jsonDecode(data as String) as Map<String, dynamic>;
@@ -207,8 +213,8 @@ class GateClient {
           } catch (_) {}
         },
         onDone: () {
-          AppLog.I.log('ws 连接关闭 code 见 onDone 参数');
           final code = _ws?.closeCode;
+          AppLog.I.log('ws 连接关闭（code ${code ?? '?'}）');
           _connectWatch?.cancel();
           _ws = null;
           _stopHeartbeat();
@@ -257,18 +263,24 @@ class GateClient {
   /// 断线重连退避：4s → 7s → 12s → 20s → 30s 封顶（连上即归零）——
   /// 服务器/网络真不可达时不再每 4s 干嚎一枪，省电也不刷日志
   int _backoffN = 0;
+  int _attemptN = 0;
+  DateTime _connectStartedAt = DateTime.now();
   static const _backoffSecs = [4, 7, 12, 20, 30];
 
   void _scheduleRetry() {
     _retry?.cancel();
     final d = Duration(seconds: _backoffSecs[_backoffN.clamp(0, _backoffSecs.length - 1)]);
     _backoffN++;
+    AppLog.I.log('ws 将在 ${d.inSeconds}s 后重试（已失败 $_backoffN 次）');
     _retry = Timer(d, _doConnect);
   }
 
   void _applySessions(Map<String, dynamic> m) {
     var changed = false;
     if (m['type'] == 'hello') {
+      // 服务端版本/提交进日志：排查「APP 连的是哪台/哪版」时不用猜
+      AppLog.I.log(
+          'hello: server v${m['version'] ?? '?'} ${m['commit'] ?? ''}，会话 ${(m['sessions'] as List<dynamic>?)?.length ?? 0} 个');
       sessions
         ..clear()
         ..addEntries(((m['sessions'] as List<dynamic>?) ?? [])
@@ -400,6 +412,7 @@ class GateClient {
       if (_ws == null || !_heartbeatSupported) return;
       final silent = DateTime.now().difference(_lastReceived);
       if (silent.inSeconds > 45) {
+        AppLog.I.log('心跳判死：${silent.inSeconds}s 未收到任何消息（半开连接），断开重连');
         try {
           _ws?.sink.close();
         } catch (_) {}

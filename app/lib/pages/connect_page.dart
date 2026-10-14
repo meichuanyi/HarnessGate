@@ -114,8 +114,11 @@ class _ConnectPageState extends State<ConnectPage> {
 
   void _connect() {
     final url = _url.text.trim();
-    if (!url.startsWith(RegExp(r'https?://'))) {
-      setState(() => _error = '地址需以 http:// 或 https:// 开头');
+    // http/https/ws/wss 或裸域名/局域网 IP 都行——scheme 归一化在 client 侧做
+    final ok = RegExp(r'^(https?|wss?)://').hasMatch(url) ||
+        (url.contains('.') && !url.contains(' '));
+    if (!ok) {
+      setState(() => _error = '地址格式不对：https://… / ws://… / 裸域名 / 局域网IP:端口');
       return;
     }
     _startConnect();
