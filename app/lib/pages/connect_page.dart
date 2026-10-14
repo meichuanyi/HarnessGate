@@ -27,7 +27,10 @@ class _ConnectPageState extends State<ConnectPage> {
   void initState() {
     super.initState();
     _sub = widget.client.messages.listen((m) {
-      if (m['type'] == 'hello' && _busy && mounted) {
+      // hello 到了就放行——不管 12s 定时器有没有先到（公网冷隧道握手实测 55~95s，
+      // 定时器先判「超时」把 _busy 置 false，此后 hello 一直被这个条件挡在门外，
+      // 出现「明明连上了、界面就是进不去」）
+      if (m['type'] == 'hello' && mounted) {
         _timeout?.cancel();
         _sub?.cancel();
         _stateSub?.cancel();
@@ -74,9 +77,11 @@ class _ConnectPageState extends State<ConnectPage> {
     setState(() { _busy = true; _error = null; });
     widget.client.connect(_url.text.trim(), _token.text);
     _timeout?.cancel();
+    // 12s 不再判死刑（公网冷隧道握手实测 55~95s 也能成功）：只提示慢，连接继续；
+    // 真失败由 WS 层的 error 回调解冻按钮
     _timeout = Timer(const Duration(seconds: 12), () {
       if (_busy && mounted) {
-        setState(() { _busy = false; _error = '连接超时：地址不可达或 token 无效'; });
+        setState(() { _error = '还没连上，正在自动重试…（公网握手慢时最长见过 90 秒）'; });
       }
     });
   }
