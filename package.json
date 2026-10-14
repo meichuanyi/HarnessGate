@@ -1,13 +1,13 @@
 {
   "name": "harnessgate",
-  "version": "0.6.40",
+  "version": "0.6.41",
   "private": true,
   "type": "module",
   "description": "Self-hosted remote control plane for coding-agent harnesses (ACP client + thin web UI)",
   "scripts": {
     "start": "tsx server/index.ts",
     "dev": "tsx watch server/index.ts",
-    "test": "node tests/web_static_check.mjs",
+    "test": "node tests/web_static_check.mjs && node tests/web_render_check.mjs",
     "typecheck": "tsc --noEmit",
     "doctor": "node scripts/doctor.mjs",
     "import-registry": "node scripts/import-registry.mjs",
