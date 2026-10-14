@@ -13,8 +13,12 @@ void main() {
         'http://192.168.1.5:9830',
       );
     });
-    test('裸地址补 http；尾部斜杠剥掉', () {
-      expect(GateClient.normalizeBaseUrl('harnessgate.meichuan.cloud'), 'http://harnessgate.meichuan.cloud');
+    test('裸地址按主机类型补协议（公网域名 https / 内网 http）；尾部斜杠剥掉', () {
+      // 公网域名走 https（443/TLS 全链路验证过通；ws://80 明文链路常被手机运营商拦成黑洞）
+      expect(GateClient.normalizeBaseUrl('harnessgate.meichuan.cloud'), 'https://harnessgate.meichuan.cloud');
+      // 内网/带非 443 端口仍按 http
+      expect(GateClient.normalizeBaseUrl('192.168.1.5:9830'), 'http://192.168.1.5:9830');
+      expect(GateClient.normalizeBaseUrl('localhost:9830'), 'http://localhost:9830');
       expect(GateClient.normalizeBaseUrl('http://192.168.1.5:9830/'), 'http://192.168.1.5:9830');
     });
     test('默认端口省略（80/443）', () {
