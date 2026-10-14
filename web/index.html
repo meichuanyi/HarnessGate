@@ -1505,11 +1505,19 @@ function handleServer(msg) {
         if (msg.ok && msg.to) mh.installedVersion = msg.to;
       }
       renderSetPanel();
+      if (state.view === "harnesses") renderHarnessGrid();   // 安装完成：卡片/按钮态翻转（会话视图不整体重绘，避免打断正在流式输出的对话）
+      else if (state.view === "sessions") renderSessionList();
       showToast(msg.ok
         ? `✅ ${msg.action === "install" ? "安装" : "升级"}完成${msg.to ? `：v${msg.to}` : ""}（新会话生效）`
         : `❌ ${msg.action === "install" ? "安装" : "升级"}失败：${(msg.output || "未知错误").slice(-160)}`, 6000);
       break;
     }
+    case "harnesses": /* 服务端推的可用性快照（安装完成等）：卡片/按钮态即时翻转 */
+      harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
+      renderSetPanel();
+      if (state.view === "harnesses") renderHarnessGrid();
+      else if (state.view === "sessions") renderSessionList();
+      break;
     case "voice-stt-result":   // 本地识别结果：追加进输入框
       setVoiceUI("idle");
       if (msg.error) showToast("🎙 " + msg.error, 6000);
@@ -1819,6 +1827,7 @@ function renderHarnessGrid() {
                 <span class="spacer"></span>
                 <span>${esc(h.driver)}</span>
               </div>
+              ${!h.available && h.canInstall ? `<div style="margin-top:9px"><button class="mini primary" data-hinstall="${esc(h.id)}" ${h.manageBusy ? "disabled" : ""}>${h.manageBusy ? "安装中…" : "⬇ 一键安装"}</button></div>` : ""}
             </div>`;
         }).join("")}
       </div>
@@ -1826,6 +1835,16 @@ function renderHarnessGrid() {
 
   root.querySelectorAll(".card").forEach((c) => {
     c.onclick = () => navHarness(c.dataset.h);
+  });
+  root.querySelectorAll("[data-hinstall]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();   // 别触发卡片的进入会话列表
+      const id = b.dataset.hinstall;
+      const h = harnesses.get(id);
+      if (h) h.manageBusy = true;   // 乐观置忙，结果由 harness-managed 回包纠正
+      send({ type: "harness-manage", harnessId: id, action: "install" });
+      renderHarnessGrid();
+    };
   });
   const any = $("newAny");
   if (any) any.onclick = () => {
@@ -1852,6 +1871,7 @@ function renderSessionList() {
       <span class="badge ${h.registered ? "reg" : ""}">${h.registered ? "注册" : "内置"}</span>
       <span class="meta2">${esc(h.cmd)} ${esc((h.args || []).join(" "))}</span>
       <span class="spacer"></span>
+      ${!h.available && h.canInstall ? `<button class="mini primary" id="hInstallBtn" ${h.manageBusy ? "disabled" : ""}>${h.manageBusy ? "安装中…" : "⬇ 一键安装"}</button>` : ""}
       <button class="mini" id="openDoctor">探活详情</button>
     </div>
 
@@ -1899,6 +1919,13 @@ function renderSessionList() {
   const cwdInp = $("newCwd");
   attachDirComplete(cwdInp, { click: () => $("startBtn").click() });
   renderNewMcpRow();
+
+  const inst = $("hInstallBtn");
+  if (inst) inst.onclick = () => {
+    h.manageBusy = true;   // 乐观置忙，结果由 harness-managed 回包纠正
+    send({ type: "harness-manage", harnessId: h.id, action: "install" });
+    renderSessionList();
+  };
 
   $("startBtn").onclick = () => {
     const cwd = cwdInp.value.trim();
@@ -3553,8 +3580,15 @@ function renderSetPanel() {
     <div class="wsRow">
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">Harness 管理</div>
       ${(() => {
-        const ms = [...harnesses.values()].filter((h) => h.manageSupported);
-        if (!ms.length) return '<div class="meta2">没有可管理的 harness（harness.json 未声明 manage）</div>';
+        const all = [...harnesses.values()];
+        const ms = all.filter((h) => h.manageSupported);
+        const ins = all.filter((h) => !h.manageSupported && h.canInstall);
+        const rowOf = (h, text, primary, btn) => `<div style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin:6px 0">
+          <span style="min-width:92px;font-weight:600">${esc(h.label)}</span>
+          <span class="meta2" style="flex:1">${text}</span>
+          <button class="mini ${primary ? "primary" : ""}" data-hmanage="${esc(h.id)}" ${h.manageBusy ? "disabled" : ""}>${h.manageBusy ? "进行中…" : btn}</button>
+        </div>`;
+        if (!ms.length && !ins.length) return '<div class="meta2">没有可管理的 harness（harness.json 未声明 manage）</div>';
         return ms.map((h) => {
           const missing = !h.installedVersion;
           const up = !missing && h.latestVersion && h.installedVersion !== h.latestVersion;
@@ -3562,12 +3596,8 @@ function renderSetPanel() {
             ? (h.latestVersion ? `未安装 · 最新 v${esc(h.latestVersion)}` : "无版本信息")
             : up ? `v${esc(h.installedVersion)} → v${esc(h.latestVersion)}`
                  : `v${esc(h.installedVersion)} · 已是最新`;
-          return `<div style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin:6px 0">
-            <span style="min-width:92px;font-weight:600">${esc(h.label)}</span>
-            <span class="meta2" style="flex:1">${ver}</span>
-            <button class="mini ${up || missing ? "primary" : ""}" data-hmanage="${esc(h.id)}" ${h.manageBusy ? "disabled" : ""}>${h.manageBusy ? "进行中…" : missing ? "安装" : up ? "升级" : "重装"}</button>
-          </div>`;
-        }).join("");
+          return rowOf(h, ver, up || missing, missing ? "安装" : up ? "升级" : "重装");
+        }).join("") + ins.map((h) => rowOf(h, esc(h.note || "本机没有，可一键下载安装"), true, "安装")).join("");
       })()}
     </div>
     <div class="wsRow">
@@ -3585,7 +3615,7 @@ function renderSetPanel() {
         <option value="harness" ${st.utilityMode !== "api" ? "selected" : ""}>harness 临时会话（默认；零额外配置）</option>
         <option value="api" ${st.utilityMode === "api" ? "selected" : ""}>自定义 API（OpenAI 兼容，直调更快更省）</option>
       </select>
-      <div id="utilHarnessCfg">
+      <div id="utilHarnessCfg" style="${st.utilityMode === "api" ? "display:none" : ""}">
         <div class="cfgl" style="margin-top:8px">harness</div>
         <select id="setTagger" class="sm" style="width:100%">
           <option value="" ${cur ? "" : "selected"}>自动（探活可用的第一个）</option>
