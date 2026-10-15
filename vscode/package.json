@@ -68,6 +68,11 @@
         "icon": "$(expand-all)"
       },
       {
+        "command": "harnessgate.openGoals",
+        "title": "HarnessGate: 打开目标看板",
+        "icon": "$(target)"
+      },
+      {
         "command": "harnessgate.newSession",
         "title": "HarnessGate: 新建会话…",
         "icon": "$(add)"
@@ -144,39 +149,59 @@
     "menus": {
       "view/title": [
         {
-          "command": "harnessgate.newSession",
+          "command": "harnessgate.openGoals",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@1"
         },
         {
-          "command": "harnessgate.rooms",
+          "command": "harnessgate.newSession",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@2"
         },
         {
-          "command": "harnessgate.syncHistory",
+          "command": "harnessgate.rooms",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@3"
         },
         {
-          "command": "harnessgate.refresh",
+          "command": "harnessgate.schedules",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@4"
         },
         {
-          "command": "harnessgate.configServer",
+          "command": "harnessgate.workspace",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@5"
         },
         {
-          "command": "harnessgate.collapseAll",
+          "command": "harnessgate.filterSessions",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@6"
         },
         {
-          "command": "harnessgate.expandAll",
+          "command": "harnessgate.syncHistory",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@7"
+        },
+        {
+          "command": "harnessgate.refresh",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@8"
+        },
+        {
+          "command": "harnessgate.configServer",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@9"
+        },
+        {
+          "command": "harnessgate.collapseAll",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@10"
+        },
+        {
+          "command": "harnessgate.expandAll",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@11"
         }
       ],
       "view/item/context": [
@@ -231,36 +256,7 @@
           "description": "新建会话时默认的工作目录（服务器上的路径）。留空则用服务端默认值。"
         }
       }
-    },
-    "view/item/context": [
-      {
-        "command": "harnessgate.toggleStar",
-        "when": "viewItem =~ /session/",
-        "group": "inline@1"
-      },
-      {
-        "command": "harnessgate.editTags",
-        "when": "viewItem =~ /session/",
-        "group": "inline@2"
-      }
-    ],
-    "view/title": [
-      {
-        "command": "harnessgate.filterSessions",
-        "when": "view == harnessgate.harnesses",
-        "group": "navigation@3"
-      },
-      {
-        "command": "harnessgate.schedules",
-        "when": "view == harnessgate.harnesses",
-        "group": "navigation@4"
-      },
-      {
-        "command": "harnessgate.workspace",
-        "when": "view == harnessgate.harnesses",
-        "group": "navigation@5"
-      }
-    ]
+    }
   },
   "scripts": {
     "build": "node gen-renderer.mjs && node esbuild.mjs",
@@ -284,6 +280,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/meichuanyi/HarnessGate.git"
+    "url": "https://github.com/chenmeichuan/HarnessGate.git"
   }
 }

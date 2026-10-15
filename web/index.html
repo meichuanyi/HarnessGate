@@ -179,6 +179,18 @@
   /* 向导/圆桌表单里的下拉：小屏不让它撑破容器（选项文字较长） */
   .rtCard label { max-width:100%; }
   .rtCard select { max-width:100%; }
+  /* ---------- 目标看板 ---------- */
+  .goalGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; }
+  .goalCard { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px 16px; display:flex; flex-direction:column; gap:8px; }
+  .goalProg { height:6px; border-radius:999px; background:var(--panel); border:1px solid var(--line); overflow:hidden; }
+  .goalProg > i { display:block; height:100%; background:var(--accent); transition:width .3s; }
+  .goalCard code { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:10.5px; }
+  /* ---------- Sentinel 神经中枢 ---------- */
+  .tensionBar { height:10px; border-radius:999px; background:var(--panel); border:1px solid var(--line); overflow:hidden; }
+  .tensionBar > i { display:block; height:100%; background:var(--accent); transition:width .3s; }
+  .pulseRow { display:flex; gap:8px; align-items:baseline; padding:5px 0; border-bottom:1px dashed var(--line); font-size:12px; }
+  .pulseRow.noise { opacity:.5; }
   .pickGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(212px,1fr)); gap:9px; }
   .pick { display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:99px;
     border:1px solid var(--line2); background:var(--panel); cursor:pointer; }
@@ -606,6 +618,7 @@
     .rtWrap { padding:12px 10px 30px; }
     .rtCard { padding:12px 12px; }
     .pickGrid { grid-template-columns:1fr; }
+    .goalGrid { grid-template-columns:1fr; }
     .rtCols { grid-auto-columns:minmax(82vw,86vw); scroll-snap-type:x mandatory; padding-bottom:8px; }
     .rtCol { scroll-snap-align:start; max-height:62vh; }
     .memberCfg .row { flex-direction:column; align-items:flex-start; gap:4px; }
@@ -667,6 +680,7 @@
   html.is-mobile .rtWrap { padding:12px 10px 30px; }
   html.is-mobile .rtCard { padding:12px 12px; }
   html.is-mobile .pickGrid { grid-template-columns:1fr; }
+  html.is-mobile .goalGrid { grid-template-columns:1fr; }
   html.is-mobile .rtCols { grid-auto-columns:minmax(82vw,86vw); scroll-snap-type:x mandatory; padding-bottom:8px; }
   html.is-mobile .rtCol { scroll-snap-align:start; max-height:62vh; }
   html.is-mobile .memberCfg .row { flex-direction:column; align-items:flex-start; gap:4px; }
@@ -703,6 +717,36 @@
   .gateHint code { background:var(--panel2); border:1px solid var(--line); padding:1px 6px; border-radius:4px; font-size:10.5px; }
   html.is-mobile .gateCard { padding:28px 20px 20px; }
 
+
+  /* Mermaid 拦截并坚决屏蔽官方自带的全局底部错误横幅/大红条 */
+  iframe[id^="imermaid"], .error-icon, .error-text { display: none !important; visibility: hidden !important; height: 0 !important; width: 0 !important; overflow: hidden !important; }
+  svg:has(.error-text) { display: none !important; }
+
+  /* Mermaid 图表与交互 */
+  .mermaid-block { margin: 12px 0; border: 1px solid var(--line2); border-radius: var(--radius); background: var(--panel2); overflow: hidden; }
+  .mermaid-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+  .mermaid-head .mermaid-title { display: flex; align-items: center; gap: 6px; font-weight: 500; color: var(--fg); }
+  .mermaid-wrap { padding: 16px; display: flex; justify-content: center; overflow-x: auto; -webkit-overflow-scrolling: touch; background: #0f1218; min-height: 48px; cursor: zoom-in; position: relative; }
+  .mermaid-wrap .mermaid { width: 100%; display: flex; justify-content: center; }
+  .mermaid-wrap svg { max-width: 100%; height: auto !important; display: block; transition: filter 0.15s ease; }
+  .mermaid-wrap:hover svg { filter: drop-shadow(0 0 10px rgba(91, 156, 248, 0.25)); }
+  .mermaid-src { margin: 0 !important; border-radius: 0 !important; border: none !important; border-top: 1px solid var(--line) !important; display: none; font-size: 11.5px !important; background: var(--bg) !important; padding: 10px 14px !important; }
+  .mermaid-block.show-src .mermaid-src { display: block; }
+  .mermaid-err { padding: 10px 14px; font-size: 12px; color: var(--err); background: rgba(248, 81, 73, 0.1); border-radius: 6px; width: 100%; }
+
+  /* Mermaid 全屏放大与平移模态框 */
+  #mermaidModal { position: fixed; inset: 0; z-index: 9999; background: rgba(11, 13, 18, 0.94); backdrop-filter: blur(8px); display: flex; flex-direction: column; overflow: hidden; }
+  #mermaidModal[hidden] { display: none !important; }
+  .mmModal-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; background: var(--panel2); border-bottom: 1px solid var(--line); color: var(--fg); font-size: 13px; }
+  .mmModal-body { flex: 1; position: relative; overflow: hidden; cursor: grab; user-select: none; display: flex; align-items: center; justify-content: center; }
+  .mmModal-body:active { cursor: grabbing; }
+  .mmModal-canvas { transform-origin: center center; transition: transform 0.05s linear; display: inline-block; }
+  .mmModal-canvas svg { display: block; max-width: none !important; max-height: none !important; }
+  .mmModal-bar { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(23, 27, 36, 0.88); border: 1px solid var(--line2); border-radius: 99px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); backdrop-filter: blur(6px); }
+  .mmModal-bar button { background: transparent; border: none; color: var(--fg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .mmModal-bar button:hover { background: var(--panel); }
+  .mmModal-scale { font-size: 11px; color: var(--dim); min-width: 48px; text-align: center; }
+
 </style>
 </head>
 <body>
@@ -736,8 +780,11 @@
     <span class="cfgl">模式</span>
     <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
   </div>
+  <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能" style="display:none">🛠 装备</button>
   <button id="roomBtn" class="mini ghost">圆桌</button>
   <button id="schedBtn" class="mini ghost" title="定时执行 agent 任务">定时</button>
+  <button id="goalsBtn" class="mini ghost" title="目标看板与前瞻推演">目标</button>
+  <button id="sentinelBtn" class="mini ghost" title="伴生神经中枢与感官网格">神经</button>
   <button id="pwaInstall" class="mini ghost" style="display:none" title="安装为独立应用">📲 安装APP</button>
   <button id="starBtn" class="mini ghost" title="查看所有收藏的会话（跨 harness）">收藏</button>
   <button id="verBtn" class="mini ghost" title="版本与更新">v?</button>
@@ -777,6 +824,29 @@
   <button class="primary" id="callEnd">📵 挂断</button>
 </div>
 <div id="crewPanel" class="drawer" hidden></div>
+<div id="gearPanel" class="drawer" hidden></div>
+<div id="mermaidModal" hidden>
+  <div class="mmModal-head">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:15px">📐</span>
+      <span style="font-weight:600">Mermaid 架构/流程图全屏预览</span>
+      <span class="meta2" style="font-size:11.5px;color:var(--dim2)">滚轮缩放 / 拖拽平移 / 双击重置</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="mini ghost" id="mmModalClose" style="font-size:13px;padding:3px 10px" title="关闭 (Esc)">✕ 关闭</button>
+    </div>
+  </div>
+  <div class="mmModal-body" id="mmModalBody">
+    <div class="mmModal-canvas" id="mmCanvas"></div>
+    <div class="mmModal-bar">
+      <button id="mmZoomIn" title="放大">＋</button>
+      <span class="mmModal-scale" id="mmScaleText">100%</span>
+      <button id="mmZoomOut" title="缩小">－</button>
+      <button id="mmZoomReset" title="重置 100%">1:1</button>
+      <button id="mmZoomFit" title="自适应居中">适应</button>
+    </div>
+  </div>
+</div>
 <input type="file" id="fileInput" multiple style="display:none" />
 
 <script>
@@ -784,7 +854,7 @@
    状态与数据源
    ===================================================================== */
 const state = {
-  view: "harnesses",      // "harnesses" | "sessions" | "chat" | "roundtable"
+  view: "harnesses",      // "harnesses" | "sessions" | "chat" | "roundtable" | "schedules" | "goals" | "sentinel"
   harnessId: null,
   sessionId: null,
   roomId: null,
@@ -811,6 +881,13 @@ let sessions = new Map();
 let rooms = [];
 let schedulesArr = [];   // 定时任务
 let schedEdit = null;    // 正在编辑的定时任务（null = 列表态）
+let goalsArr = [];       // 宏观目标与罗盘
+let lifeTasks = [];      // Mindwtr 生活琐事（☕ 今日生活与日常运转）
+let goalEdit = null;     // 正在编辑的目标（null = 看板态）
+let sentinelSnap = null; // 神经中枢快照（hello / sentinel-status）
+let sentinelPulses = []; // 神经脉冲流水（客户端缓冲，快照历史 + 实时脉冲）
+let sentinelEdit = null; // 正在编辑的感官（null = 看板态）
+let sentinelPoll = null; // 快照自动补拉 { tries, timer }：视图先于 hello/旧后端时自愈
 let pendingFiles = [];
 let entries = [];
 /** 进程内台账缓存（对齐 APP transcript_cache）：重进会话先秒显上次内容，再拉新覆盖。
@@ -1158,14 +1235,16 @@ if (sideMask) {
    单页应用不接管 history 时，手机右滑返回找不到上一级就直接退出页面。
    正向导航 pushState 一份视图快照（URL 带 hash，刷新也能回到原视图）；
    popstate 按快照逐级恢复；总览是栈底，在总览再返回才真正离开。
-   路由：#/h/<harnessId> 会话列表 · #/s/<sessionId> 对话 · #/r/<roomId> 圆桌 · #/rt 圆桌首页 · #/sched 定时 · #/ 总览；?d= 打开中的抽屉 */
-const DRAWER_KEYS = { starPanel: "star", wsPanel: "ws", crewPanel: "crew", verPanel: "ver" };
+   路由：#/h/<harnessId> 会话列表 · #/s/<sessionId> 对话 · #/r/<roomId> 圆桌 · #/rt 圆桌首页 · #/sched 定时 · #/goals 目标 · #/ 总览；?d= 打开中的抽屉 */
+const DRAWER_KEYS = { starPanel: "star", wsPanel: "ws", crewPanel: "crew", verPanel: "ver", gearPanel: "gear" };
 function hashOfNav(n) {
   let h = "#/";
   if (n.view === "sessions" && n.harnessId) h = `#/h/${encodeURIComponent(n.harnessId)}`;
   else if (n.view === "chat" && n.sessionId) h = `#/s/${n.sessionId}`;
   else if (n.view === "roundtable") h = n.roomId ? `#/r/${n.roomId}` : "#/rt";
   else if (n.view === "schedules") h = "#/sched";
+  else if (n.view === "goals") h = "#/goals";
+  else if (n.view === "sentinel") h = "#/sentinel";
   if (n.drawer) h += `?d=${DRAWER_KEYS[n.drawer] || ""}`;
   return h;
 }
@@ -1180,6 +1259,8 @@ function navOfHash(h) {
   if (seg[0] === "r" && seg[1]) return { view: "roundtable", roomId: seg[1], drawer };
   if (seg[0] === "rt") return { view: "roundtable", drawer };
   if (seg[0] === "sched") return { view: "schedules", drawer };
+  if (seg[0] === "goals") return { view: "goals", drawer };
+  if (seg[0] === "sentinel") return { view: "sentinel", drawer };
   if (!seg[0]) return { view: "harnesses", drawer };   // "#/" 或 "#/?d=star"
   return null;
 }
@@ -1189,7 +1270,7 @@ function pushNav(drawer) {
 }
 function collapseOverlays() {
   closeSide();
-  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "setPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "setPanel", "gearPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
 }
 function applyNav(n) {
@@ -1207,6 +1288,7 @@ function applyNav(n) {
   else if (n?.drawer === "verPanel") { $("verPanel").hidden = false; renderVerPanel(); }
   else if (n?.drawer === "crewPanel" && sessPanelSid) openSessPanel(sessPanelSid, sessPanelMode, false);
   else if (n?.drawer === "wsPanel") openWsPanel(false);
+  else if (n?.drawer === "gearPanel") openGearPanel(false);
   if (reloadChat) { openSession(sid, false); return; }
   render();
 }
@@ -1227,6 +1309,13 @@ function handleServer(msg) {
       sessions = new Map((msg.sessions || []).map((s) => [s.id, s]));
       rooms = msg.rooms || [];
       schedulesArr = msg.schedules || [];
+      goalsArr = msg.goals || [];
+      lifeTasks = msg.lifeTasks || [];
+      if (msg.sentinel) {
+        sentinelSnap = msg.sentinel;
+        sentinelPulses = msg.sentinel.pulses || [];
+        sentinelPollStop();
+      }
       serverVersion = msg.version || "";
       serverCommit = msg.commit || "";
       appSettings = msg.settings || null;
@@ -1361,6 +1450,32 @@ function handleServer(msg) {
       schedulesArr = msg.schedules || [];
       if (state.view === "schedules" && !schedDistill && !schedEdit) renderSchedules();
       break;
+    case "goals":
+      goalsArr = msg.goals || [];
+      lifeTasks = msg.lifeTasks || [];
+      if (state.view === "goals" && !goalEdit) renderGoals();
+      break;
+    case "sentinel-status":
+      sentinelSnap = msg.sentinel;
+      sentinelPulses = msg.sentinel.pulses || [];
+      sentinelPollStop();
+      if (state.view === "sentinel" && !sentinelEdit) renderSentinel();
+      break;
+    case "sentinel-pulse":
+      sentinelPulses.unshift(msg.pulse);
+      if (sentinelPulses.length > 80) sentinelPulses.length = 80;
+      if (state.view === "sentinel" && !sentinelEdit) renderSentinelPulses();
+      break;
+    case "session-gear":
+      if (msg.sessionId !== gearSid) break;   // 切换会话后迟到的旧应答
+      gearDraft = {
+        mcpServerIds: [...msg.mcpServerIds],
+        skillIds: [...msg.skillIds],
+        allMcps: msg.allMcps || [],
+        allSkills: msg.allSkills || { library: [], mounts: [] },
+      };
+      renderGearPanel();
+      break;
     case "schedule-segmented": {
       // AI 精切结果替换本地段（AI 给的任务名更可读；schedulable=false 的已由服务端过滤）
       if (schedPick && schedPick.sessionId === msg.sessionId) {
@@ -1445,6 +1560,11 @@ function handleServer(msg) {
       /* 服务端的各类拒绝（圆桌前置校验、会话操作失败…）必须可见——吞掉就会表现为"点了没反应" */
       showToast("⚠ " + (msg.message || "操作失败"), 6000);
       console.warn("服务端错误:", msg.message, msg.sessionId || "");
+      // 旧后端不认识 sentinel-get：停止补拉并给出明确指引，别让重试空转刷屏
+      if (sentinelPoll && /未知消息类型|unknown message/i.test(msg.message || "")) {
+        sentinelPollStop();
+        if (state.view === "sentinel") showToast("🛰 当前服务端是旧版本：重启 HarnessGate 后神经中枢即可用", 8000);
+      }
       break;
     case "settings":
       appSettings = msg.settings || appSettings;
@@ -1581,6 +1701,8 @@ function render() {
   else if (state.view === "chat") renderChat();
   else if (state.view === "roundtable") renderRoundtable();
   else if (state.view === "schedules") renderSchedules();
+  else if (state.view === "goals") renderGoals();
+  else if (state.view === "sentinel") renderSentinel();
 }
 
 function renderCrumbs() {
@@ -2403,8 +2525,11 @@ function openSession(id, push = true) {
   entries = cached ? [...cached] : [];
   nodes = []; streamingAssistant = false; transcriptBase = 0;
   transcriptTotal = 0; transcriptStart = cached ? -1 : 0;   // -1 = 有缓存待覆盖（暂不显示「加载更早」）
-  // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导
-  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导。
+  // 装备面板例外：它跟着会话走，开着就自动切到新会话的装备
+  const gearWasOpen = !$("gearPanel").hidden;
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "gearPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  if (gearWasOpen) openGearPanel(false);
   render();
   transcriptTotal = 0;
   if (cached && cached.length) {
@@ -2643,6 +2768,7 @@ function renderConfig() {
 function renderModes() {
   const sel = $("mode"), wrap = $("modeWrap");
   const s = sessions.get(state.sessionId);
+  $("gearBtn").style.display = s ? "" : "none";   // 装备按钮跟着会话走（有无 modes 都可用）
   sel.innerHTML = "";
   if (!s?.modes?.availableModes?.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
@@ -2673,6 +2799,289 @@ function inlineMd(s) {
    走正常 mdToHtml（占位符是私有区字符，转义/行内变换都碰不到它），
    再把占位符替换成 .ktx 占位 span，MutationObserver 里用 KaTeX 挂载。
    代码块/行内代码不参与提取；$…$ 需要 ^ _ \ { } = 之一才当公式（避免 "$5 和 $10" 误伤）。 */
+
+/* ---------- Mermaid 图表渲染（自托管 /static/vendor/mermaid/mermaid.min.js）---------- */
+let mermaidLoading = false;
+let mermaidIdCounter = 0;
+
+
+function cleanupMermaidErrorBanners() {
+  try {
+    document.querySelectorAll('iframe[id^="imermaid"]').forEach((el) => el.remove());
+    document.querySelectorAll('.error-text').forEach((el) => {
+      const svg = el.closest('svg');
+      if (svg) svg.remove();
+      else el.remove();
+    });
+  } catch (_) {}
+}
+
+function normalizeMermaidCode(raw) {
+  if (!raw) return "";
+  let code = String(raw).trim();
+  // 去除可能意外包裹的 markdown 围栏
+  code = code.replace(/^```(?:mermaid)?\s*\n?/i, "").replace(/\n?\s*```$/i, "");
+  // 核心语法容错：自动纠正 LLM 高频书写错误的双向粗箭头 <==> 为合法双向箭头 <-->
+  code = code.replace(/<==>/g, "<-->");
+  // 容错：将全角空格替换为半角空格
+  code = code.replace(/\u3000/g, "  ");
+  return code;
+}
+
+function ensureMermaid(onLoaded) {
+  if (window.mermaid) {
+    if (onLoaded) onLoaded();
+    return;
+  }
+  if (mermaidLoading) {
+    if (onLoaded) window.addEventListener("hg-mermaid-ready", onLoaded, { once: true });
+    return;
+  }
+  mermaidLoading = true;
+  if (onLoaded) window.addEventListener("hg-mermaid-ready", onLoaded, { once: true });
+  const s = document.createElement("script");
+  s.src = "/static/vendor/mermaid/mermaid.min.js";
+  s.onload = () => {
+    try {
+      window.mermaid.initialize({
+        startOnLoad: false,
+        suppressErrorRendering: true,
+        theme: "dark",
+        securityLevel: "loose",
+        flowchart: { useMaxWidth: true, htmlLabels: true, curve: "basis" },
+        themeVariables: {
+          darkMode: true,
+          background: "#12151c",
+          primaryColor: "#2a4a7a",
+          primaryTextColor: "#e8ebf1",
+          primaryBorderColor: "#5b9cf8",
+          lineColor: "#8b93a5",
+          secondaryColor: "#171b24",
+          tertiaryColor: "#0b0d12"
+        }
+      });
+    } catch (e) {
+      console.warn("Mermaid initialize error:", e);
+    }
+    try {
+      window.mermaid.setParseErrorHandler?.(() => {});
+    } catch (_) {}
+    cleanupMermaidErrorBanners();
+    mermaidLoading = false;
+    window.dispatchEvent(new CustomEvent("hg-mermaid-ready"));
+    mountMermaid(document.body);
+  };
+  s.onerror = (e) => {
+    mermaidLoading = false;
+    console.error("Failed to load mermaid.min.js", e);
+  };
+  document.head.appendChild(s);
+}
+
+function mountMermaid(root) {
+  cleanupMermaidErrorBanners();
+  if (!root) return;
+  const nodes = root.querySelectorAll?.(".mermaid:not([data-done])") ?? [];
+  if (!nodes.length) return;
+  if (!window.mermaid) {
+    ensureMermaid(() => mountMermaid(root));
+    return;
+  }
+  for (const el of nodes) {
+    el.setAttribute("data-done", "1");
+    const block = el.closest(".mermaid-block");
+    const rawEl = block?.querySelector(".mermaid-raw");
+    const rawSrc = rawEl ? rawEl.value : (el.getAttribute("data-code") || el.textContent || "");
+    const code = normalizeMermaidCode(rawSrc);
+    if (!code) continue;
+    const id = "hg-diag-" + (++mermaidIdCounter);
+    try {
+      const res = window.mermaid.render(id, code);
+      if (res && typeof res.then === "function") {
+        res.then(({ svg }) => {
+          el.innerHTML = svg;
+          el.classList.add("rendered");
+          const wrap = el.closest(".mermaid-wrap");
+          if (wrap) {
+            wrap.onclick = () => openMermaidModal(svg);
+          }
+        }).catch((err) => {
+          console.warn("Mermaid async render error:", err);
+          el.innerHTML = `<div class="mermaid-err">⚠️ Mermaid 渲染失败: ${esc(err?.message || String(err))}</div>`;
+          if (block) block.classList.add("show-src");
+        });
+      } else if (typeof res === "string") {
+        el.innerHTML = res;
+        el.classList.add("rendered");
+        const wrap = el.closest(".mermaid-wrap");
+        if (wrap) {
+          wrap.onclick = () => openMermaidModal(res);
+        }
+      }
+    } catch (err) {
+      console.warn("Mermaid sync render error:", err);
+      el.innerHTML = `<div class="mermaid-err">⚠️ Mermaid 渲染失败: ${esc(err?.message || String(err))}</div>`;
+      if (block) block.classList.add("show-src");
+    }
+  }
+}
+
+function renderMermaidPlaceholder(code) {
+  const rawEsc = esc(code);
+  return `
+<div class="mermaid-block">
+  <div class="mermaid-head">
+    <span class="mermaid-title">📐 Mermaid 图表</span>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button type="button" class="mini ghost mermaid-zoom-btn" onclick="openMermaidModalFromBlock(this.closest('.mermaid-block'))" title="全屏放大与自由拖拽平移">🔍 放大</button>
+      <button type="button" class="mini ghost mermaid-toggle" onclick="this.closest('.mermaid-block').classList.toggle('show-src')" title="切换查看源码">📝 源码</button>
+      <button type="button" class="mini ghost" onclick="navigator.clipboard?.writeText(this.closest('.mermaid-block').querySelector('.mermaid-raw')?.value || '');showToast('已复制 Mermaid 源码', 1500);" title="复制 Mermaid 源码">📋 复制</button>
+    </div>
+  </div>
+  <div class="mermaid-wrap" title="点击全屏放大预览与平移">
+    <div class="mermaid" data-code="${rawEsc}"></div>
+  </div>
+  <textarea class="mermaid-raw" hidden>${rawEsc}</textarea>
+  <pre class="mermaid-src"><code>${rawEsc}</code></pre>
+</div>`;
+}
+
+function openMermaidModalFromBlock(block) {
+  if (!block) return;
+  const svg = block.querySelector(".mermaid svg");
+  if (svg) {
+    openMermaidModal(svg.outerHTML);
+  } else {
+    showToast("图表尚未渲染完成或有语法错误", 1800);
+  }
+}
+
+/* ---------- Mermaid 全屏缩放与平移画板逻辑 ---------- */
+let mmScale = 1;
+let mmTranslate = { x: 0, y: 0 };
+let mmIsDragging = false;
+let mmStartPos = { x: 0, y: 0 };
+let mmEventsInited = false;
+
+function openMermaidModal(svgHtml) {
+  const modal = $("mermaidModal");
+  const canvas = $("mmCanvas");
+  if (!modal || !canvas) return;
+  canvas.innerHTML = svgHtml;
+  mmScale = 1;
+  mmTranslate = { x: 0, y: 0 };
+  updateMmTransform();
+  modal.hidden = false;
+  initMermaidModalEvents();
+}
+
+function closeMermaidModal() {
+  const modal = $("mermaidModal");
+  if (modal) modal.hidden = true;
+  const canvas = $("mmCanvas");
+  if (canvas) canvas.innerHTML = "";
+}
+
+function updateMmTransform() {
+  const canvas = $("mmCanvas");
+  if (!canvas) return;
+  canvas.style.transform = `translate(${mmTranslate.x}px, ${mmTranslate.y}px) scale(${mmScale})`;
+  const scaleText = $("mmScaleText");
+  if (scaleText) scaleText.textContent = `${Math.round(mmScale * 100)}%`;
+}
+
+function initMermaidModalEvents() {
+  if (mmEventsInited) return;
+  mmEventsInited = true;
+
+  const modal = $("mermaidModal");
+  const body = $("mmModalBody");
+  const closeBtn = $("mmModalClose");
+  const zoomIn = $("mmZoomIn");
+  const zoomOut = $("mmZoomOut");
+  const zoomReset = $("mmZoomReset");
+  const zoomFit = $("mmZoomFit");
+
+  if (closeBtn) closeBtn.onclick = closeMermaidModal;
+
+  if (zoomIn) zoomIn.onclick = () => { mmScale = Math.min(8, mmScale * 1.25); updateMmTransform(); };
+  if (zoomOut) zoomOut.onclick = () => { mmScale = Math.max(0.2, mmScale / 1.25); updateMmTransform(); };
+  if (zoomReset) zoomReset.onclick = () => { mmScale = 1; mmTranslate = { x: 0, y: 0 }; updateMmTransform(); };
+  if (zoomFit) zoomFit.onclick = () => {
+    const canvas = $("mmCanvas");
+    const svg = canvas?.querySelector("svg");
+    if (!body || !svg) return;
+    const bRect = body.getBoundingClientRect();
+    const sRect = svg.getBoundingClientRect();
+    if (sRect.width && sRect.height) {
+      const scaleX = (bRect.width - 60) / (sRect.width / mmScale);
+      const scaleY = (bRect.height - 60) / (sRect.height / mmScale);
+      mmScale = Math.min(1.5, Math.max(0.2, Math.min(scaleX, scaleY)));
+      mmTranslate = { x: 0, y: 0 };
+      updateMmTransform();
+    }
+  };
+
+  // 滚轮缩放
+  body.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const factor = ev.deltaY < 0 ? 1.15 : 0.87;
+    mmScale = Math.min(8, Math.max(0.2, mmScale * factor));
+    updateMmTransform();
+  }, { passive: false });
+
+  // 鼠标拖拽平移
+  body.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".mmModal-bar") || ev.target.closest(".mmModal-head")) return;
+    mmIsDragging = true;
+    mmStartPos = { x: ev.clientX - mmTranslate.x, y: ev.clientY - mmTranslate.y };
+  });
+
+  window.addEventListener("mousemove", (ev) => {
+    if (!mmIsDragging) return;
+    mmTranslate = { x: ev.clientX - mmStartPos.x, y: ev.clientY - mmStartPos.y };
+    updateMmTransform();
+  });
+
+  window.addEventListener("mouseup", () => {
+    mmIsDragging = false;
+  });
+
+  // 双击重置
+  body.addEventListener("dblclick", (ev) => {
+    if (ev.target.closest(".mmModal-bar")) return;
+    mmScale = 1;
+    mmTranslate = { x: 0, y: 0 };
+    updateMmTransform();
+  });
+
+  // ESC 键关闭
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !modal.hidden) {
+      closeMermaidModal();
+    }
+  });
+
+  // 移动端触摸拖拽
+  let touchStart = null;
+  body.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length === 1) {
+      touchStart = { x: ev.touches[0].clientX - mmTranslate.x, y: ev.touches[0].clientY - mmTranslate.y };
+    }
+  }, { passive: true });
+
+  body.addEventListener("touchmove", (ev) => {
+    if (touchStart && ev.touches.length === 1) {
+      mmTranslate = { x: ev.touches[0].clientX - touchStart.x, y: ev.touches[0].clientY - touchStart.y };
+      updateMmTransform();
+    }
+  }, { passive: true });
+
+  body.addEventListener("touchend", () => {
+    touchStart = null;
+  });
+}
+
 let katexLoading = false;
 function ensureKatex() {
   if (window.katex || katexLoading) return;
@@ -2742,6 +3151,10 @@ function scheduleMathMount() {
     mountMath(document.getElementById("stream"));
     mountMath(document.getElementById("viewRoot"));
     mountMath(document.getElementById("crewPanel"));
+    mountMermaid(document.getElementById("stream"));
+    mountMermaid(document.getElementById("viewRoot"));
+    mountMermaid(document.getElementById("crewPanel"));
+    cleanupMermaidErrorBanners();
   });
 }
 
@@ -2751,7 +3164,16 @@ function mdToHtml(src) {
   let inCode = false, lang = "", buf = [], para = [], lists = [];
   const closePara = () => { if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; } };
   const closeLists = () => { while (lists.length) out.push(lists.pop() === "ul" ? "</ul>" : "</ol>"); };
-  const flushCode = () => { out.push(`<pre${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`); buf = []; lang = ""; };
+  const flushCode = () => {
+    const l = (lang || "").trim().toLowerCase();
+    if (l === "mermaid") {
+      out.push(renderMermaidPlaceholder(buf.join("\n").trim()));
+      buf = []; lang = "";
+      return;
+    }
+    out.push(`<pre${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`);
+    buf = []; lang = "";
+  };
   for (let i2 = 0; i2 < lines.length; i2++) {
     const raw = lines[i2];
     const line = raw.replace(/\s+$/, "");
@@ -3412,6 +3834,88 @@ $("wsBtn").onclick = () => {
   if (p.hidden) openWsPanel();
   else { p.hidden = true; if (wsTimer) { clearInterval(wsTimer); wsTimer = null; } }
 };
+
+/* =====================================================================
+   会话装备面板：本会话启用的 MCP 服务 + 领域技能（双 Tab 抽屉）
+   ===================================================================== */
+let gearSid = null;      // 装备面板当前会话 id
+let gearDraft = null;    // { mcpServerIds, skillIds, allMcps, allSkills }（复选框草稿）
+let gearTab = "mcp";
+
+function openGearPanel(push = true) {
+  if (!state.sessionId) { showToast("先选一个会话，再配置装备", 2500); return; }
+  const p = $("gearPanel");
+  p.hidden = false;
+  gearSid = state.sessionId;
+  p.innerHTML = '<div class="empty">加载中…</div>';
+  send({ type: "session-gear-get", sessionId: gearSid });
+  if (push) pushNav("gearPanel");
+}
+$("gearBtn").onclick = () => {
+  const p = $("gearPanel");
+  if (p.hidden) openGearPanel();
+  else p.hidden = true;
+};
+
+function gearToggle(kind, id, on) {
+  if (!gearDraft) return;
+  const arr = kind === "mcp" ? gearDraft.mcpServerIds : gearDraft.skillIds;
+  const i = arr.indexOf(id);
+  if (on && i < 0) arr.push(id);
+  if (!on && i >= 0) arr.splice(i, 1);
+}
+
+function renderGearPanel() {
+  const p = $("gearPanel");
+  if (p.hidden || !gearDraft) return;
+  const s = sessions.get(gearSid);
+  const mcps = gearDraft.allMcps.map((m) => {
+    const on = gearDraft.mcpServerIds.includes(m.id);
+    return `
+      <label class="gearRow" style="${on ? "" : "opacity:.62"}">
+        <input type="checkbox" data-gearcheck="mcp" value="${esc(m.id)}"${on ? " checked" : ""} style="width:auto">
+        <span style="flex:1;min-width:0">
+          <b style="font-size:13px">${esc(m.name)}</b>
+          <span class="pill idle">${esc(m.type)}</span>
+          ${m.note ? `<div class="meta2" style="margin-top:2px">${esc(m.note)}</div>` : ""}
+        </span>
+      </label>`;
+  }).join("");
+  const skills = (gearDraft.allSkills.library || []).map((sk) => {
+    const on = gearDraft.skillIds.includes(sk.name);
+    return `
+      <label class="gearRow" style="${on ? "" : "opacity:.62"}">
+        <input type="checkbox" data-gearcheck="skill" value="${esc(sk.name)}"${on ? " checked" : ""} style="width:auto">
+        <span style="flex:1;min-width:0">
+          <b style="font-size:13px">${esc(sk.name)}</b>
+          <span class="pill saved">~${sk.tokens} tok</span>
+          ${sk.description ? `<div class="meta2" style="margin-top:2px">${esc(sk.description)}</div>` : ""}
+        </span>
+      </label>`;
+  }).join("");
+  p.innerHTML = `
+    <div class="hd"><b>🛠 会话装备</b><span class="meta2">${esc(s?.title || "#" + gearSid)}</span><button class="mini ghost" onclick="document.getElementById('gearPanel').hidden=true">关闭</button></div>
+    <div style="display:flex;gap:6px;margin:10px 0">
+      <button class="mini ${gearTab === "mcp" ? "primary" : "ghost"}" id="gearTabMcp">🔌 MCP 服务 (${gearDraft.mcpServerIds.length} 已选)</button>
+      <button class="mini ${gearTab === "skill" ? "primary" : "ghost"}" id="gearTabSkill">🎯 领域技能 (${gearDraft.skillIds.length} 已选)</button>
+    </div>
+    <div style="max-height:55vh;overflow:auto">
+      ${gearTab === "mcp"
+        ? (mcps || '<div class="empty">还没有全局 MCP 服务。到 mcp.json 里添加。</div>')
+        : (skills || '<div class="empty">技能库是空的。到「设置 → 技能」里创建。</div>')}
+    </div>
+    <div class="meta2" style="margin:10px 0 6px">💾 MCP 注入在会话下次恢复/重启时生效；技能挂载是 harness 级（同 harness 的会话共享），保存即差分挂载。</div>
+    <button class="btn primary" id="gearSave" style="width:100%">保存装备</button>`;
+  $("gearTabMcp").onclick = () => { gearTab = "mcp"; renderGearPanel(); };
+  $("gearTabSkill").onclick = () => { gearTab = "skill"; renderGearPanel(); };
+  p.querySelectorAll("[data-gearcheck]").forEach((cb) => {
+    cb.onchange = () => gearToggle(cb.dataset.gearcheck, cb.value, cb.checked);
+  });
+  $("gearSave").onclick = () => {
+    send({ type: "session-gear-save", sessionId: gearSid, mcpServerIds: [...gearDraft.mcpServerIds], skillIds: [...gearDraft.skillIds] });
+    showToast("🛠 装备已保存", 2500);
+  };
+}
 function renderWorkspace(reports) {
   const p = $("wsPanel");
   if (p.hidden) return;
@@ -3906,6 +4410,30 @@ $("schedBtn").onclick = () => {
   render();
   pushNav();
 };
+$("goalsBtn").onclick = () => {
+  $("wsPanel").hidden = true;
+  $("starPanel").hidden = true;
+  $("verPanel").hidden = true;
+  state.view = "goals";
+  state.harnessId = null;
+  state.sessionId = null;
+  goalEdit = null;
+  send({ type: "goals-list" });
+  render();
+  pushNav();
+};
+$("sentinelBtn").onclick = () => {
+  $("wsPanel").hidden = true;
+  $("starPanel").hidden = true;
+  $("verPanel").hidden = true;
+  state.view = "sentinel";
+  state.harnessId = null;
+  state.sessionId = null;
+  sentinelEdit = null;
+  send({ type: "sentinel-get" });
+  render();
+  pushNav();
+};
 
 const ROOM_STATUS = { running: "讨论中", done: "已完成", error: "出错", stopped: "已停止", idle: "待开始" };
 const roomById = (id) => rooms.find((r) => r.id === id);
@@ -4219,6 +4747,464 @@ function renderSchedEditor(e) {
 }
 function alertLike2(msg) {
   showToast("⚠ " + msg, 3500);
+}
+
+/* =====================================================================
+   目标看板：目标列表 + 推测执行策略编辑 + 一键推演
+   ===================================================================== */
+const GOAL_CATS = { career: "💼 事业", academic: "🎓 学业", trading: "📈 交易", life: "🌱 生活", general: "🧭 通用" };
+const GOAL_STATUS = { active: ["进行中", "ready"], paused: ["已暂停", "idle"], completed: ["已完成", "done"], archived: ["已归档", "saved"] };
+
+/** Mindwtr 时间戳 → 紧凑展示（MM-DD HH:mm） */
+/** 格式化推演处方 HTML 块 */
+function renderPrescriptionBlock(p) {
+  if (!p) return "";
+  const stMap = {
+    ready: ["✓ 推演通过", "done"],
+    warning: ["⚠ 建议调优", "starting"],
+    optimized: ["⚡ 节奏校准", "idle"],
+  };
+  const [stLabel, stClass] = stMap[p.status] || ["推演", "saved"];
+  const acts = (p.actions || []).map((a) => {
+    const payloadStr = esc(JSON.stringify(a.payload || {}));
+    return `<button class="mini primary" data-acttype="${esc(a.actionType)}" data-actpayload="${payloadStr}">${esc(a.label)}</button>`;
+  }).join(" ");
+
+  const percs = (p.evidence?.perceptions || []).map((x) => `• ${esc(x)}`).join("<br>");
+  const mems = (p.evidence?.memories || []).map((x) => `• ${esc(x)}`).join("<br>");
+
+  return `
+    <div style="margin-top:6px;padding:8px 10px;background:#131822;border:1px solid var(--line);border-radius:6px;font-size:12px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span class="pill ${stClass}" style="font-weight:600">${stLabel}</span>
+        <span style="flex:1;color:var(--fg)">${esc(p.summary)}</span>
+      </div>
+      ${(percs || mems) ? `
+      <div style="color:var(--dim2);font-size:11px;margin-bottom:6px;line-height:1.5">
+        ${percs ? `<div>${percs}</div>` : ""}
+        ${mems ? `<div style="margin-top:2px;color:var(--dim)">${mems}</div>` : ""}
+      </div>` : ""}
+      ${acts ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${acts}</div>` : ""}
+    </div>`;
+}
+
+function mwTime(t) {
+  const v = t.startTime || t.dueDate;
+  if (!v) return "";
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return "";
+  return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function renderGoals() {
+  const root = $("viewRoot");
+  if (goalEdit) { renderGoalEditor(goalEdit); return; }
+  const cards = goalsArr.map((g) => {
+    const prog = Math.max(0, Math.min(100, Number(g.progress) || 0));
+    const st = GOAL_STATUS[g.status] || GOAL_STATUS.active;
+    const overdue = g.deadline && g.status === "active" && new Date(g.deadline).getTime() < Date.now();
+    const r = g.lastSpeculatedResult;
+    const lastAt = g.lastSpeculatedAt ? new Date(g.lastSpeculatedAt).toLocaleString() : "";
+    return `
+      <div class="goalCard">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="pill idle">${esc(GOAL_CATS[g.category] || GOAL_CATS.general)}</span>
+          <span class="pill ${st[1]}">${st[0]}</span>
+          <span style="flex:1"></span>
+          <span class="meta2">${prog}%</span>
+        </div>
+        <div style="font-weight:600;font-size:14px">${esc(g.title)}</div>
+        ${g.description ? `<div class="meta2" style="line-height:1.6">${esc(g.description)}</div>` : ""}
+        <div class="goalProg" title="进度 ${prog}%"><i style="width:${prog}%"></i></div>
+        <div class="meta2">${g.deadline ? `截止 <span${overdue ? ' style="color:var(--err)"' : ""}>${overdue ? "⚠ " : ""}${esc(new Date(g.deadline).toLocaleDateString())}</span> · ` : ""}${g.cwd ? `目录 <code>${esc(g.cwd)}</code>` : "目录 —"}</div>
+        ${r ? `
+        <div class="meta2" style="border-top:1px dashed var(--line);padding-top:8px">
+          上次推演${lastAt ? `（${esc(lastAt)}）` : ""}：<span class="pill ${r.ok ? "done" : "error"}">${r.ok ? "✓ 成功" : "✕ 失败"}</span>${r.branch ? ` · 分支 <code>${esc(r.branch)}</code>` : ""}
+          ${r.summary ? `<div style="margin-top:4px;white-space:pre-wrap">${esc(String(r.summary).slice(0, 200))}${String(r.summary).length > 200 ? "…" : ""}</div>` : ""}
+        </div>` : ""}
+        ${(g.linkedTasks || []).length ? `
+        <div class="meta2" style="border-top:1px dashed var(--line);padding-top:8px">
+          <b>📋 关联 Mindwtr 任务</b>
+          ${(g.linkedTasks || []).map((t) => `
+          <div style="padding:4px 0;border-bottom:1px dotted var(--line2)">
+            <div style="display:flex;gap:8px;align-items:center">
+              <span style="flex:1;min-width:120px">${esc(t.title)}</span>
+              ${mwTime(t) ? `<span class="meta2">${esc(mwTime(t))}</span>` : ""}
+              <button class="mini" data-goaldone="${esc(g.id)}" data-taskdone="${esc(t.id)}" title="Mindwtr 打勾 + 目标进度推进">✓ 完成</button>
+            </div>
+            ${t.prescription ? renderPrescriptionBlock(t.prescription) : ""}
+          </div>`).join("")}
+        </div>` : ""}
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="mini primary" data-spec="${esc(g.id)}"${g.speculative?.promptTemplate ? "" : ' disabled title="先在「编辑」里配置推测执行指令模板"'}>🧪 推演</button>
+          <button class="mini" data-edit="${esc(g.id)}">编辑</button>
+          <button class="mini ghost" data-del="${esc(g.id)}">删除</button>
+        </div>
+      </div>`;
+  }).join("");
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">🎯 目标看板</span>
+        <span class="meta2">自主智能锚点：宏观意图 + 推演执行策略，一键投进后台沙箱试错（成功留 patch 与分支，失败即弃）</span>
+        <span style="flex:1"></span>
+        <button class="mini primary" id="goalNew">＋ 新建目标</button></div>
+      <div class="rtCard">
+        <h3>☕ 今日生活与日常运转 (Life Ops)</h3>
+        ${(lifeTasks || []).length
+          ? lifeTasks.map((t) => `
+          <div style="padding:8px 0;border-bottom:1px dashed var(--line)">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="flex:1;min-width:180px;font-size:13px;font-weight:500">${esc(t.title)}</span>
+              ${mwTime(t) ? `<span class="meta2">${esc(mwTime(t))}</span>` : ""}
+              ${(t.tags || []).slice(0, 2).map((tag) => `<span class="pill saved">${esc(String(tag).replace(/^#/, ""))}</span>`).join("")}
+              <button class="mini" data-lifedone="${esc(t.id)}" title="在 Mindwtr 打勾完成">✓ 完成</button>
+            </div>
+            ${t.prescription ? renderPrescriptionBlock(t.prescription) : ""}
+          </div>`).join("")
+          : '<div class="meta2">暂无待办琐事，生活运转平稳 ☕</div>'}
+      </div>
+      <div class="goalGrid">${cards || '<div class="empty" style="grid-column:1/-1">还没有目标。点右上「新建目标」，明确前进方向。</div>'}</div>
+    </div>`;
+  $("goalNew").onclick = () => {
+    goalEdit = {
+      title: "", category: "general", status: "active", progress: 0, cwd: "",
+      speculative: { enabled: true, useWorktree: true, autoApprove: "all", promptTemplate: "" },
+    };
+    renderGoals();
+  };
+  root.querySelectorAll("[data-spec]").forEach((b) => {
+    b.onclick = () => {
+      send({ type: "goal-speculate", id: b.dataset.spec });
+      showToast("🧪 已触发后台推演（沙箱内试错），完成后看板自动刷新", 4000);
+    };
+  });
+  root.querySelectorAll("[data-edit]").forEach((b) => {
+    b.onclick = () => { goalEdit = JSON.parse(JSON.stringify(goalsArr.find((x) => x.id === b.dataset.edit))); renderGoals(); };
+  });
+  root.querySelectorAll("[data-del]").forEach((b) => {
+    b.onclick = () => {
+      if (!confirm("删除该目标？（已保留的推演分支不受影响）")) return;
+      send({ type: "goal-delete", id: b.dataset.del });
+    };
+  });
+  // Mindwtr 任务打勾：生活琐事只完成任务；目标关联任务同时推进目标进度（+10）
+  // 按钮 4s 后自动恢复可按——打勾失败（Mindwtr 抖动）时用户能直接重试
+  root.querySelectorAll("[data-lifedone]").forEach((b) => {
+    b.onclick = () => {
+      b.disabled = true;
+      setTimeout(() => { b.disabled = false; }, 4000);
+      send({ type: "goal-task-complete", taskId: b.dataset.lifedone });
+      showToast("✓ 已在 Mindwtr 打勾", 2000);
+    };
+  });
+  root.querySelectorAll("[data-goaldone]").forEach((b) => {
+    b.onclick = () => {
+      b.disabled = true;
+      setTimeout(() => { b.disabled = false; }, 4000);
+      send({ type: "goal-task-complete", taskId: b.dataset.taskdone, goalId: b.dataset.goaldone });
+      showToast("✓ 已打勾，目标进度推进中", 2500);
+    };
+  });
+  // 推演处方一键行动执行按钮
+  root.querySelectorAll("[data-acttype]").forEach((b) => {
+    b.onclick = () => {
+      const type = b.dataset.acttype;
+      let payload = {};
+      try { payload = JSON.parse(b.dataset.actpayload || "{}"); } catch {}
+      if (type === "reschedule_task") {
+        send({
+          type: "goal-task-reschedule",
+          taskId: payload.taskId,
+          dueDate: payload.dueDate,
+          startTime: payload.startTime,
+        });
+        b.disabled = true;
+        showToast("⚡ 已执行推演处方：任务日程已顺延校准", 3000);
+      } else if (type === "notify") {
+        if (payload.note) alert(payload.note);
+      } else if (type === "prepare_worktree") {
+        showToast(`🌿 沙箱分支已就绪: ${payload.branch || ""}`, 3000);
+      }
+    };
+  });
+}
+
+function renderGoalEditor(e) {
+  const root = $("viewRoot");
+  const sp = e.speculative || {};
+  const hOpts = ['<option value="">默认（自动选可用）</option>'].concat(
+    [...harnesses.values()].filter((h) => !h.blocked).map((h) =>
+      '<option value="' + esc(h.id) + '"' + (h.id === sp.harnessId ? " selected" : "") + ">" + esc(h.label) + "</option>")
+  ).join("");
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">🎯 目标</span><span class="meta2">${e.id ? "编辑" : "新建"}：属性 + 推测执行策略</span></div>
+      <div class="rtCard">
+        <div class="row"><label>标题 *</label><input type="text" id="geTitle" value="${esc(e.title || "")}" style="flex:1;min-width:220px" /></div>
+        <div class="row"><label>分类</label>
+          <select id="geCat">${Object.keys(GOAL_CATS).map((k) => `<option value="${k}"${(e.category || "general") === k ? " selected" : ""}>${GOAL_CATS[k]}</option>`).join("")}</select>
+          <label>状态</label>
+          <select id="geStatus">${Object.keys(GOAL_STATUS).map((k) => `<option value="${k}"${(e.status || "active") === k ? " selected" : ""}>${GOAL_STATUS[k][0]}</option>`).join("")}</select>
+          <label>进度 %</label><input type="number" id="geProg" min="0" max="100" value="${esc(String(Number(e.progress) || 0))}" style="width:70px" />
+        </div>
+        <div class="row"><label>截止日期</label><input type="date" id="geDeadline" value="${esc((e.deadline || "").slice(0, 10))}" />
+          <label>绑定目录</label><input type="text" id="geCwd" value="${esc(e.cwd || "")}" placeholder="推测沙箱从它切 worktree（留空 = 自动工作区）" style="flex:1;min-width:200px" /></div>
+        <div class="row" style="margin-top:10px"><label>描述</label></div>
+        <textarea id="geDesc" style="width:100%;min-height:52px;box-sizing:border-box;padding:8px">${esc(e.description || "")}</textarea>
+      </div>
+      <div class="rtCard">
+        <h3>🧪 推测执行策略（后台沙箱试错：成功留 patch 与分支，失败即弃）</h3>
+        <div class="row" style="flex-wrap:wrap;gap:14px">
+          <label><input type="checkbox" id="geSpecOn"${sp.enabled !== false ? " checked" : ""} style="width:auto"> 启用推测执行</label>
+          <label><input type="checkbox" id="geWorktree"${sp.useWorktree !== false ? " checked" : ""} style="width:auto"> worktree 隔离（推荐）</label>
+          <label><input type="checkbox" id="geTriggerCommit"${sp.triggerOnCommit ? " checked" : ""} style="width:auto"> commit 后自动触发</label>
+          <label><input type="checkbox" id="geFeishu"${sp.notifyFeishu ? " checked" : ""} style="width:auto"> 关键产出推飞书</label>
+        </div>
+        <div class="row"><label>Harness</label><select id="geHarness">${hOpts}</select>
+          <label>模型</label><input type="text" id="geModel" value="${esc(sp.model || "")}" placeholder="留空 = 默认模型" style="width:160px" />
+          <label>自动决策</label><select id="geAA" title="沙箱里跑工具没人点授权按钮：全自动/只读自动两档">
+            <option value="all"${sp.autoApprove !== "readonly" ? " selected" : ""}>全自动（推荐）</option>
+            <option value="readonly"${sp.autoApprove === "readonly" ? " selected" : ""}>只读自动</option>
+          </select>
+        </div>
+        <div class="row"><label>成果校验命令</label><input type="text" id="geCheck" value="${esc(sp.artifactCheckCommand || "")}" placeholder="退出码 0 = 推演成功，如 npm run typecheck（可空）" style="flex:1;min-width:240px" /></div>
+        <div class="row" style="margin-top:10px"><label>推测执行指令模板 *</label></div>
+        <textarea id="gePrompt" style="width:100%;min-height:88px;box-sizing:border-box;font-family:var(--vscode-editor-font-family,monospace);padding:8px">${esc(sp.promptTemplate || "")}</textarea>
+        <div class="meta2" style="margin:4px 0 10px">一键「推演」把这条指令投进独立沙箱会话实跑；写清「做什么 + 怎么算完成」，执行方的报告就是推演结论。</div>
+        <div class="row">
+          <span style="flex:1"></span>
+          <button class="mini" id="geCancel">取消</button>
+          <button class="btn primary" id="geSave">保存</button>
+        </div>
+      </div>
+    </div>`;
+  $("geCancel").onclick = () => { goalEdit = null; renderGoals(); };
+  $("geSave").onclick = () => {
+    const title = $("geTitle").value.trim();
+    if (!title) { alertLike2("先给目标起个标题"); return; }
+    send({
+      type: "goal-save",
+      goal: {
+        id: e.id,
+        title,
+        category: $("geCat").value,
+        status: $("geStatus").value,
+        progress: Math.max(0, Math.min(100, Number($("geProg").value) || 0)),
+        cwd: $("geCwd").value.trim(),
+        deadline: $("geDeadline").value || "",
+        description: $("geDesc").value.trim(),
+        speculative: {
+          enabled: $("geSpecOn").checked,
+          harnessId: $("geHarness").value || undefined,
+          model: $("geModel").value.trim() || undefined,
+          autoApprove: $("geAA").value,
+          useWorktree: $("geWorktree").checked,
+          triggerOnCommit: $("geTriggerCommit").checked,
+          notifyFeishu: $("geFeishu").checked,
+          artifactCheckCommand: $("geCheck").value.trim() || undefined,
+          promptTemplate: $("gePrompt").value,
+        },
+      },
+    });
+    goalEdit = null;
+  };
+}
+
+/* =====================================================================
+   Sentinel 神经中枢：心智张力槽 + 感官网格 + 神经脉冲流水
+   ===================================================================== */
+const SENTINEL_KIND_ICON = { fs: "📁", temporal: "⏱", siyuan: "🧭", session: "🛠" };
+const SENTINEL_SALIENCE_PILL = { whisper: "saved", normal: "idle", loud: "starting", siren: "error" };
+
+/** 快照自动补拉：2.5s 一次，最多 20 次；拿到快照 / 确认旧后端 / 到顶即停 */
+function pollSentinelSnapshot() {
+  if (!sentinelPoll || sentinelSnap) { sentinelPollStop(); return; }
+  sentinelPoll.tries++;
+  if (sentinelPoll.tries > 20) { sentinelPollStop(); return; }
+  send({ type: "sentinel-get" });
+  sentinelPoll.timer = setTimeout(pollSentinelSnapshot, 2500);
+}
+function sentinelPollStop() {
+  if (sentinelPoll?.timer) clearTimeout(sentinelPoll.timer);
+  sentinelPoll = null;
+}
+
+function sentinelPulseRow(p) {
+  return `
+    <div class="pulseRow${p.verdict === "noise" ? " noise" : ""}">
+      <span class="pill ${p.verdict === "noise" ? "saved" : "idle"}">${p.verdict === "noise" ? "System1 吞噬" : `张力 ${p.tension}`}</span>
+      <span class="pill ${SENTINEL_SALIENCE_PILL[p.salience] || "idle"}">${esc(p.salience)}</span>
+      <span style="flex:1;min-width:140px">${esc(p.summary)}</span>
+      <span class="meta2">${new Date(p.ts).toLocaleTimeString()}</span>
+    </div>`;
+}
+
+/** 脉冲流水局部刷新（sentinel-pulse 高频到达，不动整页避免打断操作） */
+function renderSentinelPulses() {
+  const box = $("sentinelPulseList");
+  if (!box) return;
+  box.innerHTML = sentinelPulses.length
+    ? sentinelPulses.map(sentinelPulseRow).join("")
+    : '<div class="empty">还没有神经脉冲。改个文件、等一次心跳，或点「⚡ 激发脉冲」。</div>';
+}
+
+function renderSentinel() {
+  const root = $("viewRoot");
+  if (sentinelEdit) { renderSentinelEditor(sentinelEdit); return; }
+  const s = sentinelSnap;
+  if (!s) {
+    // 快照未到：自动补拉自愈（视图先于 hello 打开 / 后端刚重启窗口期）
+    if (!sentinelPoll) {
+      sentinelPoll = { tries: 0, timer: null };
+      pollSentinelSnapshot();
+    }
+    root.innerHTML = '<div class="rtWrap"><div class="rtCard"><div class="empty">神经中枢快照未就绪，自动刷新中…<br /><span class="meta2">若持续如此，请确认服务端已重启到含「神经中枢」的版本</span></div></div></div>';
+    return;
+  }
+  const t = s.tension;
+  const pct = Math.max(0, Math.min(100, (t.level / t.threshold) * 100));
+  const halfLifeS = Math.round(t.halfLifeMs / 1000);
+  const burstAgo = t.lastBurstAt ? Math.round((Date.now() - t.lastBurstAt) / 1000) : null;
+  const cooling = burstAgo != null ? `上次破线 ${burstAgo}s 前 · 冷却中（水位每 ${halfLifeS}s 减半）` : `尚未破线 · 水位自然衰减（半衰期 ${halfLifeS}s）`;
+  const sensors = (s.sensors || []).map((v) => {
+    const detail =
+      v.kind === "fs" ? `监听 ${(v.dirs || []).join(" · ") || "—"}`
+      : v.kind === "temporal" ? `每 ${Math.round((v.intervalMs || 60000) / 1000)}s 一拍`
+      : v.kind === "siyuan" ? `罗盘 ${v.plansPath || "—"}`
+      : "全部会话的回合收尾";
+    return `
+      <div class="goalCard">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:16px">${SENTINEL_KIND_ICON[v.kind] || "🔬"}</span>
+          <b style="font-size:13.5px">${esc(v.label)}</b>
+          <span class="pill idle">${esc(v.kindLabel)}</span>
+          <span class="pill ${SENTINEL_SALIENCE_PILL[v.salience] || "idle"}" title="显著性等级">${esc(v.salience)}</span>
+          <span style="flex:1"></span>
+          <span class="pill ${v.enabled ? "done" : "saved"}">${v.enabled ? "在线" : "停用"}</span>
+        </div>
+        <div class="meta2">${esc(detail)}</div>
+        <div class="meta2">最近触发：${v.lastFiredAt ? new Date(v.lastFiredAt).toLocaleString() : "—"} · 累计 ${v.events} 次</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="mini ${v.enabled ? "" : "primary"}" data-sentoggle="${esc(v.id)}">${v.enabled ? "停用" : "启用"}</button>
+          <button class="mini" data-senedit="${esc(v.id)}">编辑</button>
+          <button class="mini ghost" data-sendel="${esc(v.id)}">删除</button>
+        </div>
+      </div>`;
+  }).join("");
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">🛰 神经中枢</span>
+        <span class="meta2">伴生感官 × 张力累积 × 快慢双系统：破线才唤起，不做机械轮询</span>
+        <span style="flex:1"></span>
+        <button class="mini primary" id="senNew">＋ 添加传感器</button></div>
+      <div class="rtCard">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <span class="ttl" style="font-size:16px">🧠 心智张力槽</span>
+          <b style="font-size:22px">${t.level.toFixed(1)}</b><span class="meta2">/ ${t.threshold}</span>
+          <span style="flex:1"></span>
+          <button class="mini primary" id="sentinelSpark" title="手动注入一张 normal 脉冲，测试张力累积与唤起">⚡ 激发脉冲</button>
+        </div>
+        <div class="tensionBar" style="margin:10px 0 6px"><i style="width:${pct}%;${pct >= 100 ? "background:var(--err)" : ""}"></i></div>
+        <div class="meta2">${esc(cooling)} · 聚类中 ${s.clusters} 簇 · 累计 ${s.stats.ingested} 感官 / ${s.stats.noise} 被吞噬 / ${s.stats.breaches} 次破线 / ${s.stats.actions} 个认知动作</div>
+      </div>
+      <div class="rtCard"><h3>🔬 感官网格</h3><div class="goalGrid">${sensors || '<div class="empty" style="grid-column:1/-1">没有传感器。点右上「添加传感器」。</div>'}</div></div>
+      <div class="rtCard"><h3>🌊 神经脉冲流水</h3>
+        <div id="sentinelPulseList" style="max-height:320px;overflow:auto"></div>
+      </div>
+      <div class="rtCard"><h3>⚡ 认知动作（System 2）</h3>
+        ${(s.actions || []).length
+          ? s.actions.map((a) => `<div class="meta2" style="padding:3px 0">${new Date(a.ts).toLocaleTimeString()} · <b>${esc(a.kind)}</b> — ${esc(a.reason)}</div>`).join("")
+          : '<div class="meta2">尚未唤起过。张力破线或 siren 强信号会在这里留痕。</div>'}
+      </div>
+    </div>`;
+  $("sentinelSpark").onclick = () => {
+    send({ type: "sentinel-spark" });
+    showToast("⚡ 已注入手动脉冲，看张力槽爬升", 2500);
+  };
+  $("senNew").onclick = () => {
+    sentinelEdit = { kind: "fs", salience: "normal", enabled: true };
+    renderSentinel();
+  };
+  root.querySelectorAll("[data-sentoggle]").forEach((b) => {
+    b.onclick = () => {
+      const v = (s.sensors || []).find((x) => x.id === b.dataset.sentoggle);
+      if (v) send({ type: "sentinel-toggle", id: v.id, enabled: !v.enabled });
+    };
+  });
+  root.querySelectorAll("[data-senedit]").forEach((b) => {
+    b.onclick = () => {
+      const v = (s.sensors || []).find((x) => x.id === b.dataset.senedit);
+      if (v) { sentinelEdit = JSON.parse(JSON.stringify(v)); renderSentinel(); }
+    };
+  });
+  root.querySelectorAll("[data-sendel]").forEach((b) => {
+    b.onclick = () => {
+      const v = (s.sensors || []).find((x) => x.id === b.dataset.sendel);
+      if (v && confirm(`删除传感器「${v.label}」？（仅删配置，不动目录与数据）`)) send({ type: "sensor-delete", id: v.id });
+    };
+  });
+  renderSentinelPulses();
+}
+
+function renderSentinelEditor(e) {
+  const root = $("viewRoot");
+  const isNew = !e.id;
+  root.innerHTML = `
+    <div class="rtWrap">
+      <div class="rtHead"><span class="ttl">🛰 传感器</span><span class="meta2">${isNew ? "添加" : "编辑"}：一段被赋予显著性的人间感官</span></div>
+      <div class="rtCard">
+        <div class="row"><label>名称 *</label><input type="text" id="snLabel" value="${esc(e.label || "")}" placeholder="如：论文目录监听" style="flex:1;min-width:200px" /></div>
+        <div class="row"><label>类型</label>
+          <select id="snKind"${isNew ? "" : " disabled"}>
+            <option value="fs"${e.kind === "fs" ? " selected" : ""}>📁 目录监听（文件变动）</option>
+            <option value="temporal"${e.kind === "temporal" ? " selected" : ""}>⏱ 时间心跳（周期脉冲）</option>
+            <option value="siyuan"${e.kind === "siyuan" ? " selected" : ""}>🧭 目标罗盘（思源 plans.json）</option>
+            <option value="session"${e.kind === "session" ? " selected" : ""} disabled>🛠 工兵完工（进程内单例，已内置）</option>
+          </select>
+          <label>显著性</label>
+          <select id="snSalience" title="该感官事件的信号强度：决定张力积累速度">
+            <option value="whisper"${e.salience === "whisper" ? " selected" : ""}>whisper（微语，慢慢攒）</option>
+            <option value="normal"${e.salience === "normal" ? " selected" : ""}>normal（常规）</option>
+            <option value="loud"${e.salience === "loud" ? " selected" : ""}>loud（强信号）</option>
+          </select>
+        </div>
+        <div class="row"><label>参数</label><span id="snDyn" style="flex:1;display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span></div>
+        <div class="meta2" style="margin:6px 0 10px">事件显著性会被这里的等级改写（siren 只保留给手动激发）；张力破线后 System 2 才会唤起，思源罗盘的差异会自动同步进目标看板。</div>
+        <div class="row">
+          <label><input type="checkbox" id="snEnabled"${e.enabled !== false ? " checked" : ""} style="width:auto"> 启用</label>
+          <span style="flex:1"></span>
+          <button class="mini" id="snCancel">取消</button>
+          <button class="btn primary" id="snSave">保存</button>
+        </div>
+      </div>
+    </div>`;
+  const dyn = () => {
+    const k = $("snKind").value;
+    const box = $("snDyn");
+    if (k === "fs") box.innerHTML = `<input type="text" id="snDirs" value="${esc((e.dirs || []).join(", "))}" placeholder="监听目录，逗号分隔（递归）" style="flex:1;min-width:240px" />`;
+    else if (k === "temporal") box.innerHTML = `每 <input type="number" id="snInterval" min="1" value="${Math.round((e.intervalMs || 60000) / 1000)}" style="width:70px" /> 秒一拍（whisper 级慢性压力）`;
+    else if (k === "siyuan") box.innerHTML = `<input type="text" id="snPlans" value="${esc(e.plansPath || "")}" placeholder="思源 plans.json 绝对路径" style="flex:1;min-width:240px" />`;
+    else box.innerHTML = `<span class="meta2">进程内事件源：所有会话回合收尾自动进入张力水池（错误回合为 loud）</span>`;
+  };
+  $("snKind").onchange = dyn;
+  dyn();
+  $("snCancel").onclick = () => { sentinelEdit = null; renderSentinel(); };
+  $("snSave").onclick = () => {
+    const k = isNew ? $("snKind").value : e.kind;
+    const sensor = {
+      id: e.id,
+      label: $("snLabel").value.trim(),
+      enabled: $("snEnabled").checked,
+      salience: $("snSalience").value,
+    };
+    if (isNew) sensor.kind = k;
+    if (k === "fs") sensor.dirs = $("snDirs").value.split(",").map((x) => x.trim()).filter(Boolean);
+    else if (k === "temporal") sensor.intervalMs = Math.max(1, Number($("snInterval").value) || 60) * 1000;
+    else if (k === "siyuan") sensor.plansPath = $("snPlans").value.trim();
+    if (!sensor.label) { showToast("⚠ 先给传感器起个名字", 3000); return; }
+    send({ type: "sensor-save", sensor });
+    sentinelEdit = null;
+  };
 }
 
 function renderRoundtable() {

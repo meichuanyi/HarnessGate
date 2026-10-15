@@ -5,8 +5,9 @@ import { HarnessTreeProvider } from "./tree.ts";
 import { ChatPanel } from "./chat.ts";
 import { RoomPanel } from "./room-panel.ts";
 import { SchedulesPanel, WorkspacePanel, setSchedulesData, setWorkspaceData } from "./schedules-panel.ts";
+import { GoalsPanel, setGoalsData } from "./goals-panel.ts";
 import { promptCwd } from "./cwd-input.ts";
-import type { HarnessAvailability, Room, SessionInfo } from "./protocol.ts";
+import type { GoalView, HarnessAvailability, MindwtrTaskView, Room, SessionInfo } from "./protocol.ts";
 
 let output: vscode.OutputChannel;
 let client: GateClient;
@@ -18,6 +19,7 @@ export type HarnessGateApi = {
   client: GateClient;
   state: () => string;
   openChat: (sessionId: string) => void;
+  openGoals: () => void;
   createSession: (harnessId: string, cwd: string) => Promise<SessionInfo | undefined>;
   /** 对话面板的渲染回执（大会话加载回归用）；面板没开过或 webview 还没渲染完则 undefined */
   chatRenderInfo: (sessionId: string) => { count: number; start: number; total: number; ms: number } | undefined;
@@ -68,6 +70,11 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       if (!picked) return;
       client.send({ type: "assistant-ensure", harnessId: picked.hid });
       vscode.window.showInformationMessage(`正在把助理切到 ${picked.label}（记忆保留）…`);
+    }),
+    // 目标系统与生活运转看板
+    vscode.commands.registerCommand("harnessgate.openGoals", () => {
+      client.send({ type: "goals-get" });
+      GoalsPanel.reveal(client, store);
     }),
     // 会话标签：编辑（逗号分隔）
     vscode.commands.registerCommand("harnessgate.editTags", async (node?: { session?: SessionInfo; id?: string }) => {
@@ -234,6 +241,12 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       setSchedulesData(msg.schedules);
     }
   });
+  client.on("goals", (msg: { goals?: GoalView[]; lifeTasks?: MindwtrTaskView[] }) => {
+    if (msg.goals) {
+      store.setGoals(msg.goals, msg.lifeTasks);
+      setGoalsData(msg.goals, msg.lifeTasks ?? []);
+    }
+  });
   client.on("workspace", (msg: { reports?: import("./protocol.ts").WorkspaceReport[] }) => {
     if (msg.reports) {
       store.setWorkspaceReports(msg.reports);
@@ -273,6 +286,7 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     client,
     state: () => client.getState(),
     openChat: (sessionId: string) => ChatPanel.show(sessionId, client, store, (l) => output.appendLine(l)),
+    openGoals: () => GoalsPanel.reveal(client, store),
     chatRenderInfo: (sessionId: string) => ChatPanel.renderInfoOf(sessionId),
     roomsRenderInfo: () => RoomPanel.lastRenderInfo,
     createSession: async (harnessId: string, cwd: string) => {

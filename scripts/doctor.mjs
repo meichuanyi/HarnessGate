@@ -34,6 +34,7 @@ const LIMIT = limitIdx >= 0 ? Number(args[limitIdx + 1]) : 0;
 const cwdIdx = args.indexOf("--cwd");
 const CWD = cwdIdx >= 0 ? String(args[cwdIdx + 1]) : process.env.HG_DEFAULT_CWD ?? ROOT;
 const TIMEOUT = Number(process.env.HG_DOCTOR_TIMEOUT ?? 30_000);
+const DEEP_TURN_MS = 60_000;   // 深探单轮等待上限：网关一时卡住不等于 harness 挂了，给足一轮
 
 function loadMerged() {
   const curated = JSON.parse(readFileSync(join(ROOT, "harness.json"), "utf8"));
@@ -82,6 +83,7 @@ async function probe(spec) {
   });
   let stderr = "";
   let gotReply = "";        // 收集 agent 真正吐出来的文本（比 usage 可靠：很多适配器不上报 usage）
+  let activeSession = null; // 当前在测的会话 id：备选模型换新会话重试，滤掉旧会话迟到的回复块
   let caps = null;          // initialize 声明的能力（含 promptCapabilities.audio）
   child.stderr.on("data", (d) => {
     stderr = (stderr + d.toString()).slice(-3000);
@@ -129,7 +131,8 @@ async function probe(spec) {
       .client({ name: "harnessgate-doctor" })
       .onNotification(acp.methods.client.session.update, (ctx) => {
         const u = ctx.params?.update ?? {};
-        if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && u.content.text?.trim()) {
+        if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text" && u.content.text?.trim()
+          && (!activeSession || ctx.params?.sessionId === activeSession)) {
           gotReply += u.content.text;
         }
       })
@@ -155,6 +158,7 @@ async function probe(spec) {
       };
       try {
         const s = await ctx.request(acp.methods.agent.session.new, { cwd: CWD, mcpServers: [] });
+        activeSession = s.sessionId;
         const configs = configsOf(s);
 
         // --audio：对声明支持音频的 harness 真发一段音频 prompt，看它接不接受
@@ -194,16 +198,15 @@ async function probe(spec) {
         // 真发一句，捕捉"能建会话但发消息就报没 API key / 起不来"的情况。
         // 深探只测默认模型会错杀：默认模型挂（网络/上游问题）不代表整个 harness 不可用——
         // 所以失败后自动换一个备选模型再试一次，任一模型能对话就算通过。
-        const DEEP_TURN_MS = 60_000;
         const modelCfg = configs.find((c) => c.id === "model");
         const curModel = modelCfg?.currentValue;
         const altModel = (modelCfg?.options ?? []).map((o) => o.value).find((v) => v && v !== curModel);
 
-        async function deepTurn() {
+        async function deepTurn(sid = s.sessionId) {
           gotReply = "";
           const r = await Promise.race([
             ctx.request(acp.methods.agent.session.prompt, {
-              sessionId: s.sessionId,
+              sessionId: sid,
               prompt: [{ type: "text", text: "只回复两个字：收到" }],
             }),
             new Promise((_, rej) => setTimeout(() => rej(new Error("__turn_timeout__")), DEEP_TURN_MS).unref?.()),
@@ -235,16 +238,20 @@ async function probe(spec) {
         if (v1.state === "ok") return done("ok", `${who} · 对话正常${curModel ? `（${curModel}）` : ""}（${v1.why}）`, { configs, deepModel: curModel });
         if (v1.state === "auth") return done("auth", v1.why);
 
-        // 默认模型失败 → 换备选模型再试一次（不重试 auth：那是要登录，换模型没用）
+        // 默认模型失败 → 换备选模型再试一次（不重试 auth：那是要登录，换模型没用）。
+        // 备选在新会话里试：首次若超时，旧 turn 可能还在后台跑，同会话续发会被拒或串话。
+        // 这里改的只是探活用的临时会话，用户的默认模型配置不会被碰。
         if (altModel) {
           try {
+            const s2 = await ctx.request(acp.methods.agent.session.new, { cwd: CWD, mcpServers: [] });
+            activeSession = s2.sessionId;
             await ctx.request(acp.methods.agent.session.set_config_option, {
-              sessionId: s.sessionId,
+              sessionId: s2.sessionId,
               configId: "model",
               value: altModel,
             });
             let second;
-            try { second = await deepTurn(); } catch (err) { second = { err }; }
+            try { second = await deepTurn(s2.sessionId); } catch (err) { second = { err }; }
             const v2 = classify(second);
             if (v2.state === "ok") {
               return done("ok", `${who} · 默认模型 ${curModel ?? "（默认）"}失败（${v1.why}），备选 ${altModel} 验证通过`, { configs, deepModel: altModel });
@@ -268,7 +275,10 @@ async function probe(spec) {
         return done("failed", msg);
       }
     });
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(done("timeout", "无响应")), TIMEOUT).unref?.());
+    // 深探最坏要跑两轮（默认模型一轮 + 备选模型一轮），整体预算必须盖住两轮时限，
+    // 否则外层先到点直接报 timeout 并杀进程，备选重试永远轮不到（网关卡死恰恰表现为慢而非报错）
+    const budget = DEEP ? Math.max(TIMEOUT, DEEP_TURN_MS * 2 + 15_000) : TIMEOUT;
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(done("timeout", DEEP ? "整体预算超时（默认+备选模型都没在时限内回复）" : "无响应")), budget).unref?.());
     return await Promise.race([work, timeout]);
   } catch (err) {
     return done("failed", err instanceof Error ? err.message : String(err));

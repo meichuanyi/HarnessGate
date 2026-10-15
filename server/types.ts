@@ -1,6 +1,56 @@
 import type { WorkspaceReport } from "./workspace.ts";
 import type { Room } from "./room.ts";
 import type { Schedule } from "./schedules.ts";
+import type { Goal, GoalView, MindwtrTaskView } from "./goals.ts";
+import type { Salience } from "./sentinel/types.ts";
+import type { SkillsSnapshot } from "./skills.ts";
+import type { McpServerConfig } from "./mcp.ts";
+
+/* =====================================================================
+   Sentinel 神经中枢（server/sentinel.ts）的前端视图类型
+   ===================================================================== */
+
+/** 感官网格卡片 */
+export type SentinelSensorView = {
+  id: string;
+  label: string;
+  kind: "fs" | "temporal" | "siyuan" | "session";
+  /** 类型中文标签（目录监听/时间心跳/目标罗盘/工兵完工） */
+  kindLabel: string;
+  enabled: boolean;
+  salience: Salience;
+  dirs?: string[];
+  intervalMs?: number;
+  plansPath?: string;
+  lastFiredAt?: number;
+  events: number;
+};
+
+/** 实时神经脉冲（逐事件广播 + 快照内附最近历史） */
+export type SentinelPulseView = {
+  id: string;
+  ts: number;
+  modality: string;
+  kind: string;
+  subject?: string;
+  summary: string;
+  salience: Salience;
+  /** System 1 判定：noise=被吞噬（不进张力），queued=入簇进张力 */
+  verdict: "noise" | "queued";
+  /** 该事件注入后的张力水位 */
+  tension: number;
+};
+
+/** 神经中枢全量快照（hello / sentinel-get / sentinel-status） */
+export type SentinelStatus = {
+  tension: { level: number; threshold: number; halfLifeMs: number; lastBurstAt?: number };
+  /** System 1 持中意图簇数（正在聚类中的信号） */
+  clusters: number;
+  sensors: SentinelSensorView[];
+  stats: { ingested: number; noise: number; breaches: number; actions: number };
+  pulses: SentinelPulseView[];
+  actions: Array<{ ts: number; kind: string; reason: string }>;
+};
 
 export type HarnessSpec = {
   id: string;
@@ -23,9 +73,11 @@ export type HarnessSpec = {
   repository?: string;
   requiresDownload?: boolean;
   download?: { archive: string; cmd: string };
-  /** 一键安装/升级（可选）：npm 包名，或自定义版本/更新命令。不声明则该 harness 不参与版本管理。
+  /** 一键安装/升级（可选）：npm 包名，或自定义版本/更新命令，或 ACP 官方注册表条目 id（registry）。
+      registry 型：latest 取注册表 agent.json 的 version（URL 命名规则跨版本会变，枚举下载地址必漏报），
+      installed 从本机二进制包内嵌版本读，升级=整包重新下载替换。不声明则该 harness 不参与版本管理。
       只执行这里预声明的内容——客户端不能传任意命令。 */
-  manage?: { pkg?: string; versionCmd?: string; updateCmd?: string };
+  manage?: { pkg?: string; versionCmd?: string; updateCmd?: string; registry?: string };
 };
 
 export type Registry = {
@@ -165,6 +217,8 @@ export type HarnessAvailability = {
   latestVersion?: string;
   manageBusy?: boolean;
   manageSupported?: boolean;
+  /** 不可用但可一键安装（下载注册表分发的二进制 / 装声明的 npm 包）：UI 据此显示「安装」按钮 */
+  canInstall?: boolean;
 };
 
 export type ClientMsg =
@@ -269,6 +323,36 @@ export type ClientMsg =
   | { type: "crew-detail"; roomId: string }
   | { type: "room-run"; roomId: string }
   | { type: "room-stop"; roomId: string }
+  | { type: "goals-list" }
+  | { type: "goals-get" }
+  | { type: "goal-save"; goal: Partial<Goal> }
+  | { type: "goal-delete"; id: string }
+  | { type: "goal-speculate"; id: string }
+  /** 完成（打勾）一个 Mindwtr 任务；带 goalId 时适当推进该目标进度，全服广播 */
+  | { type: "goal-task-complete"; taskId: string; goalId?: string }
+  /** 顺延/调整一个 Mindwtr 任务的时间窗口 */
+  | { type: "goal-task-reschedule"; taskId: string; dueDate?: string; startTime?: string }
+  /** 会话装备面板：读取 / 保存本会话启用的 MCP 服务与领域技能 */
+  | { type: "session-gear-get"; sessionId: string }
+  | { type: "session-gear-save"; sessionId: string; mcpServerIds: string[]; skillIds: string[] }
+  /** Sentinel 神经中枢：拉快照 / 开关感官 / 增改感官 / 删感官 / 手动激发脉冲 */
+  | { type: "sentinel-get" }
+  | { type: "sentinel-toggle"; id: string; enabled: boolean }
+  | {
+      type: "sensor-save";
+      sensor: {
+        id?: string;
+        label?: string;
+        kind?: "fs" | "temporal" | "siyuan" | "session";
+        enabled?: boolean;
+        salience?: Salience;
+        dirs?: string[];
+        intervalMs?: number;
+        plansPath?: string;
+      };
+    }
+  | { type: "sensor-delete"; id: string }
+  | { type: "sentinel-spark"; summary?: string; weight?: number }
   | { type: "schedules-list" }
   | { type: "schedule-save"; schedule: Schedule }
   | { type: "schedule-delete"; id: string }
@@ -300,6 +384,11 @@ export type ServerMsg =
       defaultCwd: string;
       rooms?: Room[];
       schedules?: Schedule[];
+      goals?: GoalView[];
+      /** Mindwtr 生活琐事（看板「☕ 今日生活与日常运转」区，随 goals 一起刷新） */
+      lifeTasks?: MindwtrTaskView[];
+      /** Sentinel 神经中枢快照（张力水位 + 感官列表 + 最近脉冲） */
+      sentinel?: SentinelStatus;
       providers?: Array<{ id: string; label: string }>;
       /** 服务版本（package.json）与 git 短 commit——前端据此显示/检查更新 */
       version?: string;
@@ -339,6 +428,15 @@ export type ServerMsg =
       total?: number;
       /** 本次 entries[0] 在整份台账中的绝对下标（0=从头；>0 表示前面还有更早的） */
       start?: number;
+    }
+  /** 会话装备面板数据（session-gear-get 的应答 / 保存确认） */
+  | {
+      type: "session-gear";
+      sessionId: string;
+      mcpServerIds: string[];
+      skillIds: string[];
+      allMcps: McpServerConfig[];
+      allSkills: SkillsSnapshot;
     }
   | { type: "workspace"; reports: WorkspaceReport[] }
   | {
@@ -394,6 +492,10 @@ export type ServerMsg =
   | { type: "voice-live-ended" }
   | { type: "history", providers: Array<{ id: string; label: string }>; summaries?: Array<{ provider: string; label: string; found: number; imported: number; updated: number; skipped: number }> }
   | { type: "room"; room: Room }
+  | { type: "goals"; goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }
+  /** Sentinel 神经中枢：全量快照（配置/张力/统计变化后）与实时脉冲流 */
+  | { type: "sentinel-status"; sentinel: SentinelStatus }
+  | { type: "sentinel-pulse"; pulse: SentinelPulseView }
   | { type: "schedules"; schedules: Schedule[] }
   | { type: "schedule-segmented"; sessionId: string; segments: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }> }
   | {
@@ -432,6 +534,8 @@ export type ServerMsg =
   | { type: "pong" }
   /** harness 一键安装/升级的执行报告（broadcast，所有客户端同步按钮态） */
   | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
+  /** harness 可用性快照更新（安装完成等会改变可用性的事件后 broadcast） */
+  | { type: "harnesses"; harnesses: HarnessAvailability[] }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
   | { type: "settings"; settings: Record<string, unknown> }
   /** utility-cleanup 的回复：各源的扫描/删除结果 */

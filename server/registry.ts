@@ -135,6 +135,19 @@ export function saveOverrides(file: string, ov: HarnessOverrides): void {
   renameSync(tmp, file);
 }
 
+/** 一键下载安装成功后，把二进制绝对路径写回 harness.registry.json 对应条目（重启后仍生效） */
+export function adoptDownloadedBinary(file: string, id: string, binPath: string): void {
+  const raw = JSON.parse(readFileSync(file, "utf8")) as Registry;
+  const h = (raw.harnesses ?? []).find((x) => x.id === id);
+  if (!h) return;
+  h.cmd = binPath;
+  delete h.requiresDownload;
+  h.note = `已下载二进制 ${binPath}`;
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, JSON.stringify(raw, null, 1));
+  renameSync(tmp, file);
+}
+
 export type ProbeConfigOption = {
   id: string;
   name: string;
@@ -210,7 +223,9 @@ export function localState(spec: HarnessSpec, trust: ReturnType<typeof loadTrust
     if (pkg && (globalPackages().has(pkg) || inNpxCache(pkg))) return "installed";   // 已下载但未探活
     return "needs-download";
   }
-  return findBinary(spec.cmd) ? "installed" : "missing";
+  const bin = findBinary(spec.cmd);
+  if (!bin && spec.requiresDownload && spec.download?.archive) return "needs-download";   // 注册表声明了分发方式，可一键下载
+  return bin ? "installed" : "missing";
 }
 
 export function availability(spec: HarnessSpec, trust?: ReturnType<typeof loadTrust>, probe: ProbeResults = {}): HarnessAvailability {
@@ -221,7 +236,7 @@ export function availability(spec: HarnessSpec, trust?: ReturnType<typeof loadTr
   const t = trust ? trustOf(spec, trust) : undefined;
   const note =
     state === "blocked" ? `已屏蔽：${trust!.blocked[spec.id]}`
-    : state === "needs-download" ? `本机没有：首次使用需要下载（${spec.cmd}），下载后请跑一次 npm run doctor -- --probe 验证`
+    : state === "needs-download" ? `本机没有：点「安装」一键下载，装完建议跑一次 npm run doctor -- --probe 验证`
     : state === "probed-auth" ? `需先登录该 CLI（探活：${probe[spec.id]?.detail ?? ""}）`
     : state === "probed-failed" ? `探活失败：${probe[spec.id]?.detail ?? ""}`
     : state === "missing" ? `未安装：找不到 ${spec.cmd}${spec.proxy ? `（已配代理 ${spec.proxy}）` : ""}`

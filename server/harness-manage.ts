@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
+import { bundleVersion, downloadHarnessBinary, fetchRegistryAgent, installRegistryHarness } from "./harness-download.ts";
 import type { HarnessSpec } from "./types.ts";
 
 /**
  * harness 版本管理：本机版本探测 + 上游最新版对照 + 一键安装/升级。
- * 只执行 harness.json `manage` 里预声明的 npm 包/命令——客户端消息里只能传
- * harnessId 和 action，不存在「把任意命令传给端点」的面。
+ * 只执行本地注册表里预声明的 npm 包/命令/下载分发/注册表条目——客户端消息里只能传
+ * harnessId 和 action，不存在「把任意命令/URL 传给端点」的面。
  */
 export type ManageInfo = {
   supported: boolean;
@@ -13,6 +14,8 @@ export type ManageInfo = {
   busy?: boolean;
   checkedAt?: number;
 };
+
+export type ManageResult = { ok: boolean; from?: string; to?: string; output: string; binPath?: string };
 
 const LATEST_TTL = 6 * 3600_000;
 const state = new Map<string, ManageInfo>();
@@ -55,8 +58,13 @@ async function cmdVersion(cmd: string): Promise<string | undefined> {
 }
 
 export function initManage(harnesses: HarnessSpec[], onAvailChange: () => void): void {
-  specs = harnesses.filter((h) => h.manage?.pkg || h.manage?.versionCmd);
-  for (const h of specs) if (!state.has(h.id)) state.set(h.id, { supported: true });
+  // 声明 manage 的参与版本管理；requiresDownload 条目参与一键下载（supported=false，不进「版本管理」列表，只在不可用卡片上出「安装」按钮）
+  specs = harnesses.filter((h) => h.manage?.pkg || h.manage?.versionCmd || h.manage?.registry || (h.requiresDownload && h.download?.archive));
+  for (const h of specs) {
+    if (!state.has(h.id)) {
+      state.set(h.id, { supported: Boolean(h.manage?.pkg || h.manage?.versionCmd || h.manage?.registry) });
+    }
+  }
   if (!specs.length) return;
   void refreshAll(onAvailChange);
   setInterval(() => void refreshAll(onAvailChange), LATEST_TTL);
@@ -77,6 +85,16 @@ async function refreshAll(onAvailChange: () => void): Promise<void> {
       }
     } else if (h.manage?.versionCmd) {
       st.installed = await cmdVersion(h.manage.versionCmd);
+    } else if (h.manage?.registry) {
+      // registry 型：installed 从本机二进制包内读（zipapp/par 的 _version.py），latest 从 ACP 官方注册表 agent.json 取
+      st.installed = await bundleVersion(h.cmd);
+      if (!st.latest || !st.checkedAt || Date.now() - st.checkedAt > LATEST_TTL) {
+        try {
+          const meta = await fetchRegistryAgent(h.manage.registry);
+          st.latest = meta.version;
+          st.checkedAt = Date.now();
+        } catch { /* 注册表拉不动（网络/代理）：保留旧 latest，下轮再试 */ }
+      }
     }
   }
   onAvailChange();
@@ -86,10 +104,25 @@ async function refreshAll(onAvailChange: () => void): Promise<void> {
 export async function manageRun(
   id: string,
   _action: "install" | "update",
-): Promise<{ ok: boolean; from?: string; to?: string; output: string }> {
+): Promise<ManageResult> {
   const h = specs.find((x) => x.id === id);
+  if (!h) return { ok: false, output: "该 harness 没有可执行的一键安装方式（未声明 manage，也未声明下载分发，或已经装好）" };
+  // requiresDownload 条目：按注册表预声明的分发信息下载二进制（to 带注册表里的版本号）
+  if (h.requiresDownload && h.download?.archive) {
+    const dst = state.get(id);
+    if (dst?.busy) return { ok: false, output: "该 harness 已有管理动作在进行中，请等它结束" };
+    if (dst) dst.busy = true;
+    try {
+      const target = await downloadHarnessBinary(id, h.download);
+      return { ok: true, to: h.version, output: `已下载并解压到 ${target}`, binPath: target };
+    } catch (err) {
+      return { ok: false, output: err instanceof Error ? err.message : String(err) };
+    } finally {
+      if (dst) dst.busy = false;
+    }
+  }
   const st = state.get(id);
-  if (!h?.manage || !st) return { ok: false, output: "该 harness 未声明 manage，不参与自动安装/升级" };
+  if (!h.manage || !st) return { ok: false, output: "该 harness 未声明 manage，不参与自动安装/升级" };
   if (st.busy) return { ok: false, output: "该 harness 已有管理动作在进行中，请等它结束" };
   st.busy = true;
   try {
@@ -110,8 +143,15 @@ export async function manageRun(
       out = r.out.slice(-2000);
       if (!r.ok) return { ok: false, from, output: out || "更新命令执行失败" };
       if (h.manage.versionCmd) st.installed = await cmdVersion(h.manage.versionCmd);
+    } else if (h.manage.registry) {
+      // registry 型：安装与升级同一条路（下载→校验→原子替换），装没装过都行
+      const r = await installRegistryHarness(h.manage.registry, h.cmd);
+      st.installed = r.version;
+      st.latest = r.version;
+      st.checkedAt = Date.now();
+      out = `已就位 ${r.version}：${r.target}`;
     } else {
-      return { ok: false, from, output: "未配置 updateCmd" };
+      return { ok: false, from, output: "未配置 updateCmd / registry" };
     }
     return { ok: true, from, to: st.installed, output: out };
   } finally {

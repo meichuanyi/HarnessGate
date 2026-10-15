@@ -7,9 +7,13 @@ import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyOverrides, saveOverrides } from "./registry.ts";
+import { loadRegistry, availability, loadTrust, loadProbe, loadOverrides, applyOverrides, saveOverrides, adoptDownloadedBinary } from "./registry.ts";
 import { initManage, manageInfo, manageRun } from "./harness-manage.ts";
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
+import { loadGoals, saveGoals, newGoalId, classifyMindwtrTasks, mindwtrCompleteTask, mindwtrUpdateTask, mindwtrFetchTasks, enrichTasksWithPrescriptions, type Goal, type GoalView, type MindwtrTaskView } from "./goals.ts";
+import { SpeculationEngine, LifeEvaluator, CodeSandboxEvaluator } from "./speculation/index.ts";
+import { SentinelService } from "./sentinel.ts";
+import { runSpeculativeTask, type SpeculativeIntent } from "./speculative.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver } from "./session.ts";
@@ -29,13 +33,14 @@ import { randomUUID } from "node:crypto";
 import { HistorySync } from "./history.ts";
 import * as voice from "./voice.ts";
 import { VoiceLive } from "./voice-live.ts";
-import type { ClientMsg, HarnessSpec, ServerMsg, SessionInfo } from "./types.ts";
+import type { ClientMsg, HarnessAvailability, HarnessSpec, ServerMsg, SessionInfo } from "./types.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.HG_PORT ?? 9830);
 const HOST = process.env.HG_HOST ?? "0.0.0.0";
 const DATA_DIR = process.env.HG_DATA_DIR ?? join(homedir(), ".harnessgate");
 const SCHEDULES_FILE = join(DATA_DIR, "schedules.json");
+const GOALS_FILE = join(DATA_DIR, "goals.json");
 const AUTO_WORKSPACE_ROOT = join(DATA_DIR, "schedules");
 const TOKEN_FILE = join(DATA_DIR, "token");
 
@@ -198,6 +203,29 @@ function currentProbe() {
     }
   }
   return probe;
+}
+
+/** 安装改变了 harness 的本机环境：清掉旧探活结论（如"找不到可执行文件"），否则浅探按设计压不过旧的深探失败，状态会一直卡在不可用 */
+function clearProbeEntry(id: string): void {
+  try {
+    const raw = JSON.parse(readFileSync(probeFile, "utf8")) as { results?: Record<string, unknown> };
+    if (raw?.results?.[id]) {
+      delete raw.results[id];
+      writeFileSync(probeFile, JSON.stringify(raw, null, 1));
+      probeMtime = 0;   // 强制 currentProbe() 下次重读
+    }
+  } catch {
+    /* probe.json 不存在/正被写入：无所谓，随后的浅探会重写 */
+  }
+}
+
+/** 安装完成后自动浅探一次（起没起来如实反映到 UI），结束时广播一版快照 */
+function autoProbe(id: string): void {
+  const child = spawn(process.execPath, [join(ROOT, "scripts", "doctor.mjs"), "--probe", "--only", id], {
+    cwd: ROOT, env: process.env, stdio: "ignore", detached: true,
+  });
+  child.on("close", () => broadcast({ type: "harnesses", harnesses: harnessSnapshot() } satisfies ServerMsg));
+  child.unref();
 }
 
 // 会话的兜底配置：harness 没上报 configOptions 时（hermes 从不报；部分 resume/load 也不带），
@@ -450,6 +478,7 @@ function makeHooks() {
     onTurnEnd: (sessionId: string, stopReason: string) => {
       void autoTagger?.maybeEnqueue(sessionId); // 首轮结束后异步语义打标（内部自判条件）
       broadcast({ type: "turn_end", sessionId, stopReason });
+      sentinel.sessionTurnEnd(sessionId, live.get(sessionId)?.harnessLabel, stopReason);   // 工兵完工 → 神经中枢感官
       for (const vl of voiceLives.values()) {
         if (vl.sessionId === sessionId) vl.onTurnEnd();
       }
@@ -496,7 +525,7 @@ const http = createServer(async (req, res) => {
           ok: true,
           version: VERSION,
           commit: GIT_COMMIT,
-          harnesses: registry.harnesses.map((h) => availability(h, trust, currentProbe())),
+          harnesses: registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()), h)),
           sessions: sessionList().map((s) => ({
             id: s.id,
             harnessId: s.harnessId,
@@ -812,19 +841,29 @@ function helloPayload(): ServerMsg {
     providers: history.availableProviders(),
     version: VERSION,
     commit: GIT_COMMIT,
-    harnesses: registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()))),
+    harnesses: harnessSnapshot(),
     mcpServers: mcpStore.list(),
     skills: skillsSnapshot(),
     sessions: sessionList(),
     defaultCwd,
     rooms: rooms.list(),
+    ...mindwtrPayloadSync(),
+    schedules,
+    sentinel: sentinel.status(),
   };
 }
 
-/** 把版本管理信息（已装/最新/支持一键管理）并进 availability 下发 */
-function availWithManage(a: ReturnType<typeof availability>): ReturnType<typeof availability> {
+/** 把版本管理信息（已装/最新/支持一键管理/可一键安装）并进 availability 下发 */
+function availWithManage(a: ReturnType<typeof availability>, spec: HarnessSpec): ReturnType<typeof availability> {
   const mi = manageInfo(a.id);
-  return { ...a, installedVersion: mi.installed, latestVersion: mi.latest, manageBusy: mi.busy, manageSupported: mi.supported };
+  const canInstall = !a.available
+    && Boolean((spec.requiresDownload && spec.download?.archive) || (mi.supported && !mi.installed));
+  return { ...a, installedVersion: mi.installed, latestVersion: mi.latest, manageBusy: mi.busy, manageSupported: mi.supported, canInstall };
+}
+
+/** 当前全量 harness 可用性快照（hello 与安装完成后的广播共用） */
+function harnessSnapshot(): HarnessAvailability[] {
+  return registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()), h));
 }
 
 // harness 版本管理：启动时探测本机/上游版本 + 6h 刷新（harness.json manage 声明的才参与）
@@ -914,6 +953,69 @@ wss.on("connection", (ws, req) => {
             break;
           }
           ws.send(JSON.stringify({ type: "skills-content", reqId: msg.reqId, name: String(msg.name), content: r } satisfies ServerMsg));
+          break;
+        }
+
+        /* ---------- 会话装备面板：MCP 服务 + 领域技能 ---------- */
+        case "session-gear-get":
+        case "session-gear-save": {
+          const gearMsg = msg as unknown as { type: string; sessionId: string; mcpServerIds?: string[]; skillIds?: string[] };
+          const isSave = gearMsg.type === "session-gear-save";
+          const sess = live.get(gearMsg.sessionId);
+          const rec = sess ? undefined : store.get(gearMsg.sessionId);
+          const harnessId = sess?.harnessId ?? rec?.harnessId;
+          if (!harnessId) {
+            ws.send(JSON.stringify({ type: "error", message: "找不到该会话" } satisfies ServerMsg));
+            break;
+          }
+          const snap = skillsSnapshot();
+          const mountedNow = snap.library.filter((s) => s.mountedOn.includes(harnessId)).map((s) => s.name);
+
+          let mcpServerIds = sess?.mcpServerIds ?? rec?.mcpServerIds ?? mcpStore.enabledIds();
+          let skillIds = sess?.skillIds ?? rec?.skillIds ?? (mountedNow.length ? mountedNow : snap.library.map(s => s.name));
+          let mountApplied = false;
+          if (isSave) {
+            // MCP：只接受真实存在的 id；live 会话改完在下次恢复/重启注入时生效
+            mcpServerIds = (gearMsg.mcpServerIds ?? []).map(String).filter((id) => mcpStore.list().some((m) => m.id === id));
+            // 技能：以会话 harness 当前挂载为基线做差分（挂载是 harness 级，同 harness 会话共享）
+            const want = new Set((gearMsg.skillIds ?? []).map(String).filter((n) => snap.library.some((s) => s.name === n)));
+            const current = new Set(mountedNow);
+            const applied: string[] = [];
+            for (const n of want) {
+              if (current.has(n)) continue;
+              const r = skillsStore.setMount(n, harnessId, true);
+              if ("ok" in r) applied.push(`+${n}`);
+            }
+            for (const n of current) {
+              if (want.has(n)) continue;
+              const r = skillsStore.setMount(n, harnessId, false);
+              if ("ok" in r) applied.push(`-${n}`);
+            }
+            mountApplied = applied.length > 0;
+            skillIds = [...want];
+            if (sess) {
+              sess.mcpServerIds = mcpServerIds;
+              sess.skillIds = skillIds;
+            } else if (rec) {
+              rec.mcpServerIds = mcpServerIds.length ? mcpServerIds : undefined;
+              rec.skillIds = skillIds.length ? skillIds : undefined;
+            }
+            audit.append({ session: gearMsg.sessionId, harness: harnessId, op: "session.gear", mcps: mcpServerIds.length, skillMounts: applied });
+          }
+
+          if (sess) store.upsert(sess.record());
+          else if (rec) store.upsert(rec);
+          if (isSave && sess) broadcast({ type: "session", session: sess.info() });
+          if (mountApplied) broadcastSkills();
+
+          ws.send(JSON.stringify({
+            type: "session-gear",
+            sessionId: gearMsg.sessionId,
+            mcpServerIds,
+            skillIds,
+            allMcps: mcpStore.list(),
+            allSkills: skillsSnapshot(),
+          } satisfies ServerMsg));
           break;
         }
 
@@ -1058,13 +1160,25 @@ wss.on("connection", (ws, req) => {
         }
 
         case "harness-manage": {
-          // 一键安装/升级：只跑 harness.json manage 里预声明的内容；报告广播给所有客户端
+          // 一键安装/升级：只跑本地注册表里预声明的内容；报告广播给所有客户端
           const mSpec = registry.harnesses.find((h) => h.id === msg.harnessId);
           if (!mSpec) {
             ws.send(JSON.stringify({ type: "error", message: "没有这个 harness" } satisfies ServerMsg));
             break;
           }
           void manageRun(mSpec.id, msg.action).then((r) => {
+            if (r.ok && r.binPath) {
+              // 下载安装成功：二进制路径写回内存 spec + harness.registry.json 落盘，重启后仍生效
+              mSpec.cmd = r.binPath;
+              delete mSpec.requiresDownload;
+              mSpec.note = `已下载二进制 ${r.binPath}`;
+              try {
+                adoptDownloadedBinary(join(ROOT, "harness.registry.json"), mSpec.id, r.binPath);
+              } catch (err) {
+                console.error("[manage] harness.registry.json 落盘失败:", err instanceof Error ? err.message : err);
+              }
+            }
+            if (r.ok) clearProbeEntry(mSpec.id);   // 旧探活结论基于装之前的环境，不可信了
             broadcast({
               type: "harness-managed",
               harnessId: mSpec.id,
@@ -1074,6 +1188,11 @@ wss.on("connection", (ws, req) => {
               to: r.to,
               output: r.output,
             } satisfies ServerMsg);
+            // 安装成功会改变可用性（missing/needs-download → installed），推一版快照让所有客户端的按钮/卡片即时翻转
+            if (r.ok) {
+              broadcast({ type: "harnesses", harnesses: harnessSnapshot() } satisfies ServerMsg);
+              autoProbe(mSpec.id);   // 跟一次浅探验证真能启动，结果再广播一版
+            }
           });
           break;
         }
@@ -2041,6 +2160,177 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "goals-get":
+        case "goals-list": {
+          const payload = await mindwtrPayloadFresh();
+          ws.send(JSON.stringify({ type: "goals", ...payload } satisfies ServerMsg));
+          break;
+        }
+
+        case "goal-task-reschedule": {
+          const { taskId, dueDate, startTime } = msg as unknown as { taskId: string; dueDate?: string; startTime?: string };
+          void (async () => {
+            try {
+              const updates: Record<string, any> = {};
+              if (dueDate !== undefined) updates.dueDate = dueDate;
+              if (startTime !== undefined) updates.startTime = startTime;
+              await mindwtrUpdateTask(taskId, updates);
+              speculationEngine.clearCache(taskId);
+              if (cachedPayload) cachedPayload = null;
+              await mindwtrRefresh();
+              const fresh = await mindwtrPayloadFresh();
+              broadcast({ type: "goals", ...fresh } as never);
+              audit.append({ op: "goal.task.reschedule", taskId, dueDate, startTime });
+            } catch (err) {
+              ws.send(JSON.stringify({ type: "error", message: `顺延 Mindwtr 任务失败: ${err instanceof Error ? err.message : String(err)}` } satisfies ServerMsg));
+            }
+          })();
+          break;
+        }
+
+        case "goal-task-complete": {
+          const { taskId, goalId } = msg as unknown as { taskId: string; goalId?: string };
+          void (async () => {
+            try {
+              await mindwtrCompleteTask(taskId);
+              if (goalId) {
+                const g = goals.find((x) => x.id === goalId);
+                if (g) {
+                  // 打勾一个支撑任务 = 目标往前挪一步：+10 封顶 100，满格自动完成
+                  g.progress = Math.min(100, Math.round(Number(g.progress) || 0) + 10);
+                  if (g.progress >= 100 && g.status === "active") g.status = "completed";
+                  g.updatedAt = new Date().toISOString();
+                  audit.append({ op: "goal.progress", goalId, by: "mindwtr-task", taskId, progress: g.progress });
+                }
+              }
+              await mindwtrRefresh();   // 先刷新再广播：打完勾的任务即刻从看板消失
+              saveAndBroadcastGoals();
+              audit.append({ op: "goal.task.complete", taskId, goalId });
+            } catch (err) {
+              ws.send(JSON.stringify({ type: "error", message: `完成 Mindwtr 任务失败: ${err instanceof Error ? err.message : String(err)}` } satisfies ServerMsg));
+            }
+          })();
+          break;
+        }
+
+        case "goal-save": {
+          try {
+            applyGoalSave((msg as unknown as { goal: Partial<Goal> }).goal);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+
+        case "goal-delete": {
+          const gid = (msg as unknown as { id: string }).id;
+          goals = goals.filter((g) => g.id !== gid);
+          saveAndBroadcastGoals();
+          break;
+        }
+
+        /* ---------- Sentinel 神经中枢 ---------- */
+        case "sentinel-get": {
+          ws.send(JSON.stringify({ type: "sentinel-status", sentinel: sentinel.status() } satisfies ServerMsg));
+          break;
+        }
+        case "sentinel-toggle": {
+          try {
+            sentinel.toggle(msg.id, msg.enabled);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+        case "sensor-save": {
+          try {
+            sentinel.saveSensor(msg.sensor);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+        case "sensor-delete": {
+          try {
+            sentinel.deleteSensor(msg.id);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) } satisfies ServerMsg));
+          }
+          break;
+        }
+        case "sentinel-spark": {
+          const spark = msg as unknown as { summary?: string; weight?: number };
+          sentinel.spark(spark.summary, spark.weight);
+          break;
+        }
+
+        case "goal-speculate": {
+          const gid = (msg as unknown as { id: string }).id;
+          const target = goals.find((g) => g.id === gid);
+          if (!target) {
+            ws.send(JSON.stringify({ type: "error", message: "目标不存在" } satisfies ServerMsg));
+            break;
+          }
+          if (!target.speculative?.promptTemplate) {
+            ws.send(JSON.stringify({ type: "error", message: "该目标尚未配置推测执行的指令模板" } satisfies ServerMsg));
+            break;
+          }
+          const prompt = target.speculative.promptTemplate;
+          const cwd = target.cwd?.trim() || defaultCwd;
+          const intent: SpeculativeIntent = {
+            goalId: target.id,
+            purpose: "manual-trigger",
+            cwd,
+            useWorktree: target.speculative.useWorktree ?? true,
+            prompt,
+            harnessId: target.speculative.harnessId,
+            model: target.speculative.model,
+            artifactCheck: target.speculative.artifactCheckCommand ? {
+              kind: "command",
+              cmd: target.speculative.artifactCheckCommand
+            } : undefined
+          };
+          // 异步后台运行
+          void runSpeculativeTask(intent, {
+            store,
+            audit,
+            hub,
+            makeHooks,
+            resolveHarness: (hid) => hid ? specOf(hid) : registry.harnesses.find((h) => availability(h, trust, currentProbe()).available),
+            modelConfigIdOf: (hid) => probeModelConfigId(hid) ?? "model",
+            apiConfig: () => {
+              const s = settingsStore.get();
+              if (s.utilityMode === "api" && s.utilityApiBase && s.utilityApiKey && s.utilityApiModel) {
+                return { baseUrl: s.utilityApiBase, apiKey: s.utilityApiKey, model: s.utilityApiModel };
+              }
+              return null;
+            }
+          }).then((r) => {
+            target.lastSpeculatedAt = new Date().toISOString();
+            target.lastSpeculatedResult = {
+              ok: r.ok,
+              summary: r.ok ? r.report.slice(0, 500) : r.error,
+              branch: r.ok ? r.worktree?.branch : undefined
+            };
+            saveAndBroadcastGoals();
+            // 飞书推送
+            if (target.speculative?.notifyFeishu) {
+              const feishuUrl = "http://192.168.6.108:818/api/push/a6089c81f4754037966345f83ff0cb3e";
+              const pushBody = {
+                title: `【目标推演】${target.title}`,
+                content: `状态: ${r.ok ? "✅ 成功" : "❌ 失败"}\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.ok ? (r.worktree?.branch || "无") : "无"}\n\n${r.ok ? r.report.slice(0, 600) : r.error}`,
+                type: "text"
+              };
+              fetch(feishuUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(pushBody)
+              }).catch(() => {});
+            }
+          });
+          break;
+        }
+
         case "schedules-list": {
           ws.send(JSON.stringify({ type: "schedules", schedules } satisfies ServerMsg));
           break;
@@ -2341,6 +2631,140 @@ function parseDistilled(text: string): Record<string, unknown> | null {
 
 /* ---------- 定时任务：状态、执行器与 tick ---------- */
 
+let goals: Goal[] = loadGoals(GOALS_FILE);
+
+/* ---------- 统一推演引擎（Speculation Engine） ---------- */
+const lifeEvaluator = new LifeEvaluator();
+const codeSandboxEvaluator = new CodeSandboxEvaluator({
+  store,
+  audit,
+  hub,
+  makeHooks,
+  resolveHarness: (hid) => hid ? specOf(hid) : registry.harnesses.find((h) => availability(h, trust, currentProbe()).available),
+  modelConfigIdOf: (hid) => probeModelConfigId(hid) ?? "model",
+  apiConfig: () => {
+    const s = settingsStore.get();
+    if (s.utilityMode === "api" && s.utilityApiBase && s.utilityApiKey && s.utilityApiModel) {
+      return { baseUrl: s.utilityApiBase, apiKey: s.utilityApiKey, model: s.utilityApiModel };
+    }
+    return null;
+  },
+});
+const speculationEngine = new SpeculationEngine({
+  evaluators: [lifeEvaluator, codeSandboxEvaluator],
+});
+
+/* ---------- Mindwtr 任务集成：缓存 + 二分 + 视图 ----------
+   goals-list 拉取时才真正等网络（10s 超时）；其余出口（保存广播/hello）用 60s
+   缓存即时返回，绝不让目标保存被远端 API 拖慢。Mindwtr 不可达时目标流程照常，
+   lifeTasks/linkedTasks 缺省（前端显示「未连接」）。 */
+const MW_CACHE_TTL = 60_000;
+let mwCache: { at: number; tasks: MindwtrTaskView[]; projectTitles: Record<string, string> } | null = null;
+let mwWarned = false;
+
+async function mindwtrRefresh(): Promise<boolean> {
+  try {
+    const r = await mindwtrFetchTasks();
+    mwCache = { at: Date.now(), tasks: r.tasks, projectTitles: r.projectTitles };
+    mwWarned = false;
+    return true;
+  } catch (err) {
+    if (!mwWarned) {
+      mwWarned = true;
+      console.log(`[goals] Mindwtr 不可达（生活区/关联任务暂缺，不影响目标主流程）: ${err instanceof Error ? err.message : err}`);
+    }
+    return false;
+  }
+}
+
+async function computeClassifiedTasks(): Promise<{ lifeTasks: MindwtrTaskView[]; linkedTasksByGoal: Record<string, MindwtrTaskView[]> }> {
+  if (!mwCache) return { lifeTasks: [], linkedTasksByGoal: {} };
+  const classified = classifyMindwtrTasks(mwCache.tasks, goals, mwCache.projectTitles);
+  try {
+    await enrichTasksWithPrescriptions(classified, speculationEngine, goals);
+  } catch (err) {
+    console.warn("[speculation] 推演处方生成告警:", err instanceof Error ? err.message : err);
+  }
+  return classified;
+}
+
+let cachedPayload: { at: number; payload: { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } } | null = null;
+
+async function mindwtrPayloadFresh(): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }> {
+  if (!mwCache || Date.now() - mwCache.at > MW_CACHE_TTL) await mindwtrRefresh();
+  if (cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
+    return cachedPayload.payload;
+  }
+  if (!mwCache) return { goals };
+  const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks();
+  const payload = {
+    goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
+    lifeTasks,
+  };
+  cachedPayload = { at: Date.now(), payload };
+  return payload;
+}
+
+function mindwtrPayloadSync(): { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } {
+  if (cachedPayload) return cachedPayload.payload;
+  if (!mwCache) return { goals };
+  const { lifeTasks, linkedTasksByGoal } = classifyMindwtrTasks(mwCache.tasks, goals, mwCache.projectTitles);
+  return {
+    goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
+    lifeTasks,
+  };
+}
+
+function saveAndBroadcastGoals(): void {
+  saveGoals(GOALS_FILE, goals);
+  broadcast({ type: "goals", ...mindwtrPayloadSync() } as never);
+}
+
+/** 目标保存的统一入口：WS goal-save 与 Sentinel 思源同步共用同一套合并语义 */
+function applyGoalSave(incoming: Partial<Goal>): void {
+  if (!incoming?.title) throw new Error("目标名称不能为空");
+  const nowIso = new Date().toISOString();
+  let target = incoming.id ? goals.find((g) => g.id === incoming.id) : undefined;
+  if (!target) {
+    target = {
+      id: incoming.id || newGoalId(),
+      title: incoming.title.trim(),
+      status: incoming.status || "active",
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    goals.unshift(target);
+  }
+  if (incoming.title !== undefined) target.title = incoming.title.trim();
+  if (incoming.description !== undefined) target.description = incoming.description.trim();
+  if (incoming.category !== undefined) target.category = incoming.category;
+  if (incoming.status !== undefined) target.status = incoming.status;
+  if (incoming.progress !== undefined) target.progress = Number(incoming.progress);
+  if (incoming.cwd !== undefined) target.cwd = incoming.cwd.trim();
+  if (incoming.deadline !== undefined) target.deadline = incoming.deadline;
+  if (incoming.speculative !== undefined) target.speculative = incoming.speculative;
+  target.updatedAt = nowIso;
+  saveAndBroadcastGoals();
+}
+
+/* ---------- Sentinel 伴生神经中枢：感官 × 张力 × 快慢双系统（server/sentinel.ts） ---------- */
+const sentinel = new SentinelService({ dataDir: DATA_DIR, audit, log: (l) => console.log(l) });
+sentinel.broadcast = broadcast;
+sentinel.onGoalSave = (goal) => {
+  try {
+    applyGoalSave(goal);   // 思源罗盘破线同步 → 直写目标看板（进程内，不走 WS 回环）
+  } catch (err) {
+    console.log(`[sentinel] 目标同步被拒: ${err instanceof Error ? err.message : err}`);
+  }
+};
+sentinel.init();
+
+// Mindwtr 任务源：启动即拉一次 + 60s 周期刷新（生活区与关联任务的数据底座）
+void mindwtrRefresh().then((ok) => {
+  if (ok) console.log(`[goals] Mindwtr 任务已就位（${mwCache?.tasks.length ?? 0} 条活跃任务）`);
+});
+setInterval(() => void mindwtrRefresh(), MW_CACHE_TTL).unref();
+
 let schedules: Schedule[] = loadSchedules(SCHEDULES_FILE);
 const segmentationCache = new Map<string, { segments: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }>; at: string }>();
 // 恢复时校正 nextFireAt（文件里的时刻可能已过）
@@ -2404,6 +2828,10 @@ async function runSchedule(s: Schedule): Promise<void> {
 
     const r = await session.promptAndWait(vars(s.promptTemplate), SCHEDULE_MAX_SILENCE_MS);
     if (r.stopReason === "timeout") throw new Error("回合静默超时");
+    if (r.stopReason === "error") {
+      const lastErr = session.transcriptEntries().slice().reverse().find((e) => e.kind === "error") as { message?: string } | undefined;
+      throw new Error(lastErr?.message || r.text || "回合执行失败 (agent turn failed)");
+    }
     // 产物验收：契约声明的输出文件必须存在且非空
     if (s.contract?.outputFile) {
       const out = vars(s.contract.outputFile);

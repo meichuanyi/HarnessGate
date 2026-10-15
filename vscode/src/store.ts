@@ -1,4 +1,4 @@
-import type { HarnessAvailability, Room, Schedule, SessionInfo, WorkspaceReport } from "./protocol.ts";
+import type { GoalView, HarnessAvailability, MindwtrTaskView, Room, Schedule, SessionInfo, WorkspaceReport } from "./protocol.ts";
 
 /**
  * 全局状态：服务端推来的 harness 列表、会话列表与圆桌列表。
@@ -11,6 +11,9 @@ export class Store {
   defaultCwd = "";
   /** 定时任务（schedules 消息维护） */
   schedules: Schedule[] = [];
+  /** 目标系统与日常运转（goals 消息维护） */
+  goals: GoalView[] = [];
+  lifeTasks: MindwtrTaskView[] = [];
   /** 最近一次工作区报告（workspace 请求/响应） */
   workspaceReports: WorkspaceReport[] | null = null;
   /** 常驻助理会话 id（hello 下发；null = 尚未创建） */
@@ -47,6 +50,12 @@ export class Store {
 
   setSchedules(schedules: Schedule[]): void {
     this.schedules = schedules;
+    this.fire();
+  }
+
+  setGoals(goals: GoalView[], lifeTasks?: MindwtrTaskView[]): void {
+    this.goals = goals;
+    if (lifeTasks) this.lifeTasks = lifeTasks;
     this.fire();
   }
 

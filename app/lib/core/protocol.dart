@@ -903,3 +903,218 @@ Map<String, dynamic> msgSkillsRead(String name, {String? nativeHarness}) => {
       'name': name,
       if (nativeHarness != null) 'nativeHarness': nativeHarness,
     };
+
+// ---------- 目标与日常运转 (Goals & Life Ops) ----------
+
+/// 前瞻推演处方动作
+class PrescriptionActionInfo {
+  final String label;
+  final String actionType;
+  final Map<String, dynamic> payload;
+
+  PrescriptionActionInfo({
+    required this.label,
+    required this.actionType,
+    required this.payload,
+  });
+
+  factory PrescriptionActionInfo.fromJson(Map<String, dynamic> j) => PrescriptionActionInfo(
+        label: j['label'] as String? ?? '执行',
+        actionType: j['actionType'] as String? ?? '',
+        payload: (j['payload'] as Map<String, dynamic>?) ?? const {},
+      );
+}
+
+/// 前瞻推演处方
+class SpeculativePrescriptionInfo {
+  final String itemId;
+  final String status; // ready / warning / optimized
+  final String summary;
+  final List<String> evidencePerceptions;
+  final List<String> evidenceMemories;
+  final List<PrescriptionActionInfo> actions;
+
+  SpeculativePrescriptionInfo({
+    required this.itemId,
+    required this.status,
+    required this.summary,
+    this.evidencePerceptions = const [],
+    this.evidenceMemories = const [],
+    this.actions = const [],
+  });
+
+  factory SpeculativePrescriptionInfo.fromJson(Map<String, dynamic> j) {
+    final ev = j['evidence'] as Map<String, dynamic>?;
+    return SpeculativePrescriptionInfo(
+      itemId: j['itemId'] as String? ?? '',
+      status: j['status'] as String? ?? 'ready',
+      summary: j['summary'] as String? ?? '',
+      evidencePerceptions: ((ev?['perceptions'] as List<dynamic>?) ?? []).map((e) => e.toString()).toList(),
+      evidenceMemories: ((ev?['memories'] as List<dynamic>?) ?? []).map((e) => e.toString()).toList(),
+      actions: ((j['actions'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(PrescriptionActionInfo.fromJson)
+          .toList(),
+    );
+  }
+
+  (Color, String) get statusBadge => switch (status) {
+        'ready' => (const Color(0xFF3FB950), '✓ 推演通过'),
+        'warning' => (const Color(0xFFD29922), '⚠ 建议调优'),
+        'optimized' => (const Color(0xFF5B9CF8), '⚡ 节奏校准'),
+        _ => (Colors.grey, '推演建议'),
+      };
+}
+
+/// Mindwtr 任务视图
+class MindwtrTaskInfo {
+  final String id;
+  final String title;
+  final String? status;
+  final String? startTime;
+  final String? dueDate;
+  final String? notes;
+  final List<String> tags;
+  final String? projectId;
+  final int? timeEstimate;
+  final SpeculativePrescriptionInfo? prescription;
+
+  MindwtrTaskInfo({
+    required this.id,
+    required this.title,
+    this.status,
+    this.startTime,
+    this.dueDate,
+    this.notes,
+    this.tags = const [],
+    this.projectId,
+    this.timeEstimate,
+    this.prescription,
+  });
+
+  factory MindwtrTaskInfo.fromJson(Map<String, dynamic> j) {
+    return MindwtrTaskInfo(
+      id: j['id'] as String? ?? '',
+      title: j['title'] as String? ?? '',
+      status: j['status'] as String?,
+      startTime: j['startTime'] as String?,
+      dueDate: j['dueDate'] as String?,
+      notes: j['notes'] as String?,
+      tags: ((j['tags'] as List<dynamic>?) ?? []).map((e) => e.toString()).toList(),
+      projectId: j['projectId'] as String?,
+      timeEstimate: (j['timeEstimate'] as num?)?.toInt(),
+      prescription: j['prescription'] is Map<String, dynamic>
+          ? SpeculativePrescriptionInfo.fromJson(j['prescription'] as Map<String, dynamic>)
+          : null,
+    );
+  }
+
+  /// 紧凑格式化时间 MM-DD HH:mm
+  String get timeLabel {
+    final v = startTime ?? dueDate;
+    if (v == null || v.isEmpty) return '';
+    try {
+      final d = DateTime.parse(v).toLocal();
+      final m = d.month.toString().padLeft(2, '0');
+      final day = d.day.toString().padLeft(2, '0');
+      final h = d.hour.toString().padLeft(2, '0');
+      final min = d.minute.toString().padLeft(2, '0');
+      return '$m-$day $h:$min';
+    } catch (_) {
+      return v;
+    }
+  }
+}
+
+/// 目标推进与罗盘信息
+class GoalInfo {
+  final String id;
+  final String title;
+  final String? description;
+  final String category; // career / academic / trading / life / general
+  final String status; // active / paused / completed / archived
+  final double progress; // 0 - 100
+  final String? cwd;
+  final String? deadline;
+  final String createdAt;
+  final String updatedAt;
+  final String? lastSpeculatedAt;
+  final ({bool ok, String? summary, String? branch})? lastSpeculatedResult;
+  final List<MindwtrTaskInfo> linkedTasks;
+
+  GoalInfo({
+    required this.id,
+    required this.title,
+    this.description,
+    this.category = 'general',
+    this.status = 'active',
+    this.progress = 0,
+    this.cwd,
+    this.deadline,
+    this.createdAt = '',
+    this.updatedAt = '',
+    this.lastSpeculatedAt,
+    this.lastSpeculatedResult,
+    this.linkedTasks = const [],
+  });
+
+  factory GoalInfo.fromJson(Map<String, dynamic> j) {
+    ({bool ok, String? summary, String? branch})? specRes;
+    final r = j['lastSpeculatedResult'];
+    if (r is Map<String, dynamic>) {
+      specRes = (
+        ok: r['ok'] == true,
+        summary: r['summary'] as String?,
+        branch: r['branch'] as String?,
+      );
+    }
+    return GoalInfo(
+      id: j['id'] as String? ?? '',
+      title: j['title'] as String? ?? '',
+      description: j['description'] as String?,
+      category: j['category'] as String? ?? 'general',
+      status: j['status'] as String? ?? 'active',
+      progress: (j['progress'] as num?)?.toDouble() ?? 0.0,
+      cwd: j['cwd'] as String?,
+      deadline: j['deadline'] as String?,
+      createdAt: j['createdAt'] as String? ?? '',
+      updatedAt: j['updatedAt'] as String? ?? '',
+      lastSpeculatedAt: j['lastSpeculatedAt'] as String?,
+      lastSpeculatedResult: specRes,
+      linkedTasks: ((j['linkedTasks'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(MindwtrTaskInfo.fromJson)
+          .toList(),
+    );
+  }
+
+  String get categoryLabel => switch (category) {
+        'career' => '💼 事业',
+        'academic' => '🎓 学业',
+        'trading' => '📈 交易',
+        'life' => '🌱 生活',
+        _ => '🧭 通用',
+      };
+
+  (Color, String) get statusPill => switch (status) {
+        'completed' => (const Color(0xFF3FB950), '已完成'),
+        'paused' => (const Color(0xFFD29922), '已暂停'),
+        'archived' => (Colors.grey, '已归档'),
+        _ => (const Color(0xFF5B9CF8), '进行中'),
+      };
+}
+
+/// 目标与生活运转消息契约
+Map<String, dynamic> msgGoalsGet() => {'type': 'goals-get'};
+Map<String, dynamic> msgGoalsList() => {'type': 'goals-list'};
+Map<String, dynamic> msgGoalTaskComplete(String taskId, {String? goalId}) => {
+      'type': 'goal-task-complete',
+      'taskId': taskId,
+      if (goalId != null && goalId.isNotEmpty) 'goalId': goalId,
+    };
+Map<String, dynamic> msgGoalTaskReschedule(String taskId, {String? dueDate, String? startTime}) => {
+      'type': 'goal-task-reschedule',
+      'taskId': taskId,
+      if (dueDate != null) 'dueDate': dueDate,
+      if (startTime != null) 'startTime': startTime,
+    };

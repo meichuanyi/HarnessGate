@@ -150,6 +150,65 @@ export type Room = {
   error?: string;
 };
 
+/* ---------- 目标系统（Goals）与生活运转 ---------- */
+
+export type GoalStatus = "active" | "paused" | "completed" | "archived";
+
+export type GoalCategory = "career" | "academic" | "trading" | "life" | "general";
+
+export type SpeculativePrescriptionAction = {
+  label: string;
+  actionType: "reschedule_task" | "prepare_worktree" | "notify" | string;
+  payload?: Record<string, any>;
+};
+
+export type SpeculativePrescription = {
+  itemId: string;
+  status: "ready" | "warning" | "optimized" | string;
+  summary: string;
+  evidence?: {
+    perceptions?: string[];
+    memories?: string[];
+  };
+  actions?: SpeculativePrescriptionAction[];
+};
+
+export type MindwtrTaskView = {
+  id: string;
+  title: string;
+  status?: string;
+  startTime?: string;
+  dueDate?: string;
+  notes?: string;
+  tags?: string[];
+  projectId?: string;
+  timeEstimate?: number;
+  prescription?: SpeculativePrescription;
+};
+
+export type Goal = {
+  id: string;
+  title: string;
+  description?: string;
+  category?: GoalCategory;
+  status: GoalStatus;
+  progress?: number; // 0 - 100
+  cwd?: string;
+  deadline?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSpeculatedAt?: string;
+  lastSpeculatedResult?: {
+    ok: boolean;
+    summary?: string;
+    branch?: string;
+  };
+};
+
+export type GoalView = Goal & {
+  linkedTasks?: MindwtrTaskView[];
+};
+
 export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean }
   | { type: "resume"; sessionId: string }
@@ -173,6 +232,11 @@ export type ClientMsg =
   | { type: "schedules-list" }
   | { type: "schedule-run"; id: string }
   | { type: "schedule-delete"; id: string }
+  /** 目标系统与生活运转 */
+  | { type: "goals-get" }
+  | { type: "goals-list" }
+  | { type: "goal-task-complete"; taskId: string; goalId?: string }
+  | { type: "goal-task-reschedule"; taskId: string; dueDate?: string; startTime?: string }
   /** 工作区归因（只读） */
   | { type: "workspace"; cwd?: string }
   | { type: "ping" }
@@ -264,6 +328,7 @@ export type ServerMsg =
   | { type: "deleted"; sessionId: string }
   | { type: "settings"; settings: Record<string, unknown> }
   | { type: "schedules"; schedules: Schedule[] }
+  | { type: "goals"; goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }
   | { type: "workspace"; reports: WorkspaceReport[] }
   | { type: "pong" }
   | {
@@ -274,7 +339,7 @@ export type ServerMsg =
         ts: string; harness: string; title: string; chosen?: string; reason?: string; task?: string; intent?: string;
         permKind?: string; locations?: string[]; input?: string; raw?: string; danger?: boolean; held?: boolean;
       }>;
-      /** 交付件：每个任务的产物摘要、评审结论、分支提交与 diff */
+      /** 交付件：每个任务的产物概要、评审结论、分支提交与 diff */
       deliverables: Array<{
         taskId: string;
         title: string;

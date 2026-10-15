@@ -2,12 +2,18 @@ import * as vscode from "vscode";
 import type { Store } from "./store.ts";
 import type { HarnessAvailability, SessionInfo } from "./protocol.ts";
 
-export type TreeNode = HarnessNode | SessionNode | AssistantNode | InfoNode;
+export type TreeNode = HarnessNode | SessionNode | AssistantNode | GoalsNode | InfoNode;
 
 /** 树顶常驻助理入口（✨ 直达，永不回收） */
 export class AssistantNode {
   readonly kind = "assistant";
   constructor(readonly sessionId: string | null) {}
+}
+
+/** 目标看板与生活运转入口（🎯 直达目标与生活日常） */
+export class GoalsNode {
+  readonly kind = "goals";
+  constructor(readonly goalsCount: number, readonly lifeTasksCount: number) {}
 }
 
 export class HarnessNode {
@@ -118,6 +124,22 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       return item;
     }
 
+    if (node.kind === "goals") {
+      const item = new vscode.TreeItem("目标看板 · 生活运转", vscode.TreeItemCollapsibleState.None);
+      item.id = `goals#${this.gen}`;
+      item.contextValue = "goals";
+      item.iconPath = new vscode.ThemeIcon("target", new vscode.ThemeColor("charts.blue"));
+      const descParts: string[] = [];
+      if (node.goalsCount > 0) descParts.push(`${node.goalsCount} 个目标`);
+      if (node.lifeTasksCount > 0) descParts.push(`${node.lifeTasksCount} 项待办`);
+      item.description = descParts.length ? descParts.join(" · ") : "罗盘与日常运转";
+      item.tooltip = new vscode.MarkdownString(
+        "🎯 **目标看板与生活运转**\n\n- ☕ 今日生活与日常运转 (Life Ops)\n- 🎯 目标推进与前瞻推演罗盘",
+      );
+      item.command = { command: "harnessgate.openGoals", title: "打开目标看板" };
+      return item;
+    }
+
     if (node.kind === "session") {
       const s = node.session;
       const item = new vscode.TreeItem(s.title || `(空会话 #${s.id})`, vscode.TreeItemCollapsibleState.None);
@@ -173,7 +195,11 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
             a.label.localeCompare(b.label),
         );
       if (!list.length) return [new InfoNode("没有可用的 harness", "info")];
-      return [new AssistantNode(this.store.assistantSessionId), ...list.map((h) => new HarnessNode(h))];
+      return [
+        new AssistantNode(this.store.assistantSessionId),
+        new GoalsNode(this.store.goals.length, this.store.lifeTasks.length),
+        ...list.map((h) => new HarnessNode(h)),
+      ];
     }
     if (node.kind === "harness") {
       const ss = this.store.sessionsOf(node.harness.id);

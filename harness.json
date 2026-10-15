@@ -68,13 +68,16 @@
     {
       "id": "antigravity",
       "label": "Antigravity (Google)",
-      "cmd": "/root/.harnessgate/agents/antigravity-acp/extracted/agy_acp_server.par",
+      "cmd": "/root/.harnessgate/agents/antigravity-acp/agy_acp_server.par",
       "args": [
         "--uid=root"
       ],
       "proxy": "http://127.0.0.1:7899",
-      "note": "Google 官方 AGY ACP Server。--uid=root；走美国出口代理（香港/日本/大陆都被 Google 地区限制挡）",
-      "authMethod": "oauth-personal"
+      "note": "Google 官方 AGY ACP Server。--uid=root；走美国出口代理（香港/日本/大陆都被 Google 地区限制挡）。版本由 ACP 官方注册表托管（manage.registry）：最新版读 agent.json，本机版本读 par 内 _version.py，可一键升级",
+      "authMethod": "oauth-personal",
+      "manage": {
+        "registry": "antigravity-acp"
+      }
     },
     {
       "id": "openclaw",
@@ -108,6 +111,19 @@
       "note": "经 dsh-acp 桥接 DeepSeek Harness（dsh）。API key 放 /root/.harnessgate/deepseek-api-key（600，一行；web Models 页配置的 key 各 profile 不互通，所以走这个文件）",
       "manage": {
         "pkg": "dsh-acp"
+      }
+    },
+    {
+      "id": "pi-acp",
+      "label": "pi",
+      "cmd": "npx",
+      "args": [
+        "-y",
+        "pi-acp@0.0.33"
+      ],
+      "note": "pi coding agent（经 pi-acp 适配器，npx 自下载）；底层 pi CLI 走一键安装。真对话前需在 pi 里配置模型（pi 自己的 provider 设置）",
+      "manage": {
+        "pkg": "@earendil-works/pi-coding-agent"
       }
     }
   ]

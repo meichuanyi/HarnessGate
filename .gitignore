@@ -17,3 +17,6 @@ app/android/app/*.jks
 
 # 临时直发的 APK（本地构建应急用，不入库）
 hg-fix-tmp.apk
+
+# Stakpak session files
+.stakpak/session*

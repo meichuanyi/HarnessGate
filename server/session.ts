@@ -251,6 +251,8 @@ export class HarnessSession {
   private chosen: Record<string, string> = {};
   /** 本会话注入的受管 MCP 服务器（恢复/fork/load 时原样重传，保持工具集一致） */
   mcpServerIds: string[] = [];
+  /** 本会话装备的领域技能（gear 面板；生效载体是挂载到 harness 的技能集合） */
+  skillIds: string[] = [];
   /** 房间 worker 的宽松权限：就绪后自动切到 harness 支持的最宽 mode（auto/yolo/acceptEdits/…）。
    *  worker 都在 git 隔离的 worktree 里，从源头减少授权请求比事后批准更稳（不会挂、不留审批债） */
   permissiveMode = false;
@@ -290,6 +292,7 @@ export class HarnessSession {
     this.chosen = record.chosen ?? {};
     this.fallbackConfigs = fallbackConfigsOf?.(spec.id)?.map((o) => ({ ...o }));
     this.mcpServerIds = Array.isArray(record.mcpServerIds) ? record.mcpServerIds.map(String) : [];
+    this.skillIds = Array.isArray(record.skillIds) ? record.skillIds.map(String) : [];
     for (const c of record.changedFiles ?? []) this.changedPaths.set(c.path, c.ts);
     this.autoApprove = (record.autoApprove as AutoApproveLevel) ?? "off";
     this.pendingConfigs = Object.entries(this.chosen).map(([configId, value]) => ({ configId, value }));
@@ -332,6 +335,7 @@ export class HarnessSession {
       transcript: this.transcript,
       chosen: Object.keys(this.chosen).length ? this.chosen : undefined,
       mcpServerIds: this.mcpServerIds.length ? this.mcpServerIds : undefined,
+      skillIds: this.skillIds.length ? this.skillIds : undefined,
       autoApprove: this.autoApprove,
       starred: this.starred,
       tags: this.tags.length ? this.tags : undefined,
@@ -681,8 +685,6 @@ export class HarnessSession {
           this.log(`ACP 会话就绪: ${this.acpSessionId}`);
         }
 
-        this.setStatus("ready");
-        this.armIdleStopWatch();   // 会话就绪即进入空闲计时（回合开始会自动解除）
         const hadModeCfg = this.pendingConfigs.some((c) => /mode/i.test(c.configId));
         if (this.pendingConfigs.length) {
           const pending = [...this.pendingConfigs];
@@ -695,6 +697,23 @@ export class HarnessSession {
             }
           }
         }
+
+        // 若没有手动指定模型（如定时任务新建会话），但 harness 暴露了 model 配置项且当前值为空/未选：
+        // 自动下发首选模型，避免无头运行时 ZCode 等抛出 "Select a model before continuing"
+        const modelOpt = this.configOptions?.find((o) => o.id === "model") ?? this.fallbackConfigs?.find((o) => o.id === "model");
+        const hasChosenModel = Boolean(this.chosen.model);
+        if (!hasChosenModel && modelOpt?.options?.length) {
+          const defaultVal = modelOpt.currentValue || modelOpt.options[0]?.value;
+          if (defaultVal) {
+            try {
+              await this.setConfigOption("model", defaultVal);
+              this.log(`未指定模型，自动选用首选模型: ${defaultVal}`);
+            } catch (err) {
+              this.log(`自动选用首选模型失败: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+
         // 房间 worker：自动切到可用的最宽权限模式。宽度序：yolo > dont_ask > auto > acceptEdits > edit > build
         // （2026-09-21 实测教训：zcode 的 "auto" 仍会内部拦截工具且不发 request_permission，yolo 才是真全放行；
         //  已是 yolo/dontAsk 时绝不能"降级"到 auto）
@@ -716,6 +735,9 @@ export class HarnessSession {
             }
           }
         }
+
+        this.setStatus("ready");
+        this.armIdleStopWatch();   // 会话就绪即进入空闲计时（回合开始会自动解除）
         void this.flushQueue();
         this.hub.register({
           sessionId: this.id,

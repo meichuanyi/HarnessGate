@@ -68,6 +68,12 @@ class GateClient {
   final _schedulesCtrl = StreamController<void>.broadcast();
   Stream<void> get schedulesChanged => _schedulesCtrl.stream;
 
+  /// 目标推进与生活运转快照（hello / goals 消息自动维护）
+  List<GoalInfo> goals = [];
+  List<MindwtrTaskInfo> lifeTasks = [];
+  final _goalsCtrl = StreamController<void>.broadcast();
+  Stream<void> get goalsChanged => _goalsCtrl.stream;
+
   /// 最近一次工作区报告（workspace 请求/响应）
   List<WorkspaceReport>? workspaceReports;
   final _workspaceCtrl = StreamController<void>.broadcast();
@@ -339,6 +345,29 @@ class GateClient {
       final r = RoomInfo.fromJson(m['room'] as Map<String, dynamic>);
       rooms[r.id] = r;
       _roomsCtrl.add(null);
+    if (m['goals'] is List) {
+        goals = (m['goals'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map(GoalInfo.fromJson)
+            .toList();
+        _goalsCtrl.add(null);
+      }
+    } else if (m['type'] == 'goals') {
+      if (m['goals'] is List) {
+        goals = (m['goals'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map(GoalInfo.fromJson)
+            .toList();
+      }
+      if (m['lifeTasks'] is List) {
+        lifeTasks = (m['lifeTasks'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map(MindwtrTaskInfo.fromJson)
+            .toList();
+      } else {
+        lifeTasks = [];
+      }
+      _goalsCtrl.add(null);
     } else if (m['type'] == 'schedules' && m['schedules'] is List) {
       schedules = (m['schedules'] as List<dynamic>)
           .whereType<Map<String, dynamic>>()
@@ -466,6 +495,7 @@ class GateClient {
     _messages.close();
     _stateCtrl.close();
     _sessionsCtrl.close();
+    _goalsCtrl.close();
   }
 
   /// 「服务器配置」入口用：断开 + 停重连，但保留消息/状态流。

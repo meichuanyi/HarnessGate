@@ -21,6 +21,8 @@ export type PersistedSession = {
   chosen?: Record<string, string>;
   /** 本会话注入的受管 MCP 服务器 id（恢复时原样重传，保持工具集一致） */
   mcpServerIds?: string[];
+  /** 本会话装备的领域技能（gear 面板选择；实际生效 = 挂载到会话 harness 的技能集合） */
+  skillIds?: string[];
   /** 自动决策档位（off/readonly/all）；房间会话恒 all */
   autoApprove?: string;
   /** 用户收藏（重要/常用会话）：列表置顶展示 */

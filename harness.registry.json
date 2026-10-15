@@ -28,14 +28,13 @@
    "description": "ACP wrapper for Amp - the frontier coding agent",
    "repository": "https://github.com/tao12345666333/amp-acp",
    "experimental": true,
-   "cmd": "amp-acp",
+   "cmd": "/root/.harnessgate/agents/amp-acp/amp-acp",
    "args": [],
-   "requiresDownload": true,
    "download": {
     "archive": "https://github.com/tao12345666333/amp-acp/releases/download/v0.9.0/amp-acp-linux-x86_64.tar.gz",
     "cmd": "./amp-acp"
    },
-   "note": "需要下载 linux-x86_64 二进制（npm run import-registry -- --download）"
+   "note": "已下载二进制 /root/.harnessgate/agents/amp-acp/amp-acp"
   },
   {
    "id": "antigravity-acp",
@@ -681,16 +680,15 @@
    "description": "Open-source DevOps agent in Rust with enterprise-grade security",
    "repository": "https://github.com/stakpak/agent",
    "experimental": true,
-   "cmd": "stakpak",
+   "cmd": "/root/.harnessgate/agents/stakpak/stakpak",
    "args": [
     "acp"
    ],
-   "requiresDownload": true,
    "download": {
     "archive": "https://github.com/stakpak/agent/releases/download/v0.3.88/stakpak-linux-x86_64.tar.gz",
     "cmd": "./stakpak"
    },
-   "note": "需要下载 linux-x86_64 二进制（npm run import-registry -- --download）"
+   "note": "已下载二进制 /root/.harnessgate/agents/stakpak/stakpak"
   },
   {
    "id": "vtcode",
