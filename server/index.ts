@@ -2700,6 +2700,9 @@ async function mindwtrRefresh(): Promise<boolean> {
 async function computeClassifiedTasks(sensorContext?: SensorWakeContext): Promise<{ lifeTasks: MindwtrTaskView[]; linkedTasksByGoal: Record<string, MindwtrTaskView[]> }> {
   if (!mwCache) return { lifeTasks: [], linkedTasksByGoal: {} };
   const classified = classifyMindwtrTasks(mwCache.tasks, goals, mwCache.projectTitles);
+  // 展示顺序统一按开始时间升序（Mindwtr 原始序是按任务系列聚的，不直观）
+  classified.lifeTasks.sort((a, b) =>
+    String(a.startTime ?? a.dueDate ?? "").localeCompare(String(b.startTime ?? b.dueDate ?? "")));
   try {
     const availableSensors = sentinel ? sentinel.getSensors().map((s) => ({
       id: s.id,
@@ -2718,12 +2721,12 @@ async function computeClassifiedTasks(sensorContext?: SensorWakeContext): Promis
 
 let cachedPayload: { at: number; payload: { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } } | null = null;
 
-async function mindwtrPayloadFresh(sensorContext?: SensorWakeContext): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }> {
+async function mindwtrPayloadFresh(sensorContext?: SensorWakeContext): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean }> {
   if (!mwCache || Date.now() - mwCache.at > MW_CACHE_TTL) await mindwtrRefresh();
   if (!sensorContext && cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
     return cachedPayload.payload;
   }
-  if (!mwCache) return { goals };
+  if (!mwCache) return { goals, lifeOpsPending: true };
   const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks(sensorContext);
   const payload = {
     goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
@@ -2733,9 +2736,9 @@ async function mindwtrPayloadFresh(sensorContext?: SensorWakeContext): Promise<{
   return payload;
 }
 
-function mindwtrPayloadSync(): { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } {
+function mindwtrPayloadSync(): { goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean } {
   if (cachedPayload) return cachedPayload.payload;
-  if (!mwCache) return { goals };
+  if (!mwCache) return { goals, lifeOpsPending: true };
   const { lifeTasks, linkedTasksByGoal } = classifyMindwtrTasks(mwCache.tasks, goals, mwCache.projectTitles);
   return {
     goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),

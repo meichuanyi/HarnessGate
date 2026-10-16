@@ -883,6 +883,7 @@ let schedulesArr = [];   // 定时任务
 let schedEdit = null;    // 正在编辑的定时任务（null = 列表态）
 let goalsArr = [];       // 宏观目标与罗盘
 let lifeTasks = [];      // Mindwtr 生活琐事（☕ 今日生活与日常运转）
+let lifeOpsPending = false;   // 服务端 Mindwtr 缓存未就绪：空态要显示「加载中」而不是「平稳」
 let goalEdit = null;     // 正在编辑的目标（null = 看板态）
 let sentinelSnap = null; // 神经中枢快照（hello / sentinel-status）
 let sentinelPulses = []; // 神经脉冲流水（客户端缓冲，快照历史 + 实时脉冲）
@@ -1453,6 +1454,7 @@ function handleServer(msg) {
     case "goals":
       goalsArr = msg.goals || [];
       lifeTasks = msg.lifeTasks || [];
+      lifeOpsPending = Boolean(msg.lifeOpsPending);
       if (state.view === "goals" && !goalEdit) renderGoals();
       break;
     case "sentinel-status":
@@ -4952,6 +4954,8 @@ function renderGoals() {
             </div>
             ${t.prescription ? renderPrescriptionBlock(t.prescription) : ""}
           </div>`).join("")
+          : lifeOpsPending
+          ? '<div class="meta2">生活区加载中…（Mindwtr 缓存预热中，稍后自动出现）</div>'
           : '<div class="meta2">暂无待办琐事，生活运转平稳 ☕</div>'}
       </div>
       <div class="goalGrid">${cards || '<div class="empty" style="grid-column:1/-1">还没有目标。点右上「新建目标」，明确前进方向。</div>'}</div>

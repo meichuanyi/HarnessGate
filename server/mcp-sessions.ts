@@ -27,6 +27,13 @@ import WebSocket from "ws";
  * 3. 伴生神经中枢 (Sentinel)
  *    - sentinel_status: 查看当前神经心智状态（张力槽水平 Tension Level、破线阈值、当前冷却速率、近期破线与唤醒动作）
  *    - sentinel_spark: 主动向神经中枢注入感官脉冲（提升认知张力，加速 System 2 慢思考唤醒）
+ *    - sentinel_sensor_list: 枚举伴生神经中枢当前已注册的所有感知器列表
+ *    - sentinel_sensor_save: 动态挂载或更新神经中枢感知器（支持气象感知、时间心跳、目录监听、目标罗盘等）
+ *    - sentinel_sensor_toggle: 快速启停指定感知器（在线 / 停用静默）
+ *    - sentinel_sensor_delete: 卸载并删除指定感知器配置
+ *
+ * 4. 统一通知与报警推送 (Notification)
+ *    - notification_send: 主动向外部通道（飞书机器人/NAS统一推送网关/Webhook）发送即时卡片通知与警报
  */
 
 const HG_WS_URL = process.env.HG_WS_URL || "ws://127.0.0.1:9830/ws";
@@ -249,6 +256,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 type: "string",
                 description: "绑定的核心工作目录绝对路径",
               },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "目标关联的标签列表（可选）。若目标需响应外部环境或代码变动，可直接填入对应的感知器 ID（如 ['sen-weather-hz', 'sen-fs-harnessgate']，可通过 sentinel_sensor_list 查询可用感知器）；若为纯静态/自包含/思考类目标，不依赖任何感知器，请留空或不填此项。",
+              },
               deadline: {
                 type: "string",
                 description: "截止时间（ISO 8601 格式，如 2026-10-31T23:59:59+08:00）",
@@ -337,6 +349,141 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           weight: {
             type: "number",
             description: "认知脉冲权重数值（范围 1~10，默认值为 2）",
+          },
+        },
+      },
+    },
+    {
+      name: "sentinel_sensor_list",
+      description: "枚举伴生神经中枢当前已注册的所有感知器列表（按内外分类展示：自然环境、外部信号、生活心智、数字工坊）及其运行状态、最近触发时间与累计事件数",
+      inputSchema: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: ["external", "internal"],
+            description: "可选：按一级感知分类过滤（external=外部客观现实，internal=内部共生体状态）",
+          },
+          subCategory: {
+            type: "string",
+            enum: ["environment", "signal", "life", "workspace"],
+            description: "可选：按二级感知分类过滤（environment=自然环境，signal=外部信号，life=生活心智，workspace=数字工坊）",
+          },
+        },
+      },
+    },
+    {
+      name: "sentinel_sensor_save",
+      description: "动态挂载或更新神经中枢感知器（支持气象感知、时间心跳、目录监听、目标罗盘等），配置名称、类别、采样参数与显著性等级",
+      inputSchema: {
+        type: "object",
+        required: ["label", "kind"],
+        properties: {
+          id: {
+            type: "string",
+            description: "可选：感官 ID。若提供则更新已有感官；若省略则创建新感官",
+          },
+          label: {
+            type: "string",
+            description: "感官人类可读名称（如：杭州气象环境感知、论文目录变动）",
+          },
+          kind: {
+            type: "string",
+            enum: ["weather", "temporal", "fs", "siyuan"],
+            description: "感官类型：weather（气象感知）、temporal（时间心跳）、fs（目录监听）、siyuan（目标罗盘）",
+          },
+          salience: {
+            type: "string",
+            enum: ["whisper", "normal", "loud"],
+            description: "显著性等级：whisper（微语）、normal（常规）、loud（强信号），默认 normal",
+          },
+          enabled: {
+            type: "boolean",
+            description: "是否启用在线，默认 true",
+          },
+          city: {
+            type: "string",
+            description: "针对 weather 感官：城市名称（默认杭州）",
+          },
+          latitude: {
+            type: "number",
+            description: "针对 weather 感官：地理纬度（默认 30.2741）",
+          },
+          longitude: {
+            type: "number",
+            description: "针对 weather 感官：地理经度（默认 120.1551）",
+          },
+          intervalMs: {
+            type: "number",
+            description: "针对 temporal 或 weather 感官：脉冲或采样周期毫秒数",
+          },
+          dirs: {
+            type: "array",
+            items: { type: "string" },
+            description: "针对 fs 感官：监听目录绝对路径数组",
+          },
+          plansPath: {
+            type: "string",
+            description: "针对 siyuan 感官：plans.json 绝对文件路径",
+          },
+        },
+      },
+    },
+    {
+      name: "sentinel_sensor_toggle",
+      description: "快速启停指定感官（在线 / 停用静默）",
+      inputSchema: {
+        type: "object",
+        required: ["id", "enabled"],
+        properties: {
+          id: {
+            type: "string",
+            description: "目标感官 ID（如 sen-weather-hz）",
+          },
+          enabled: {
+            type: "boolean",
+            description: "true 为启用在线，false 为停用静默",
+          },
+        },
+      },
+    },
+    {
+      name: "sentinel_sensor_delete",
+      description: "卸载并删除指定感官配置（仅删除感官注册，不动底层数据文件）",
+      inputSchema: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: {
+            type: "string",
+            description: "要删除的目标感官 ID",
+          },
+        },
+      },
+    },
+    {
+      name: "notification_send",
+      description: "向已配置的外部通知通道（NAS 统一推送网关、飞书机器人、通用 Webhook）发送卡片通知或警报消息",
+      inputSchema: {
+        type: "object",
+        required: ["title", "content"],
+        properties: {
+          title: {
+            type: "string",
+            description: "通知标题（例如：【目标进展】量化策略回测突破）",
+          },
+          content: {
+            type: "string",
+            description: "通知详细正文内容（支持多行文本）",
+          },
+          level: {
+            type: "string",
+            enum: ["info", "success", "warn", "error"],
+            description: "消息等级，默认 info",
+          },
+          metadata: {
+            type: "object",
+            description: "可选的附加元数据键值对",
           },
         },
       },
@@ -633,6 +780,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return dom === domainFilter;
         });
       }
+      // 按开始时间升序（Mindwtr 返回序是按任务系列聚的，展示上按时间才直观）
+      filteredLifeOps = [...filteredLifeOps].sort((a, b) =>
+        String(a.startTime ?? a.dueDate ?? "").localeCompare(String(b.startTime ?? b.dueDate ?? "")));
 
       return {
         content: [
@@ -917,6 +1067,268 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               },
               null,
               2,
+            ),
+          },
+        ],
+      };
+    }
+
+    if (name === "sentinel_sensor_list") {
+      const sentinelPromise = new Promise<Record<string, unknown>>((resolve) => {
+        const timer = setTimeout(() => {
+          resolve((client.hello.sentinel as Record<string, unknown>) || {});
+        }, 4000);
+
+        const onMsg = (raw: WebSocket.Data) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === "sentinel-status" && msg.sentinel) {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              resolve(msg.sentinel as Record<string, unknown>);
+            }
+          } catch {}
+        };
+        client.ws.on("message", onMsg);
+      });
+
+      client.ws.send(JSON.stringify({ type: "sentinel-get" }));
+      const sentinelData = await sentinelPromise;
+      client.close();
+
+      let sensors = (Array.isArray(sentinelData.sensors) ? sentinelData.sensors : []) as Array<Record<string, unknown>>;
+      if (args.category) {
+        sensors = sensors.filter((s) => s.category === args.category);
+      }
+      if (args.subCategory) {
+        sensors = sensors.filter((s) => s.subCategory === args.subCategory);
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                count: sensors.length,
+                usageGuide: "若目标需响应外部环境或代码变动，可将上述传感器的 id（如 'sen-weather-hz'）填入 Goal.tags 中；若目标属于纯静态/思考类目标，不依赖任何传感器，则无需设置传感器标签。",
+                sensors,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    if (name === "sentinel_sensor_save") {
+      const label = typeof args.label === "string" ? args.label.trim() : "";
+      if (!label) throw new Error("label 必填且不能为空");
+      const kind = typeof args.kind === "string" ? args.kind : "";
+      if (!["weather", "temporal", "fs", "siyuan"].includes(kind)) {
+        throw new Error("kind 必须为 weather / temporal / fs / siyuan 之一");
+      }
+
+      const savePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+        const onMsg = (raw: WebSocket.Data) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === "sentinel-status" && msg.sentinel) {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              resolve(msg.sentinel as Record<string, unknown>);
+            } else if (msg.type === "error") {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              reject(new Error(msg.message || "保存感知器失败"));
+            }
+          } catch {}
+        };
+        client.ws.on("message", onMsg);
+      });
+
+      client.ws.send(
+        JSON.stringify({
+          type: "sensor-save",
+          sensor: {
+            id: typeof args.id === "string" ? args.id : undefined,
+            label,
+            kind,
+            salience: args.salience,
+            enabled: args.enabled !== false,
+            city: args.city,
+            latitude: args.latitude,
+            longitude: args.longitude,
+            intervalMs: args.intervalMs,
+            dirs: args.dirs,
+            plansPath: args.plansPath,
+          },
+        }),
+      );
+
+      const res = await savePromise;
+      client.close();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                message: "感知器「" + label + "」配置已成功保存并挂载至神经中枢网格。",
+                sentinel: res,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    if (name === "sentinel_sensor_toggle") {
+      const id = typeof args.id === "string" ? args.id : "";
+      if (!id) throw new Error("id 必填");
+      const enabled = Boolean(args.enabled);
+
+      const togglePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+        const onMsg = (raw: WebSocket.Data) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === "sentinel-status" && msg.sentinel) {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              resolve(msg.sentinel as Record<string, unknown>);
+            } else if (msg.type === "error") {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              reject(new Error(msg.message || "切换感知器状态失败"));
+            }
+          } catch {}
+        };
+        client.ws.on("message", onMsg);
+      });
+
+      client.ws.send(JSON.stringify({ type: "sentinel-toggle", id, enabled }));
+      const res = await togglePromise;
+      client.close();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                id,
+                enabled,
+                message: "感知器 " + id + " 已切换为 " + (enabled ? "在线运行" : "停用静默") + "。",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    if (name === "sentinel_sensor_delete") {
+      const id = typeof args.id === "string" ? args.id : "";
+      if (!id) throw new Error("id 必填");
+
+      const delPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+        const onMsg = (raw: WebSocket.Data) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === "sentinel-status" && msg.sentinel) {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              resolve(msg.sentinel as Record<string, unknown>);
+            } else if (msg.type === "error") {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              reject(new Error(msg.message || "删除感知器失败"));
+            }
+          } catch {}
+        };
+        client.ws.on("message", onMsg);
+      });
+
+      client.ws.send(JSON.stringify({ type: "sensor-delete", id }));
+      const res = await delPromise;
+      client.close();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                id,
+                message: "感知器 " + id + " 已成功从神经中枢卸载。",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    if (name === "notification_send") {
+      const title = String(args.title ?? "").trim();
+      const content = String(args.content ?? "").trim();
+      const level = (typeof args.level === "string" ? args.level : "info") as "info" | "success" | "warn" | "error";
+      const metadata = (args.metadata && typeof args.metadata === "object") ? (args.metadata as Record<string, unknown>) : undefined;
+
+      if (!title) throw new Error("title 必填");
+      if (!content) throw new Error("content 必填");
+
+      const notifPromise = new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ ok: true }), 5000);
+        const onMsg = (raw: WebSocket.Data) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === "toast") {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              resolve({ ok: true });
+            } else if (msg.type === "error") {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              reject(new Error(msg.message || "通知发送失败"));
+            }
+          } catch {}
+        };
+        client.ws.on("message", onMsg);
+      });
+
+      // 复用 WS 通道的 notification-test 接口完成统一发送
+      client.ws.send(JSON.stringify({
+        type: "notification-test",
+        payload: { title, content, level, metadata }
+      }));
+
+      await notifPromise;
+      client.close();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                message: `通知「${title}」已成功分发至外部推送渠道。`
+              },
+              null,
+              2
             ),
           },
         ],
