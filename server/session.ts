@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -54,6 +54,12 @@ export function applyChosen<T extends { id: string; currentValue?: string; optio
 let fallbackConfigsOf: ((harnessId: string) => ConfigOption[] | undefined) | undefined;
 export function registerConfigFallback(fn: (harnessId: string) => ConfigOption[] | undefined): void {
   fallbackConfigsOf = fn;
+}
+
+/** 全量归档目录（archives/<sessionId>.jsonl），由 index.ts 注册（DATA_DIR/archives）；未注册则不归档 */
+let archiveDir = "";
+export function registerArchiveDir(dir: string): void {
+  archiveDir = dir;
 }
 
 /** MCP 解析器：把会话记录的 mcpServerIds 解析成 ACP 线格式（由 index.ts 注册，接 mcp.json） */
@@ -473,6 +479,32 @@ export class HarnessSession {
   private push(entry: TranscriptEntry): void {
     this.transcript.push(entry);
     this.persist();
+    this.archiveEntry(entry);
+  }
+
+  /** 全量归档：每条台账一行 append 进 archives/<id>.jsonl，只增不删——
+      持久化台账的 800 条窗口只管热数据，冷历史全在这里，重启也不丢。
+      写失败只记日志，绝不影响会话主流程。 */
+  private archiveReady = false;
+
+  private archiveEntry(entry: TranscriptEntry): void {
+    if (!archiveDir) return;
+    try {
+      const file = join(archiveDir, `${this.id}.jsonl`);
+      if (!this.archiveReady) {
+        mkdirSync(archiveDir, { recursive: true });
+        if (!existsSync(file)) {
+          // 首次建档：把现存台账播种进去，避免归档比台账窗口还短
+          for (const e of this.transcript) {
+            if (e !== entry) appendFileSync(file, JSON.stringify(e) + "\n");
+          }
+        }
+        this.archiveReady = true;
+      }
+      appendFileSync(file, JSON.stringify(entry) + "\n");
+    } catch (err) {
+      this.log(`归档写入失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async start(mode: "new" | "resume" = "new"): Promise<void> {
@@ -956,10 +988,29 @@ export class HarnessSession {
       });
       const tracked = req as unknown as Promise<unknown>;
       this.promptInFlight = tracked;
+
+      // 看门狗（Temporal 式）：静默超时守护
+      // 只要 agent 还在吐事件（lastProgressAt 刷新）就不判定超时；
+      // 一旦底层静默超过 90 秒无任何事件，判定底层连接/模型服务挂起，打断并触发自愈
+      let watchdogTimer: NodeJS.Timeout | undefined;
+      const watchdog = new Promise<never>((_, reject) => {
+        watchdogTimer = setInterval(() => {
+          const silentMs = Date.now() - this.lastProgressAt;
+          if (silentMs > 90_000) {
+            clearInterval(watchdogTimer);
+            watchdogTimer = undefined;
+            this.log(`底层静默 ${Math.round(silentMs / 1000)}s 超过阈值 90s，判定连接挂起`);
+            void this.cancelTurn("idle-timeout");
+            reject(new Error("底层 harness 超过 90 秒无任何响应（网络或服务挂起）"));
+          }
+        }, 5_000);
+      });
+
       let res;
       try {
-        res = await req;
+        res = await Promise.race([req, watchdog]);
       } finally {
+        if (watchdogTimer) clearInterval(watchdogTimer);
         if (this.promptInFlight === tracked) this.promptInFlight = undefined;
       }
       const elapsed = Date.now() - t0;
@@ -1028,6 +1079,7 @@ export class HarnessSession {
     // 2026-09-21 antigravity 静默挂起事故：旧实现先 await notify——agent 挂死时 notify 永不返回，
     // 本地放行永远执行不到，看门狗判对了病却卡在行刑，整场工作队冻结。
     if (!this.inTurnFlag) return;
+    this.promptInFlight = undefined;
     if (!this.ctx || !this.acpSessionId) {
       this.markInTurn(false);
       this.closeAssistant(stopReason);

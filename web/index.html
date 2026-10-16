@@ -1632,6 +1632,9 @@ function handleServer(msg) {
         : `❌ ${msg.action === "install" ? "安装" : "升级"}失败：${(msg.output || "未知错误").slice(-160)}`, 6000);
       break;
     }
+    case "archive-content":
+      renderArchiveContent(msg);
+      break;
     case "harnesses": /* 服务端推的可用性快照（安装完成等）：卡片/按钮态即时翻转 */
       harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
       renderSetPanel();
@@ -2657,6 +2660,7 @@ function updateChatHeader() {
     ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
     <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
     ${s.parentId ? `<button class="mini ghost" id="chatAdopt" title="把这个分支的结论蒸馏后收编回主线">⇱ 收编</button>` : `<button class="mini ghost" id="chatBranch" title="从这里分叉一个分支会话（继承当前上下文，探索不同想法）">⎇ 分支</button>`}
+    <button class="mini ghost" id="chatArchive" title="全量归档检索：台账窗口（800条）之外的完整历史也能查">📚 归档</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
   const chatCall = $("chatCall");
@@ -2667,6 +2671,8 @@ function updateChatHeader() {
   if (chatHandoff) chatHandoff.onclick = () => openHandoffDialog(s.id);   // 对话框选 harness/模型；handoff_done 到达后自动跳进新会话
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
+  const chatArchive = $("chatArchive");
+  if (chatArchive) chatArchive.onclick = () => openArchiveDialog(s.id);
   const chatBranch = $("chatBranch");
   if (chatBranch) chatBranch.onclick = () => {
     const name = prompt("分支名（比如：方案A / 试试rust / 换个思路）：", "");
@@ -3686,6 +3692,51 @@ function runSearch(q) {
   renderSearchDrop();   // 只列结果，不跳转——跳转由点结果 / Enter / ▲▼ 触发
 }
 
+let _archiveReq = null;   // { sessionId, ts }——配对回包，防串台
+function openArchiveDialog(sessionId) {
+  const old = document.getElementById("archiveDlg");
+  if (old) old.remove();
+  const wrap = document.createElement("div");
+  wrap.id = "archiveDlg";
+  wrap.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:98;display:flex;align-items:center;justify-content:center";
+  wrap.innerHTML = `<div style="background:var(--bg,#0b0d12);border:1px solid var(--line,#333);border-radius:10px;padding:14px;width:min(860px,94vw);max-height:86vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <b>📚 全量归档 · #${esc(sessionId)}</b>
+      <span class="meta2">台账窗口之外的完整历史（每条一个 JSON 行，只增不删）</span>
+      <span style="flex:1"></span>
+      <button class="mini ghost" id="arcClose">关闭</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <input id="arcQ" placeholder="关键词（空 = 最近 400 条）" style="flex:1;padding:5px 8px" />
+      <button class="mini primary" id="arcGo">查询</button>
+    </div>
+    <div id="arcOut" style="flex:1;overflow:auto;border:1px solid var(--line,#2a2d35);border-radius:6px;padding:8px;font-size:11.5px;font-family:monospace;white-space:pre-wrap;word-break:break-all;color:var(--dim)">加载中…</div>
+  </div>`;
+  document.body.appendChild(wrap);
+  const query = () => {
+    const q = wrap.querySelector("#arcQ").value.trim();
+    const out = wrap.querySelector("#arcOut");
+    out.textContent = "查询中…";
+    _archiveReq = { sessionId, ts: Date.now() };
+    send({ type: "archive", sessionId, q });
+    wrap._lastQ = q;
+  };
+  wrap.querySelector("#arcGo").onclick = query;
+  wrap.querySelector("#arcQ").addEventListener("keydown", (e) => { if (e.key === "Enter") query(); });
+  wrap.querySelector("#arcClose").onclick = () => { wrap.remove(); _archiveReq = null; };
+  query();   // 打开即给最近 400 条打底
+}
+
+function renderArchiveContent(msg) {
+  const dlg = document.getElementById("archiveDlg");
+  if (!dlg || !_archiveReq || _archiveReq.sessionId !== msg.sessionId) return;
+  const out = dlg.querySelector("#arcOut");
+  if (!out) return;
+  const q = dlg._lastQ || "";
+  const head = `共 ${msg.total} 条命中${q ? `（关键词「${q}」）` : ""}${msg.lines.length < msg.total ? `，显示最近 ${msg.lines.length} 条` : ""}\n\n`;
+  out.textContent = head + (msg.lines.join("\n") || "（无匹配）");
+}
+
 function gotoHit(k) {
   if (!searchHits.length) return;
   searchPos = ((k % searchHits.length) + searchHits.length) % searchHits.length;
@@ -4136,7 +4187,25 @@ function renderSetPanel() {
         <div class="cfgl" style="margin-top:8px">模型名</div>
         <input type="text" id="setApiModel" value="${esc(st.utilityApiModel || "")}" placeholder="如 glm-4-flash / 网关路由名" style="width:100%" />
       </div>
-      <button class="mini primary" id="setSave" style="margin-top:10px">保存</button>
+      <div style="font-weight:600;font-size:13px;margin:12px 0 4px;padding-top:10px;border-top:1px solid var(--line,#333)">📢 外部通知与报警推送（目标推演 / 关键告警）</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:6px 0">
+        <input type="checkbox" id="setNotifEnabled" style="width:auto" ${st.notification?.enabled !== false ? "checked" : ""} />
+        启用外部消息推送
+      </label>
+      <div id="notifCfgArea" style="${st.notification?.enabled !== false ? "" : "display:none"}">
+        <div class="cfgl" style="margin-top:6px">推送渠道类型</div>
+        <select id="setNotifType" class="sm" style="width:100%">
+          <option value="custom_gateway" ${st.notification?.channelType === "custom_gateway" ? "selected" : ""}>自定义统一推送网关 (NAS / Gotify / 自建飞书转发)</option>
+          <option value="feishu_bot" ${st.notification?.channelType === "feishu_bot" ? "selected" : ""}>飞书官方自定义机器人 Webhook</option>
+          <option value="generic_webhook" ${st.notification?.channelType === "generic_webhook" ? "selected" : ""}>通用 Webhook (POST JSON)</option>
+        </select>
+        <div class="cfgl" style="margin-top:8px">Webhook / 网关地址 (Endpoint)</div>
+        <input type="text" id="setNotifEndpoint" value="${esc(st.notification?.endpoint || "")}" placeholder="http://... 或 https://open.feishu.cn/..." style="width:100%" />
+        <div class="cfgl" style="margin-top:8px">签名密钥 / Token Secret (可选)</div>
+        <input type="password" id="setNotifSecret" value="${esc(st.notification?.secret || "")}" placeholder="可选密钥" style="width:100%" />
+        <button class="mini ghost" id="setNotifTest" style="margin-top:8px">🔔 发送一条测试通知</button>
+      </div>
+      <button class="mini primary" id="setSave" style="margin-top:12px">保存全部设置</button>
     </div>
     <div class="wsRow" style="margin-top:10px">
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">MCP 服务器</div>
@@ -4243,10 +4312,26 @@ function renderSetPanel() {
       send({ type: "harness-manage", harnessId: id, action: act });
     };
   });
+  $("setNotifEnabled").onchange = () => {
+    $("notifCfgArea").style.display = $("setNotifEnabled").checked ? "" : "none";
+  };
+  $("setNotifTest").onclick = () => {
+    send({
+      type: "notification-test",
+      config: {
+        enabled: true,
+        channelType: $("setNotifType").value,
+        endpoint: $("setNotifEndpoint").value,
+        secret: $("setNotifSecret").value,
+      }
+    });
+    showToast("正在发送测试通知...", 2000);
+  };
   $("setSave").onclick = () => {
     send({
       type: "settings-set",
-      patch: {        autoProjectTags: $("setProjTags").checked,
+      patch: {
+        autoProjectTags: $("setProjTags").checked,
         autoSemanticTags: $("setSemTags").checked,
         utilityMode: $("setUtilMode").value,
         utilityHarnessId: $("setTagger").value,
@@ -4254,6 +4339,12 @@ function renderSetPanel() {
         utilityApiBase: $("setApiBase").value,
         utilityApiKey: $("setApiKey").value,
         utilityApiModel: $("setApiModel").value,
+        notification: {
+          enabled: $("setNotifEnabled").checked,
+          channelType: $("setNotifType").value,
+          endpoint: $("setNotifEndpoint").value,
+          secret: $("setNotifSecret").value,
+        }
       },
     });
     showToast("设置已保存（即时生效）", 2500);
@@ -5013,7 +5104,7 @@ function renderGoalEditor(e) {
 /* =====================================================================
    Sentinel 神经中枢：心智张力槽 + 感官网格 + 神经脉冲流水
    ===================================================================== */
-const SENTINEL_KIND_ICON = { fs: "📁", temporal: "⏱", siyuan: "🧭", session: "🛠" };
+const SENTINEL_KIND_ICON = { weather: "🌤", fs: "📁", temporal: "⏱", siyuan: "🧭", session: "🛠" };
 const SENTINEL_SALIENCE_PILL = { whisper: "saved", normal: "idle", loud: "starting", siren: "error" };
 
 /** 快照自动补拉：2.5s 一次，最多 20 次；拿到快照 / 确认旧后端 / 到顶即停 */
@@ -5048,12 +5139,46 @@ function renderSentinelPulses() {
     : '<div class="empty">还没有神经脉冲。改个文件、等一次心跳，或点「⚡ 激发脉冲」。</div>';
 }
 
+function renderSensorCard(v) {
+  const detail =
+    v.kind === "weather" ? `城市：${v.city || "杭州"} (${v.latitude || 30.2741}°N, ${v.longitude || 120.1551}°E) · 每 ${Math.round((v.intervalMs || 3600000) / 60000)} 分钟更新`
+    : v.kind === "fs" ? `监听 ${(v.dirs || []).join(" · ") || "—"}`
+    : v.kind === "temporal" ? `每 ${Math.round((v.intervalMs || 60000) / 1000)}s 一拍`
+    : v.kind === "siyuan" ? `罗盘 ${v.plansPath || "—"}`
+    : "全部会话的回合收尾";
+
+  const weatherBadge = v.weatherSnapshot
+    ? `<div class="meta2" style="margin-top:6px;padding:5px 8px;background:rgba(255,255,255,0.05);border-radius:4px;border-left:3px solid var(--accent);color:var(--txt)">
+        🌤 ${esc(v.weatherSnapshot.summary)}
+      </div>`
+    : "";
+
+  return `
+    <div class="goalCard">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:16px">${SENTINEL_KIND_ICON[v.kind] || "🔬"}</span>
+        <b style="font-size:13.5px">${esc(v.label)}</b>
+        <span class="pill idle">${esc(v.subCategoryLabel || v.kindLabel)}</span>
+        <span class="pill ${SENTINEL_SALIENCE_PILL[v.salience] || "idle"}" title="显著性等级">${esc(v.salience)}</span>
+        <span style="flex:1"></span>
+        <span class="pill ${v.enabled ? "done" : "saved"}">${v.enabled ? "在线" : "停用"}</span>
+      </div>
+      <div class="meta2">${esc(detail)}</div>
+      ${weatherBadge}
+      <div class="meta2">最近触发：${v.lastFiredAt ? new Date(v.lastFiredAt).toLocaleString() : "—"} · 累计 ${v.events} 次</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+        <button class="mini ${v.enabled ? "" : "primary"}" data-sentoggle="${esc(v.id)}">${v.enabled ? "停用" : "启用"}</button>
+        <button class="mini" data-senedit="${esc(v.id)}">编辑</button>
+        <button class="mini ghost" data-sendel="${esc(v.id)}">删除</button>
+      </div>
+    </div>`;
+}
+
 function renderSentinel() {
   const root = $("viewRoot");
   if (sentinelEdit) { renderSentinelEditor(sentinelEdit); return; }
   const s = sentinelSnap;
   if (!s) {
-    // 快照未到：自动补拉自愈（视图先于 hello 打开 / 后端刚重启窗口期）
     if (!sentinelPoll) {
       sentinelPoll = { tries: 0, timer: null };
       pollSentinelSnapshot();
@@ -5066,31 +5191,9 @@ function renderSentinel() {
   const halfLifeS = Math.round(t.halfLifeMs / 1000);
   const burstAgo = t.lastBurstAt ? Math.round((Date.now() - t.lastBurstAt) / 1000) : null;
   const cooling = burstAgo != null ? `上次破线 ${burstAgo}s 前 · 冷却中（水位每 ${halfLifeS}s 减半）` : `尚未破线 · 水位自然衰减（半衰期 ${halfLifeS}s）`;
-  const sensors = (s.sensors || []).map((v) => {
-    const detail =
-      v.kind === "fs" ? `监听 ${(v.dirs || []).join(" · ") || "—"}`
-      : v.kind === "temporal" ? `每 ${Math.round((v.intervalMs || 60000) / 1000)}s 一拍`
-      : v.kind === "siyuan" ? `罗盘 ${v.plansPath || "—"}`
-      : "全部会话的回合收尾";
-    return `
-      <div class="goalCard">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-size:16px">${SENTINEL_KIND_ICON[v.kind] || "🔬"}</span>
-          <b style="font-size:13.5px">${esc(v.label)}</b>
-          <span class="pill idle">${esc(v.kindLabel)}</span>
-          <span class="pill ${SENTINEL_SALIENCE_PILL[v.salience] || "idle"}" title="显著性等级">${esc(v.salience)}</span>
-          <span style="flex:1"></span>
-          <span class="pill ${v.enabled ? "done" : "saved"}">${v.enabled ? "在线" : "停用"}</span>
-        </div>
-        <div class="meta2">${esc(detail)}</div>
-        <div class="meta2">最近触发：${v.lastFiredAt ? new Date(v.lastFiredAt).toLocaleString() : "—"} · 累计 ${v.events} 次</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="mini ${v.enabled ? "" : "primary"}" data-sentoggle="${esc(v.id)}">${v.enabled ? "停用" : "启用"}</button>
-          <button class="mini" data-senedit="${esc(v.id)}">编辑</button>
-          <button class="mini ghost" data-sendel="${esc(v.id)}">删除</button>
-        </div>
-      </div>`;
-  }).join("");
+
+  const externalSensors = (s.sensors || []).filter((v) => v.category === "external");
+  const internalSensors = (s.sensors || []).filter((v) => v.category !== "external");
   root.innerHTML = `
     <div class="rtWrap">
       <div class="rtHead"><span class="ttl">🛰 神经中枢</span>
@@ -5107,7 +5210,26 @@ function renderSentinel() {
         <div class="tensionBar" style="margin:10px 0 6px"><i style="width:${pct}%;${pct >= 100 ? "background:var(--err)" : ""}"></i></div>
         <div class="meta2">${esc(cooling)} · 聚类中 ${s.clusters} 簇 · 累计 ${s.stats.ingested} 感官 / ${s.stats.noise} 被吞噬 / ${s.stats.breaches} 次破线 / ${s.stats.actions} 个认知动作</div>
       </div>
-      <div class="rtCard"><h3>🔬 感官网格</h3><div class="goalGrid">${sensors || '<div class="empty" style="grid-column:1/-1">没有传感器。点右上「添加传感器」。</div>'}</div></div>
+      <div class="rtCard">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:17px">🌍</span>
+          <h3 style="margin:0">外部感知（客观现实 · 身外之物）</h3>
+          <span class="meta2">自然环境 · 外部信号</span>
+        </div>
+        <div class="goalGrid" style="margin-top:10px">
+          ${externalSensors.length ? externalSensors.map(renderSensorCard).join("") : '<div class="empty" style="grid-column:1/-1">暂无外部感知器。可点击右上角添加。</div>'}
+        </div>
+      </div>
+      <div class="rtCard">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:17px">🧠</span>
+          <h3 style="margin:0">内部感知（共生中枢 · 自身之态）</h3>
+          <span class="meta2">主人生活与心智 · 数字工坊与算力</span>
+        </div>
+        <div class="goalGrid" style="margin-top:10px">
+          ${internalSensors.length ? internalSensors.map(renderSensorCard).join("") : '<div class="empty" style="grid-column:1/-1">暂无内部感知器。</div>'}
+        </div>
+      </div>
       <div class="rtCard"><h3>🌊 神经脉冲流水</h3>
         <div id="sentinelPulseList" style="max-height:320px;overflow:auto"></div>
       </div>
@@ -5156,10 +5278,15 @@ function renderSentinelEditor(e) {
         <div class="row"><label>名称 *</label><input type="text" id="snLabel" value="${esc(e.label || "")}" placeholder="如：论文目录监听" style="flex:1;min-width:200px" /></div>
         <div class="row"><label>类型</label>
           <select id="snKind"${isNew ? "" : " disabled"}>
-            <option value="fs"${e.kind === "fs" ? " selected" : ""}>📁 目录监听（文件变动）</option>
-            <option value="temporal"${e.kind === "temporal" ? " selected" : ""}>⏱ 时间心跳（周期脉冲）</option>
-            <option value="siyuan"${e.kind === "siyuan" ? " selected" : ""}>🧭 目标罗盘（思源 plans.json）</option>
-            <option value="session"${e.kind === "session" ? " selected" : ""} disabled>🛠 工兵完工（进程内单例，已内置）</option>
+            <optgroup label="🌍 外部感知 (External)">
+              <option value="weather"${e.kind === "weather" ? " selected" : ""}>🌤 气象环境感知（自然环境）</option>
+            </optgroup>
+            <optgroup label="🧠 内部感知 (Internal)">
+              <option value="temporal"${e.kind === "temporal" ? " selected" : ""}>⏱ 时间心跳（生活作息节律）</option>
+              <option value="siyuan"${e.kind === "siyuan" ? " selected" : ""}>🧭 目标罗盘（思源 plans.json 长期愿景）</option>
+              <option value="fs"${e.kind === "fs" ? " selected" : ""}>📁 目录监听（数字工坊文件变动）</option>
+              <option value="session"${e.kind === "session" ? " selected" : ""} disabled>🛠 工兵完工（数字工坊执行单例）</option>
+            </optgroup>
           </select>
           <label>显著性</label>
           <select id="snSalience" title="该感官事件的信号强度：决定张力积累速度">
@@ -5181,10 +5308,17 @@ function renderSentinelEditor(e) {
   const dyn = () => {
     const k = $("snKind").value;
     const box = $("snDyn");
-    if (k === "fs") box.innerHTML = `<input type="text" id="snDirs" value="${esc((e.dirs || []).join(", "))}" placeholder="监听目录，逗号分隔（递归）" style="flex:1;min-width:240px" />`;
-    else if (k === "temporal") box.innerHTML = `每 <input type="number" id="snInterval" min="1" value="${Math.round((e.intervalMs || 60000) / 1000)}" style="width:70px" /> 秒一拍（whisper 级慢性压力）`;
-    else if (k === "siyuan") box.innerHTML = `<input type="text" id="snPlans" value="${esc(e.plansPath || "")}" placeholder="思源 plans.json 绝对路径" style="flex:1;min-width:240px" />`;
-    else box.innerHTML = `<span class="meta2">进程内事件源：所有会话回合收尾自动进入张力水池（错误回合为 loud）</span>`;
+    if (k === "weather") {
+      box.innerHTML = `城市 <input type="text" id="snCity" value="${esc(e.city || "杭州")}" placeholder="如：杭州" style="width:90px" /> 纬度 <input type="number" step="0.0001" id="snLat" value="${e.latitude || 30.2741}" style="width:80px" /> 经度 <input type="number" step="0.0001" id="snLon" value="${e.longitude || 120.1551}" style="width:85px" /> 每 <input type="number" id="snIntervalMin" min="1" value="${Math.round((e.intervalMs || 3600000) / 60000)}" style="width:65px" /> 分钟刷新`;
+    } else if (k === "fs") {
+      box.innerHTML = `<input type="text" id="snDirs" value="${esc((e.dirs || []).join(", "))}" placeholder="监听目录，逗号分隔（递归）" style="flex:1;min-width:240px" />`;
+    } else if (k === "temporal") {
+      box.innerHTML = `每 <input type="number" id="snInterval" min="1" value="${Math.round((e.intervalMs || 60000) / 1000)}" style="width:70px" /> 秒一拍（whisper 级慢性压力）`;
+    } else if (k === "siyuan") {
+      box.innerHTML = `<input type="text" id="snPlans" value="${esc(e.plansPath || "")}" placeholder="思源 plans.json 绝对路径" style="flex:1;min-width:240px" />`;
+    } else {
+      box.innerHTML = `<span class="meta2">进程内事件源：所有会话回合收尾自动进入张力水池（错误回合为 loud）</span>`;
+    }
   };
   $("snKind").onchange = dyn;
   dyn();
@@ -5198,9 +5332,18 @@ function renderSentinelEditor(e) {
       salience: $("snSalience").value,
     };
     if (isNew) sensor.kind = k;
-    if (k === "fs") sensor.dirs = $("snDirs").value.split(",").map((x) => x.trim()).filter(Boolean);
-    else if (k === "temporal") sensor.intervalMs = Math.max(1, Number($("snInterval").value) || 60) * 1000;
-    else if (k === "siyuan") sensor.plansPath = $("snPlans").value.trim();
+    if (k === "weather") {
+      sensor.city = $("snCity").value.trim() || "杭州";
+      sensor.latitude = Number($("snLat").value) || 30.2741;
+      sensor.longitude = Number($("snLon").value) || 120.1551;
+      sensor.intervalMs = Math.max(1, Number($("snIntervalMin").value) || 60) * 60000;
+    } else if (k === "fs") {
+      sensor.dirs = $("snDirs").value.split(",").map((x) => x.trim()).filter(Boolean);
+    } else if (k === "temporal") {
+      sensor.intervalMs = Math.max(1, Number($("snInterval").value) || 60) * 1000;
+    } else if (k === "siyuan") {
+      sensor.plansPath = $("snPlans").value.trim();
+    }
     if (!sensor.label) { showToast("⚠ 先给传感器起个名字", 3000); return; }
     send({ type: "sensor-save", sensor });
     sentinelEdit = null;

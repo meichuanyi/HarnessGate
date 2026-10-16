@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { homedir, networkInterfaces } from "node:os";
@@ -12,16 +12,18 @@ import { initManage, manageInfo, manageRun } from "./harness-manage.ts";
 import { loadSchedules, saveSchedules, nextFire, cadenceDesc, newScheduleId, compileCron, type Schedule } from "./schedules.ts";
 import { loadGoals, saveGoals, newGoalId, classifyMindwtrTasks, mindwtrCompleteTask, mindwtrUpdateTask, mindwtrFetchTasks, enrichTasksWithPrescriptions, type Goal, type GoalView, type MindwtrTaskView } from "./goals.ts";
 import { SpeculationEngine, LifeEvaluator, CodeSandboxEvaluator } from "./speculation/index.ts";
+import { IdleSpeculator, type SensorWakeContext } from "./idle-speculator.ts";
 import { SentinelService } from "./sentinel.ts";
 import { runSpeculativeTask, type SpeculativeIntent } from "./speculative.ts";
 import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
-import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver } from "./session.ts";
+import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver, registerArchiveDir } from "./session.ts";
 import { McpStore } from "./mcp.ts";
 import { SkillsStore } from "./skills.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
+import { sendNotification, type NotificationConfig } from "./notify.ts";
 import { UtilitySessions } from "./utility-session.ts";
 import { scanAllUtilitySessions, deleteAllUtilitySessions } from "./utility-cleanup.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
@@ -264,6 +266,8 @@ const rooms = new RoomManager(join(DATA_DIR, "rooms.json"), audit, {
 const defaultCwd = process.env.HG_DEFAULT_CWD ?? registry.defaults?.cwd ?? homedir();
 /** 只有"活着"的会话在这里；落盘的会话在 store 里 */
 const live = new Map<string, HarnessSession>();
+let idleSpeculator: IdleSpeculator | undefined;
+let executeGoalSpeculation: (gid: string, purpose: string) => Promise<{ ok: boolean; error?: string }>;
 /** 每个客户端连接最多一路实时通话（VoiceLive tap 本连接 WS 推音频/字幕） */
 const voiceLives = new Map<WebSocket, VoiceLive>();
 const sockets = new Set<WebSocket>();
@@ -866,6 +870,9 @@ function harnessSnapshot(): HarnessAvailability[] {
   return registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()), h));
 }
 
+// 全量归档目录：每条台账同步 append 进 archives/<id>.jsonl（永不裁剪，搜索/回溯用）
+registerArchiveDir(join(DATA_DIR, "archives"));
+
 // harness 版本管理：启动时探测本机/上游版本 + 6h 刷新（harness.json manage 声明的才参与）
 initManage(registry.harnesses, () => {});
 
@@ -886,6 +893,19 @@ wss.on("connection", (ws, req) => {
       return;
     }
     try {
+      const mType = (msg as { type?: string }).type;
+      if (
+        mType &&
+        mType !== "list" &&
+        mType !== "mcp-list" &&
+        mType !== "skills" &&
+        mType !== "schedules-list" &&
+        mType !== "goals-list" &&
+        mType !== "sentinel-status" &&
+        mType !== "sensor-list"
+      ) {
+        idleSpeculator?.touchHuman(`ws:${mType}`);
+      }
       switch (msg.type) {
         case "list":
           ws.send(JSON.stringify(helloPayload()));
@@ -1155,6 +1175,40 @@ wss.on("connection", (ws, req) => {
             }
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
+          })();
+          break;
+        }
+
+        case "archive": {
+          // 全量归档检索：按关键词过滤某会话的完整历史（q 空则返回最近 400 条）
+          const af = join(DATA_DIR, "archives", `${msg.sessionId}.jsonl`);
+          if (!existsSync(af)) {
+            ws.send(JSON.stringify({ type: "archive-content", sessionId: msg.sessionId, total: 0, lines: [] } satisfies ServerMsg));
+            break;
+          }
+          void (async () => {
+            const q = (msg.q ?? "").trim().toLowerCase();
+            const lines: string[] = [];
+            let total = 0;
+            try {
+              const content = await readFile(af, "utf8");
+              for (const line of content.split("\n")) {
+                if (!line.trim()) continue;
+                try {
+                  const e = JSON.parse(line) as Record<string, unknown>;
+                  const text = String(e.text ?? e.message ?? e.title ?? "");
+                  if (q && !text.toLowerCase().includes(q)) continue;
+                  total++;
+                  if (lines.length < 400) {
+                    lines.push(`${String(e.ts ?? "")} ${String(e.kind ?? "?")} ${text.slice(0, 300).replace(/\n/g, " ")}`);
+                  }
+                } catch {}
+              }
+            } catch (err) {
+              ws.send(JSON.stringify({ type: "error", message: `归档读取失败：${err instanceof Error ? err.message : err}` } satisfies ServerMsg));
+              return;
+            }
+            ws.send(JSON.stringify({ type: "archive-content", sessionId: msg.sessionId, total, lines } satisfies ServerMsg));
           })();
           break;
         }
@@ -2017,6 +2071,29 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "notification-test": {
+          const raw = msg as { config?: NotificationConfig; payload?: { title?: string; content?: string; level?: "info" | "success" | "warn" | "error"; metadata?: Record<string, unknown> } };
+          const cfg = raw.config ?? settingsStore.get().notification;
+          const payload = raw.payload ? {
+            title: raw.payload.title || "【通知】HarnessGate 系统提醒",
+            content: raw.payload.content || "",
+            level: raw.payload.level ?? "info",
+            metadata: raw.payload.metadata,
+          } : {
+            title: "【测试】HarnessGate 通知通道",
+            content: "这是一条测试推送，通知渠道验证成功！\n时间: " + new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
+            level: "info" as const
+          };
+          void sendNotification(cfg, payload).then((res) => {
+            if (res.ok) {
+              ws.send(JSON.stringify({ type: "toast", message: "✅ 通知发送成功！" } as unknown as ServerMsg));
+            } else {
+              ws.send(JSON.stringify({ type: "error", message: `通知发送失败: ${res.error}` } satisfies ServerMsg));
+            }
+          });
+          break;
+        }
+
         case "set-tags": {
           // 标签整体替换：live 会话走实例（落盘+广播）；仅存档的记录直接改 store 后广播
           const session = live.get(msg.sessionId);
@@ -2266,66 +2343,9 @@ wss.on("connection", (ws, req) => {
 
         case "goal-speculate": {
           const gid = (msg as unknown as { id: string }).id;
-          const target = goals.find((g) => g.id === gid);
-          if (!target) {
-            ws.send(JSON.stringify({ type: "error", message: "目标不存在" } satisfies ServerMsg));
-            break;
-          }
-          if (!target.speculative?.promptTemplate) {
-            ws.send(JSON.stringify({ type: "error", message: "该目标尚未配置推测执行的指令模板" } satisfies ServerMsg));
-            break;
-          }
-          const prompt = target.speculative.promptTemplate;
-          const cwd = target.cwd?.trim() || defaultCwd;
-          const intent: SpeculativeIntent = {
-            goalId: target.id,
-            purpose: "manual-trigger",
-            cwd,
-            useWorktree: target.speculative.useWorktree ?? true,
-            prompt,
-            harnessId: target.speculative.harnessId,
-            model: target.speculative.model,
-            artifactCheck: target.speculative.artifactCheckCommand ? {
-              kind: "command",
-              cmd: target.speculative.artifactCheckCommand
-            } : undefined
-          };
-          // 异步后台运行
-          void runSpeculativeTask(intent, {
-            store,
-            audit,
-            hub,
-            makeHooks,
-            resolveHarness: (hid) => hid ? specOf(hid) : registry.harnesses.find((h) => availability(h, trust, currentProbe()).available),
-            modelConfigIdOf: (hid) => probeModelConfigId(hid) ?? "model",
-            apiConfig: () => {
-              const s = settingsStore.get();
-              if (s.utilityMode === "api" && s.utilityApiBase && s.utilityApiKey && s.utilityApiModel) {
-                return { baseUrl: s.utilityApiBase, apiKey: s.utilityApiKey, model: s.utilityApiModel };
-              }
-              return null;
-            }
-          }).then((r) => {
-            target.lastSpeculatedAt = new Date().toISOString();
-            target.lastSpeculatedResult = {
-              ok: r.ok,
-              summary: r.ok ? r.report.slice(0, 500) : r.error,
-              branch: r.ok ? r.worktree?.branch : undefined
-            };
-            saveAndBroadcastGoals();
-            // 飞书推送
-            if (target.speculative?.notifyFeishu) {
-              const feishuUrl = "http://192.168.6.108:818/api/push/a6089c81f4754037966345f83ff0cb3e";
-              const pushBody = {
-                title: `【目标推演】${target.title}`,
-                content: `状态: ${r.ok ? "✅ 成功" : "❌ 失败"}\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.ok ? (r.worktree?.branch || "无") : "无"}\n\n${r.ok ? r.report.slice(0, 600) : r.error}`,
-                type: "text"
-              };
-              fetch(feishuUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(pushBody)
-              }).catch(() => {});
+          void executeGoalSpeculation(gid, "manual-trigger").then((r) => {
+            if (!r.ok) {
+              ws.send(JSON.stringify({ type: "error", message: r.error ?? "推测执行失败" } satisfies ServerMsg));
             }
           });
           break;
@@ -2677,11 +2697,19 @@ async function mindwtrRefresh(): Promise<boolean> {
   }
 }
 
-async function computeClassifiedTasks(): Promise<{ lifeTasks: MindwtrTaskView[]; linkedTasksByGoal: Record<string, MindwtrTaskView[]> }> {
+async function computeClassifiedTasks(sensorContext?: SensorWakeContext): Promise<{ lifeTasks: MindwtrTaskView[]; linkedTasksByGoal: Record<string, MindwtrTaskView[]> }> {
   if (!mwCache) return { lifeTasks: [], linkedTasksByGoal: {} };
   const classified = classifyMindwtrTasks(mwCache.tasks, goals, mwCache.projectTitles);
   try {
-    await enrichTasksWithPrescriptions(classified, speculationEngine, goals);
+    const availableSensors = sentinel ? sentinel.getSensors().map((s) => ({
+      id: s.id,
+      kind: s.kind,
+      dirs: s.dirs,
+    })) : [];
+    if (sensorContext) {
+      speculationEngine.invalidateForSensors(sensorContext);
+    }
+    await enrichTasksWithPrescriptions(classified, speculationEngine, goals, availableSensors);
   } catch (err) {
     console.warn("[speculation] 推演处方生成告警:", err instanceof Error ? err.message : err);
   }
@@ -2690,13 +2718,13 @@ async function computeClassifiedTasks(): Promise<{ lifeTasks: MindwtrTaskView[];
 
 let cachedPayload: { at: number; payload: { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } } | null = null;
 
-async function mindwtrPayloadFresh(): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }> {
+async function mindwtrPayloadFresh(sensorContext?: SensorWakeContext): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }> {
   if (!mwCache || Date.now() - mwCache.at > MW_CACHE_TTL) await mindwtrRefresh();
-  if (cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
+  if (!sensorContext && cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
     return cachedPayload.payload;
   }
   if (!mwCache) return { goals };
-  const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks();
+  const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks(sensorContext);
   const payload = {
     goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
     lifeTasks,
@@ -2742,6 +2770,7 @@ function applyGoalSave(incoming: Partial<Goal>): void {
   if (incoming.progress !== undefined) target.progress = Number(incoming.progress);
   if (incoming.cwd !== undefined) target.cwd = incoming.cwd.trim();
   if (incoming.deadline !== undefined) target.deadline = incoming.deadline;
+  if (incoming.tags !== undefined) target.tags = Array.isArray(incoming.tags) ? incoming.tags.map(String) : [];
   if (incoming.speculative !== undefined) target.speculative = incoming.speculative;
   target.updatedAt = nowIso;
   saveAndBroadcastGoals();
@@ -2758,12 +2787,124 @@ sentinel.onGoalSave = (goal) => {
   }
 };
 sentinel.init();
+// 将 Sentinel 伴生神经中枢张力突破与 IdleSpeculator 深度绑定：
+// 一旦传感器阶跃波动突破阈值（如天气骤变、文件变动、外部报警），立即唤醒推演，打破休眠
+sentinel.onBreach = (level: number, context) => {
+  idleSpeculator?.wakeBySensor(`sentinel.breach(level=${level.toFixed(1)})`, context);
+};
 
 // Mindwtr 任务源：启动即拉一次 + 60s 周期刷新（生活区与关联任务的数据底座）
 void mindwtrRefresh().then((ok) => {
   if (ok) console.log(`[goals] Mindwtr 任务已就位（${mwCache?.tasks.length ?? 0} 条活跃任务）`);
 });
 setInterval(() => void mindwtrRefresh(), MW_CACHE_TTL).unref();
+
+executeGoalSpeculation = async (gid: string, purpose: string): Promise<{ ok: boolean; error?: string }> => {
+  const target = goals.find((g) => g.id === gid);
+  if (!target) return { ok: false, error: "目标不存在" };
+  if (!target.speculative?.promptTemplate) {
+    return { ok: false, error: "该目标尚未配置推测执行的指令模板" };
+  }
+  const prompt = target.speculative.promptTemplate;
+  const cwd = target.cwd?.trim() || defaultCwd;
+  const intent: SpeculativeIntent = {
+    goalId: target.id,
+    purpose,
+    cwd,
+    useWorktree: target.speculative.useWorktree ?? true,
+    prompt,
+    harnessId: target.speculative.harnessId,
+    model: target.speculative.model,
+    artifactCheck: target.speculative.artifactCheckCommand ? {
+      kind: "command",
+      cmd: target.speculative.artifactCheckCommand
+    } : undefined
+  };
+  const r = await runSpeculativeTask(intent, {
+    store,
+    audit,
+    hub,
+    makeHooks,
+    resolveHarness: (hid) => hid ? specOf(hid) : registry.harnesses.find((h) => availability(h, trust, currentProbe()).available),
+    modelConfigIdOf: (hid) => probeModelConfigId(hid) ?? "model",
+    apiConfig: () => {
+      const s = settingsStore.get();
+      if (s.utilityMode === "api" && s.utilityApiBase && s.utilityApiKey && s.utilityApiModel) {
+        return { baseUrl: s.utilityApiBase, apiKey: s.utilityApiKey, model: s.utilityApiModel };
+      }
+      return null;
+    }
+  });
+  target.lastSpeculatedAt = new Date().toISOString();
+  target.lastSpeculatedResult = {
+    ok: r.ok,
+    summary: r.ok ? r.report.slice(0, 500) : r.error,
+    branch: r.ok ? r.worktree?.branch : undefined
+  };
+  saveAndBroadcastGoals();
+  if (target.speculative?.notifyFeishu) {
+    const notifCfg = settingsStore.get().notification;
+    void sendNotification(notifCfg, {
+      title: `【目标推演】${target.title}`,
+      content: `状态: ${r.ok ? "✅ 成功" : "❌ 失败"}\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.ok ? (r.worktree?.branch || "无") : "无"}\n触发来源: ${purpose}\n\n${r.ok ? r.report.slice(0, 600) : r.error}`,
+      level: r.ok ? "success" : "error",
+      metadata: {
+        goalId: target.id,
+        branch: r.ok ? r.worktree?.branch : undefined,
+        elapsedMs: r.elapsedMs,
+      }
+    });
+  }
+  return { ok: r.ok, error: r.ok ? undefined : r.error };
+};
+
+idleSpeculator = new IdleSpeculator({
+  idleThresholdMs: Number(process.env.HG_IDLE_SPECULATE_THRESHOLD_MIN ?? 15) * 60_000,
+  cooldownMs: Number(process.env.HG_IDLE_SPECULATE_COOLDOWN_MIN ?? 45) * 60_000,
+  getSessions: () => {
+    return Array.from(live.values()).map((s) => {
+      const info = s.info();
+      const isHuman =
+        !s.utility &&
+        !s.roomId &&
+        !s.assistant &&
+        !s.intentTag?.startsWith("speculative:") &&
+        !s.cwd.startsWith(AUTO_WORKSPACE_ROOT);
+      return {
+        id: s.id,
+        inTurn: info.inTurn ?? false,
+        status: info.status,
+        isHuman,
+        intentTag: s.intentTag,
+      };
+    });
+  },
+  getGoals: () => goals,
+  runGoalSpeculation: async (goalId, reason) => {
+    await executeGoalSpeculation(goalId, reason);
+  },
+  refreshLifeTrajectory: async (sensorContext) => {
+    const payload = await mindwtrPayloadFresh(sensorContext);
+    broadcast({ type: "goals", ...payload } as never);
+    // 从当前所有生成的处方中，提取最早的下次推演唤醒时间 (min nextSpeculateAt)
+    let minNextMs: number | null = null;
+    const allTasks = [...(payload.lifeTasks || []), ...(payload.goals || []).flatMap((g) => g.linkedTasks || [])];
+    for (const t of allTasks) {
+      if (t.prescription?.nextSpeculateAt) {
+        const ms = new Date(t.prescription.nextSpeculateAt).getTime();
+        if (!isNaN(ms) && ms > Date.now()) {
+          if (minNextMs === null || ms < minNextMs) {
+            minNextMs = ms;
+          }
+        }
+      }
+    }
+    if (minNextMs !== null && idleSpeculator) {
+      idleSpeculator.scheduleNextLifeSpeculate(minNextMs);
+    }
+  },
+});
+idleSpeculator.start();
 
 let schedules: Schedule[] = loadSchedules(SCHEDULES_FILE);
 const segmentationCache = new Map<string, { segments: Array<{ head: string; fromTs: string; toTs: string; turns: number; score: number }>; at: string }>();

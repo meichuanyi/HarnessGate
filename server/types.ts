@@ -2,7 +2,8 @@ import type { WorkspaceReport } from "./workspace.ts";
 import type { Room } from "./room.ts";
 import type { Schedule } from "./schedules.ts";
 import type { Goal, GoalView, MindwtrTaskView } from "./goals.ts";
-import type { Salience } from "./sentinel/types.ts";
+import type { Salience, SensoryCategory, SensorySubCategory } from "./sentinel/types.ts";
+export type { SensoryCategory, SensorySubCategory };
 import type { SkillsSnapshot } from "./skills.ts";
 import type { McpServerConfig } from "./mcp.ts";
 
@@ -14,14 +15,32 @@ import type { McpServerConfig } from "./mcp.ts";
 export type SentinelSensorView = {
   id: string;
   label: string;
-  kind: "fs" | "temporal" | "siyuan" | "session";
-  /** 类型中文标签（目录监听/时间心跳/目标罗盘/工兵完工） */
+  kind: "fs" | "temporal" | "siyuan" | "session" | "weather";
+  /** 类型中文标签（气象感知/目录监听/时间心跳/目标罗盘/工兵完工） */
   kindLabel: string;
+  category: SensoryCategory;
+  categoryLabel: string;
+  subCategory: SensorySubCategory;
+  subCategoryLabel: string;
   enabled: boolean;
   salience: Salience;
   dirs?: string[];
   intervalMs?: number;
   plansPath?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  weatherSnapshot?: {
+    condition: string;
+    conditionLabel: string;
+    summary: string;
+    temperature: number;
+    apparentTemperature: number;
+    humidity: number;
+    uvIndex: number;
+    precipitation: number;
+    updatedAt: string;
+  };
   lastFiredAt?: number;
   events: number;
 };
@@ -229,6 +248,8 @@ export type ClientMsg =
   | { type: "branch"; sessionId: string; branchName?: string; harnessId?: string; model?: string }
   /** harness 一键安装/升级：只允许执行 harness.json manage 里预声明的包/命令 */
   | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
+  /** 全量归档检索：q 空 = 最近 400 条；命中按时间序返回（最早的在前） */
+  | { type: "archive"; sessionId: string; q?: string }
   /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
   | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
@@ -245,6 +266,7 @@ export type ClientMsg =
   | { type: "set-tags"; sessionId: string; tags: string[] }
   | { type: "settings-get" }
   | { type: "settings-set"; patch: Record<string, unknown> }
+  | { type: "notification-test"; config?: Record<string, unknown> }
   /** 清理 harness 本地存储的工具会话（无 ids = 扫描预览；带 ids = 事务级联删除） */
   | { type: "utility-cleanup"; ids?: string[] }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
@@ -343,12 +365,17 @@ export type ClientMsg =
       sensor: {
         id?: string;
         label?: string;
-        kind?: "fs" | "temporal" | "siyuan" | "session";
+        kind?: "fs" | "temporal" | "siyuan" | "session" | "weather";
+        category?: SensoryCategory;
+        subCategory?: SensorySubCategory;
         enabled?: boolean;
         salience?: Salience;
         dirs?: string[];
         intervalMs?: number;
         plansPath?: string;
+        city?: string;
+        latitude?: number;
+        longitude?: number;
       };
     }
   | { type: "sensor-delete"; id: string }
@@ -534,6 +561,8 @@ export type ServerMsg =
   | { type: "pong" }
   /** harness 一键安装/升级的执行报告（broadcast，所有客户端同步按钮态） */
   | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
+  /** 全量归档检索结果：lines 已格式化为 "ts kind text"，最多 400 条 */
+  | { type: "archive-content"; sessionId: string; total: number; lines: string[] }
   /** harness 可用性快照更新（安装完成等会改变可用性的事件后 broadcast） */
   | { type: "harnesses"; harnesses: HarnessAvailability[] }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */
