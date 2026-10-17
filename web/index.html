@@ -884,6 +884,7 @@ let schedEdit = null;    // 正在编辑的定时任务（null = 列表态）
 let goalsArr = [];       // 宏观目标与罗盘
 let lifeTasks = [];      // Mindwtr 生活琐事（☕ 今日生活与日常运转）
 let lifeOpsPending = false;   // 服务端 Mindwtr 缓存未就绪：空态要显示「加载中」而不是「平稳」
+let goalsRetryN = 0;          // 降级载荷自动补查计数
 let goalEdit = null;     // 正在编辑的目标（null = 看板态）
 let sentinelSnap = null; // 神经中枢快照（hello / sentinel-status）
 let sentinelPulses = []; // 神经脉冲流水（客户端缓冲，快照历史 + 实时脉冲）
@@ -1456,6 +1457,11 @@ function handleServer(msg) {
       lifeTasks = msg.lifeTasks || [];
       lifeOpsPending = Boolean(msg.lifeOpsPending);
       if (state.view === "goals" && !goalEdit) renderGoals();
+      // 自愈：这次载荷还是降级态（Mindwtr 缓存未就绪）→ 3s 后自动补查，最多 6 次
+      if (msg.lifeOpsPending) {
+        goalsRetryN++;
+        if (goalsRetryN <= 6) setTimeout(() => { if (state.view === "goals") send({ type: "goals-list" }); }, 3000);
+      } else goalsRetryN = 0;
       break;
     case "sentinel-status":
       sentinelSnap = msg.sentinel;

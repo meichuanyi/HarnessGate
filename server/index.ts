@@ -2703,9 +2703,13 @@ let mwWarned = false;
 
 async function mindwtrRefresh(): Promise<boolean> {
   try {
+    const wasCold = !mwCache;
     const r = await mindwtrFetchTasks();
     mwCache = { at: Date.now(), tasks: r.tasks, projectTitles: r.projectTitles };
     mwWarned = false;
+    // 缓存由冷转热（重启后预热成功 / Mindwtr 断连恢复）：给已连接的客户端补发，
+    // 否则它们停在 hello 时的空载荷上，罗盘永远显示「暂无待办」
+    if (wasCold) broadcast({ type: "goals", ...mindwtrPayloadSync() } as never);
     return true;
   } catch (err) {
     if (!mwWarned) {
