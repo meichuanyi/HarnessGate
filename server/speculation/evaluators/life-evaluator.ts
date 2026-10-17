@@ -243,7 +243,10 @@ export class LifeEvaluator implements SpeculativeEvaluator {
     diet: NonNullable<EnvironmentConstraints["diet"]>,
   ): Promise<SpeculativePrescription | null> {
     const api = this.apiConfig?.();
-    if (!api?.baseUrl || !api.model) return null;
+    if (!api?.baseUrl || !api.model) {
+      console.warn("[life-evaluator] 未配置生成通道（lightApi/utility API），跳过处方生成");
+      return null;
+    }
     const start = item.timeWindow?.start || item.timeWindow?.due || "";
     let weekday = "";
     try {
@@ -279,18 +282,27 @@ export class LifeEvaluator implements SpeculativeEvaluator {
         signal: ctrl.signal,
       });
       clearTimeout(timer);
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.warn(`[life-evaluator] 生成通道 HTTP ${res.status}，跳过处方生成`);
+        return null;
+      }
       const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
       const raw = String(data.choices?.[0]?.message?.content ?? "").replace(/```json|```/g, "").trim();
       const m = raw.match(/\{[\s\S]*\}/);
-      if (!m) return null;
+      if (!m) {
+        console.warn(`[life-evaluator] 输出无法解析为 JSON: ${raw.slice(0, 80)}`);
+        return null;
+      }
       const j = JSON.parse(m[0]) as { summary?: unknown; perceptions?: unknown; memories?: unknown };
       const summary = String(j.summary ?? "").trim();
       const perceptions = Array.isArray(j.perceptions)
         ? j.perceptions.map((x) => String(x).trim()).filter(Boolean).slice(0, 4)
         : [];
       const memories = Array.isArray(j.memories) ? j.memories.map((x) => String(x).trim()).filter(Boolean).slice(0, 1) : [];
-      if (summary.length < 6 || perceptions.length < 2) return null;   // 空洞防御
+      if (summary.length < 6 || perceptions.length < 2) {
+        console.warn(`[life-evaluator] 输出空洞（summary ${summary.length} 字/${perceptions.length} 条），宁缺毋滥`);
+        return null;
+      }
       return {
         itemId: item.id,
         status: "ready",
