@@ -2654,7 +2654,17 @@ function parseDistilled(text: string): Record<string, unknown> | null {
 let goals: Goal[] = loadGoals(GOALS_FILE);
 
 /* ---------- 统一推演引擎（Speculation Engine） ---------- */
-const lifeEvaluator = new LifeEvaluator();
+const lifeEvaluator = new LifeEvaluator({
+  apiConfig: () => {
+    const st = settingsStore.get();
+    if (st.utilityMode === "api" && st.utilityApiBase && st.utilityApiModel) {
+      return { baseUrl: st.utilityApiBase, apiKey: st.utilityApiKey ?? "", model: st.utilityApiModel };
+    }
+    // 默认走本机轻量模型（llama-server：qwen2.5-1.5b，别名 small）——处方内容生成专用
+    return { baseUrl: process.env.HG_LIFE_LLM ?? "http://127.0.0.1:8088/v1", apiKey: "", model: "small" };
+  },
+  getGoalsContext: () => goals.map((g) => `${g.title}(${g.progress ?? 0}%)`).join("；"),
+});
 const codeSandboxEvaluator = new CodeSandboxEvaluator({
   store,
   audit,
