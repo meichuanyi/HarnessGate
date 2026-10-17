@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { NotificationConfig } from "./notify.ts";
 
 /** 用户运行时配置（DATA_DIR/settings.json）：改完即时生效，UI 可编辑。
  *  「后台智能」= 打标/蒸馏/收编摘要等轻量模型任务，可走 harness 或自定义 OpenAI 兼容 API。 */
@@ -20,6 +21,12 @@ export type AppSettings = {
   utilityApiKey: string;
   /** api 模式：模型名（如 gpt-4o-mini / 自己网关里的任意路由名） */
   utilityApiModel: string;
+  /** 轻量大模型（可选）：打标等轻任务专用；留空则跟随 utility 通道 */
+  lightApiBase: string;
+  lightApiKey: string;
+  lightApiModel: string;
+  /** 外部通知通道配置（目标推演、重要报警推送） */
+  notification?: NotificationConfig;
 };
 
 const DEFAULTS: AppSettings = {
@@ -31,6 +38,14 @@ const DEFAULTS: AppSettings = {
   utilityApiBase: "",
   utilityApiKey: "",
   utilityApiModel: "",
+  lightApiBase: "",
+  lightApiKey: "",
+  lightApiModel: "",
+  notification: {
+    enabled: true,
+    channelType: "custom_gateway",
+    endpoint: "http://192.168.6.108:818/api/push/a6089c81f4754037966345f83ff0cb3e",
+  },
 };
 
 export class SettingsStore {
@@ -48,6 +63,15 @@ export class SettingsStore {
         const legacyM = typeof parsed.taggerModel === "string" ? (parsed.taggerModel as string) : "";
         if (legacyH && !merged.utilityHarnessId) merged.utilityHarnessId = legacyH;
         if (legacyM && !merged.utilityModel) merged.utilityModel = legacyM;
+        // 确保 notification 默认值安全填充
+        if (parsed.notification && typeof parsed.notification === "object") {
+          merged.notification = {
+            ...DEFAULTS.notification!,
+            ...(parsed.notification as NotificationConfig),
+          };
+        } else if (!merged.notification) {
+          merged.notification = { ...DEFAULTS.notification! };
+        }
         this.data = merged;
       } catch (err) {
         console.error(`[settings] 读取失败，用默认值:`, err instanceof Error ? err.message : err);
@@ -66,6 +90,15 @@ export class SettingsStore {
     if (patch.utilityMode === "harness" || patch.utilityMode === "api") next.utilityMode = patch.utilityMode;
     for (const k of ["utilityHarnessId", "utilityModel", "utilityApiBase", "utilityApiKey", "utilityApiModel"] as const) {
       if (typeof patch[k] === "string") next[k] = (patch[k] as string).trim();
+    }
+    if (patch.notification && typeof patch.notification === "object") {
+      const nPatch = patch.notification as Partial<NotificationConfig>;
+      next.notification = {
+        enabled: typeof nPatch.enabled === "boolean" ? nPatch.enabled : (next.notification?.enabled ?? true),
+        channelType: nPatch.channelType || next.notification?.channelType || "custom_gateway",
+        endpoint: typeof nPatch.endpoint === "string" ? nPatch.endpoint.trim() : (next.notification?.endpoint || ""),
+        secret: typeof nPatch.secret === "string" ? nPatch.secret.trim() : next.notification?.secret,
+      };
     }
     this.data = next;
     try {

@@ -828,6 +828,12 @@ autoTagger = new AutoTagger(
     }
   },
   probeCurrentModel("zcode"),
+  // 轻量大模型直连：配置了 lightApi* 就优先给打标用，失败回落 utility 通道
+  () => {
+    const st = settingsStore.get();
+    if (!st.lightApiBase || !st.lightApiModel) return null;
+    return { baseUrl: st.lightApiBase, apiKey: st.lightApiKey ?? "", model: st.lightApiModel };
+  },
 );
 
 /** 助理会话 id：live 里找，退到 store（同一时刻只有一个 assistant 会话） */
@@ -2657,6 +2663,9 @@ let goals: Goal[] = loadGoals(GOALS_FILE);
 const lifeEvaluator = new LifeEvaluator({
   apiConfig: () => {
     const st = settingsStore.get();
+    if (st.lightApiBase && st.lightApiModel) {
+      return { baseUrl: st.lightApiBase, apiKey: st.lightApiKey ?? "", model: st.lightApiModel };
+    }
     if (st.utilityMode === "api" && st.utilityApiBase && st.utilityApiModel) {
       return { baseUrl: st.utilityApiBase, apiKey: st.utilityApiKey ?? "", model: st.utilityApiModel };
     }

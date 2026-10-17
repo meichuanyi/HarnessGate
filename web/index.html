@@ -4181,6 +4181,12 @@ function renderSetPanel() {
         <div class="cfgl" style="margin-top:8px">模型（该 harness 的模型配置；空 = 默认模型）</div>
         <select id="setTaggerModel" class="sm" style="width:100%"></select>
       </div>
+      <div class="cfgl" style="margin-top:12px">轻量大模型（可选：打标等轻任务专用，留空=跟随上方执行通道）</div>
+      <input type="text" id="setLightApiBase" value="${esc(st.lightApiBase || "")}" placeholder="http://127.0.0.1:8088/v1（本机 small）" style="width:100%" />
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <input type="text" id="setLightApiKey" value="${esc(st.lightApiKey || "")}" placeholder="API Key（本地服务可空）" style="flex:1" />
+        <input type="text" id="setLightApiModel" value="${esc(st.lightApiModel || "")}" placeholder="模型名，如 small" style="flex:1" />
+      </div>
       <div id="utilApiCfg" style="${st.utilityMode === "api" ? "" : "display:none"}">
         <div class="cfgl" style="margin-top:8px">API 地址（OpenAI 兼容 base，如 http://127.0.0.1:8000/v1）</div>
         <input type="text" id="setApiBase" value="${esc(st.utilityApiBase || "")}" placeholder="http://host/v1" style="width:100%" />
@@ -4341,6 +4347,9 @@ function renderSetPanel() {
         utilityApiBase: $("setApiBase").value,
         utilityApiKey: $("setApiKey").value,
         utilityApiModel: $("setApiModel").value,
+        lightApiBase: $("setLightApiBase").value,
+        lightApiKey: $("setLightApiKey").value,
+        lightApiModel: $("setLightApiModel").value,
         notification: {
           enabled: $("setNotifEnabled").checked,
           channelType: $("setNotifType").value,

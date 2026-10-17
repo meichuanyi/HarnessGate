@@ -34,6 +34,8 @@ export function parseTaggerReply(text: string): string[] {
   }
 }
 
+export type LightApiCfg = { baseUrl: string; apiKey: string; model: string };
+
 export class AutoTagger {
   private queue: string[] = [];
   private running = false;
@@ -46,6 +48,8 @@ export class AutoTagger {
     private readonly onTags: (sessionId: string, tags: string[]) => void,
     /** 探活显示的默认模型（utilityModel 未设置时的兜底） */
     private readonly defaultModel: string | undefined,
+    /** 轻量大模型直连（配置了就优先走它，失败回落 utility 通道） */
+    private readonly lightApi?: () => LightApiCfg | null,
   ) {}
 
   /** 创建会话时打项目标签（同步、确定性、不依赖任何开关以外的资源） */
@@ -104,6 +108,19 @@ export class AutoTagger {
       `给下面这段对话打 1-3 个简短中文标签（每条 2-6 个字，主题/项目/任务类型）。\n` +
       `只输出一个 JSON 字符串数组，例如 ["重构","anki"]，不要输出任何其他内容。\n\n` +
       `标题：${title}\n内容：${body}`;
+    // 轻量模型直连优先（本地 small 这类，短输出任务最合适）
+    const light = this.lightApi?.();
+    if (light?.baseUrl && light.model) {
+      const text = await this.askLightDirect(light, prompt);
+      if (text) {
+        const tags = parseTaggerReply(text);
+        if (tags.length) {
+          this.applyTags(sid, tags);
+          return;
+        }
+      }
+      console.log("[auto-tagger] 轻量模型未产出有效标签，回落 utility 通道");
+    }
     const r = await this.utility.ask({
       purpose: "auto-tagger",
       prompt,
@@ -117,12 +134,44 @@ export class AutoTagger {
     }
     const tags = parseTaggerReply(r.text);
     if (!tags.length) return;
+    this.applyTags(sid, tags);
+  }
+
+  /** 打标结果落库（轻量直连与 utility 通道共用） */
+  private applyTags(sid: string, tags: string[]): void {
     const fresh = this.store.get(sid);
     if (!fresh || fresh.tagsManual) return; // 打标期间用户编辑过则以用户为准
     const merged = new Set([...(fresh.tags ?? []), ...tags]);
     const updated = { ...fresh, tags: [...merged].slice(0, 20), semanticTagged: true };
     this.store.upsert(updated);
     this.onTags(sid, [...merged]);
+  }
+
+  /** OpenAI 兼容口直连轻量模型；失败/超时/空响应返回 null */
+  private async askLightDirect(light: LightApiCfg, prompt: string): Promise<string | null> {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30_000);
+      const res = await fetch(`${light.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(light.apiKey ? { authorization: `Bearer ${light.apiKey}` } : {}) },
+        body: JSON.stringify({
+          model: light.model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.4,
+          max_tokens: 120,
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const text = String(data.choices?.[0]?.message?.content ?? "").trim();
+      return text || null;
+    } catch (err) {
+      console.warn(`[auto-tagger] 轻量模型调用失败: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
   }
 }
 
