@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2247,6 +2247,7 @@ wss.on("connection", (ws, req) => {
         case "goals-list": {
           const payload = await mindwtrPayloadFresh();
           ws.send(JSON.stringify({ type: "goals", ...payload } satisfies ServerMsg));
+          enqueueProactiveNotifications(payload.lifeTasks || []);   // 查询也是一次状态扫描
           break;
         }
 
@@ -2661,17 +2662,7 @@ let goals: Goal[] = loadGoals(GOALS_FILE);
 
 /* ---------- 统一推演引擎（Speculation Engine） ---------- */
 const lifeEvaluator = new LifeEvaluator({
-  apiConfig: () => {
-    const st = settingsStore.get();
-    if (st.lightApiBase && st.lightApiModel) {
-      return { baseUrl: st.lightApiBase, apiKey: st.lightApiKey ?? "", model: st.lightApiModel };
-    }
-    if (st.utilityMode === "api" && st.utilityApiBase && st.utilityApiModel) {
-      return { baseUrl: st.utilityApiBase, apiKey: st.utilityApiKey ?? "", model: st.utilityApiModel };
-    }
-    // 默认走本机轻量模型（llama-server：qwen2.5-1.5b，别名 small）——处方内容生成专用
-    return { baseUrl: process.env.HG_LIFE_LLM ?? "http://127.0.0.1:8088/v1", apiKey: "", model: "small" };
-  },
+  apiConfig: () => lightModelApi(),
   getGoalsContext: () => goals.map((g) => `${g.title}(${g.progress ?? 0}%)`).join("；"),
 });
 const codeSandboxEvaluator = new CodeSandboxEvaluator({
@@ -2802,46 +2793,115 @@ function applyGoalSave(incoming: Partial<Goal>): void {
   saveAndBroadcastGoals();
 }
 
-/* ---------- 主动提醒：触发层只认时间（行动前 15 分钟 / warning 出现），
-   内容层由 LifeEvaluator 的小模型带着真实上下文现写——不预存任何教程/模板 ---------- */
-const proactivePushed = new Map<string, number>();   // 去重：每任务每状态只推一次
-const PROACTIVE_LEAD_MIN = Number(process.env.HG_PROACTIVE_LEAD_MIN ?? 15);
+/* ---------- 主动通知：判断层（小模型像真人助理一样决定何时最合适）+ 事实护栏 ----------
+   触发：处方内容哈希变化 = 现实有新事实（每状态只推一次，重推结论相同则沉默）。
+   时机：小模型看处境（现在几点/任务何时/是否 warning）决定 now 或指定时刻；
+         深眠时段(23:00-07:30)是物理约束——模型想推也强制顺延到 07:30。 */
+const notifyDelivered = new Map<string, string>();          // key → 已送达状态的哈希
+const notifyScheduled = new Map<string, NodeJS.Timeout>();  // key → 排程定时器
 
-function inQuietHours(d = new Date()): boolean {
-  const h = d.getHours() + d.getMinutes() / 60;
-  return h >= 23 || h < 7.5;   // 23:00–07:30 不主动打扰
+function hashState(s: string): string {
+  return createHash("sha1").update(s).digest("hex").slice(0, 16);
 }
 
-async function pushProactiveBriefs(tasks: MindwtrTaskView[]): Promise<void> {
-  if (!tasks.length) return;
+function clampToWaking(atMs: number): number {
+  const d = new Date(atMs);
+  const h = d.getHours() + d.getMinutes() / 60;
+  const n = new Date(atMs);
+  if (h >= 23) n.setDate(n.getDate() + 1);
+  if (h >= 23 || h < 7.5) n.setHours(7, 30, 0, 0);
+  return n.getTime();
+}
+
+/** 轻量模型解析（配置了 lightApi 用之，否则本机 small；最后回落 utility API） */
+function lightModelApi(): { baseUrl: string; apiKey: string; model: string } | null {
+  const st = settingsStore.get();
+  if (st.lightApiBase && st.lightApiModel) return { baseUrl: st.lightApiBase, apiKey: st.lightApiKey ?? "", model: st.lightApiModel };
+  if (st.utilityMode === "api" && st.utilityApiBase && st.utilityApiModel) return { baseUrl: st.utilityApiBase, apiKey: st.utilityApiKey ?? "", model: st.utilityApiModel };
+  return { baseUrl: process.env.HG_LIFE_LLM ?? "http://127.0.0.1:8088/v1", apiKey: "", model: "small" };
+}
+
+/** 时机判断：像真人助理一样看处境。模型失联/输出不合法 → 确定性兜底 */
+async function judgeSendTiming(ev: { title: string; startMs: number; isWarning: boolean }): Promise<{ at: number; reason: string }> {
+  const api = lightModelApi();
+  const nowCst = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+  const startCst = isNaN(ev.startMs) ? "未定" : new Date(ev.startMs).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+  const fallback = { at: clampToWaking(ev.isWarning ? Date.now() : (isNaN(ev.startMs) ? Date.now() : Math.max(Date.now() + 60_000, ev.startMs - 15 * 60_000))), reason: "兜底（判断器不可用）" };
+  if (!api) return { ...fallback, reason: "未配置模型，" + fallback.reason };
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20_000);
+    const res = await fetch(`${api.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(api.apiKey ? { authorization: `Bearer ${api.apiKey}` } : {}) },
+      body: JSON.stringify({
+        model: api.model,
+        messages: [
+          { role: "system", content: [
+            "你是通知时机顾问，像真人助理一样判断何时打扰用户最合适。只输出 JSON：",
+            '{"send_at":"now"|"YYYY-MM-DDTHH:mm:ss+08:00","reason":"≤16字"}',
+            "准则：深夜(23:00-07:30)绝不 now；行动开始前 10-20 分钟是提醒黄金时机；warning 类受阻事件除非深夜都应 now。",
+          ].join("\n") },
+          { role: "user", content: `事件：${ev.title}\n开始时间：${startCst}\n当前时间：${nowCst}\nwarning：${ev.isWarning ? "是" : "否"}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 120,
+      }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return fallback;
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = String(data.choices?.[0]?.message?.content ?? "").replace(/```json|```/g, "").trim();
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return fallback;
+    const j = JSON.parse(m[0]) as { send_at?: unknown; reason?: unknown };
+    const at = j.send_at === "now" ? Date.now() : new Date(String(j.send_at)).getTime();
+    if (isNaN(at)) return fallback;
+    return { at: clampToWaking(at), reason: String(j.reason ?? "").slice(0, 30) || "模型判断" };
+  } catch {
+    return fallback;
+  }
+}
+
+function deliverProactive(key: string, hash: string, title: string, content: string, level: "info" | "warn"): void {
+  const cfg = settingsStore.get().notification;
+  void sendNotification(cfg, { title, content, level }).then((res) => {
+    console.log(`[proactive] ${res.ok ? "已送达" : "送达失败"}: ${title.split("\n")[0]}${res.ok ? "" : " → " + (res.error ?? "")}`);
+    if (res.ok) notifyDelivered.set(key, hash);
+    else notifyScheduled.delete(key);   // 失败允许下次状态扫描重新排程
+  });
+}
+
+/** 状态扫描：哈希变化 = 现实有新事实 → 交判断层决定时机 → 排程送达 */
+function enqueueProactiveNotifications(tasks: MindwtrTaskView[]): void {
   const cfg = settingsStore.get().notification;
   if (!cfg?.enabled || !cfg.endpoint) return;
   const now = Date.now();
-  const quiet = inQuietHours();
-  const leadMs = PROACTIVE_LEAD_MIN * 60_000;
   for (const t of tasks) {
     const p = t.prescription;
     if (!p) continue;
+    const key = `${t.id}:${t.startTime ?? ""}`;
+    const hash = hashState(`${p.status}|${p.summary}`);
+    if (notifyDelivered.get(key) === hash) continue;   // 该状态已送过：沉默
+    if (notifyScheduled.has(key)) continue;            // 已排程，等它自己到点
     const startMs = t.startTime ? new Date(t.startTime).getTime() : NaN;
     const isWarning = p.status === "warning";
-    const inLeadWindow = !isNaN(startMs) && startMs > now && startMs - now <= leadMs;
-    if (!isWarning && !inLeadWindow) continue;
-    const key = `${t.id}:${t.startTime ?? ""}:${isWarning ? p.summary.slice(0, 40) : ""}`;
-    if (proactivePushed.has(key)) continue;
-    if (quiet) { console.log(`[proactive] 静默时段，跳过推送: ${t.title}`); continue; }
+    const lead = startMs - now;
+    const meaningful = isWarning || (!isNaN(startMs) && lead > 0 && lead < 24 * 3600_000);
+    if (!meaningful) continue;                          // 无时间窗的积压项走罗盘，不推
     const when = isNaN(startMs) ? "" : `（${new Date(startMs).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}）`;
     const lines = (p.evidence?.perceptions ?? []).slice(0, 2).map((x) => `· ${String(x).replace(/^【[^】]*】/, "")}`);
     const content = [isWarning ? `⚠ ${p.summary}` : `即将开始：${t.title} ${when}`, ...lines].join("\n");
-    const res = await sendNotification(cfg, {
-      title: isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】",
-      content,
-      level: isWarning ? "warn" : "info",
+    const level = (isWarning ? "warn" : "info") as "info" | "warn";
+    void judgeSendTiming({ title: t.title ?? "", startMs, isWarning }).then(({ at, reason }) => {
+      const atC = clampToWaking(at);
+      console.log(`[proactive-judge] ${t.title} → ${new Date(atC).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（${reason}）`);
+      notifyScheduled.set(key, setTimeout(() => {
+        notifyScheduled.delete(key);
+        deliverProactive(key, hash, isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】", content, level);
+      }, Math.max(0, atC - Date.now())));
     });
-    proactivePushed.set(key, now);
-    console.log(`[proactive] ${res.ok ? "已推送" : "推送失败"}: ${t.title}${res.ok ? "" : " → " + (res.error ?? "")}`);
-  }
-  if (proactivePushed.size > 500) {
-    for (const [k, v] of proactivePushed) if (now - v > 7 * 86400_000) proactivePushed.delete(k);
   }
 }
 
@@ -2955,7 +3015,7 @@ idleSpeculator = new IdleSpeculator({
   refreshLifeTrajectory: async (sensorContext) => {
     const payload = await mindwtrPayloadFresh(sensorContext);
     broadcast({ type: "goals", ...payload } as never);
-    void pushProactiveBriefs(payload.lifeTasks || []);   // 唤醒即检查：到期任务的贴题简报推送到外部通道
+    enqueueProactiveNotifications(payload.lifeTasks || []);   // 唤醒即扫描：状态变化交判断层排程
     // 从当前所有生成的处方中，提取最早的下次推演唤醒时间 (min nextSpeculateAt)
     let minNextMs: number | null = null;
     const allTasks = [...(payload.lifeTasks || []), ...(payload.goals || []).flatMap((g) => g.linkedTasks || [])];
