@@ -252,7 +252,7 @@ export class LifeEvaluator implements SpeculativeEvaluator {
     const sys = [
       "你是生活行动规划助手。基于【给定事实】为行动生成推演处方，只输出一个 JSON 对象：",
       '{"summary":"一句话总评(≤40字)","perceptions":["要点1","要点2","要点3","要点4"],"memories":["一条原则(≤18字)"]}',
-      "硬性要求：perceptions 共 3-4 条、每条 ≤26 字，必须紧扣行动本身与给定事实（时间/天气/目标）；禁止通用套话；除 JSON 外不输出任何内容。",
+      "硬性要求：perceptions 共 3-4 条、每条 ≤26 字，必须紧扣行动本身与给定事实（时间/天气/目标）；每条要点以动词开头、给出该行动独有的具体动作，不得复述行动名称；禁止通用套话；除 JSON 外不输出任何内容。",
     ].join("\n");
     const user = [
       `行动：${item.title}`,
@@ -263,7 +263,7 @@ export class LifeEvaluator implements SpeculativeEvaluator {
     ].filter(Boolean).join("\n");
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 25_000);
+      const timer = setTimeout(() => ctrl.abort(), 60_000);
       const res = await fetch(`${api.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(api.apiKey ? { authorization: `Bearer ${api.apiKey}` } : {}) },
@@ -298,8 +298,9 @@ export class LifeEvaluator implements SpeculativeEvaluator {
         evidence: { perceptions, memories },
         actions: [],
       };
-    } catch {
-      return null;   // 模型不可用/超时/输出不合法：宁可没有处方
+    } catch (err) {
+      console.warn(`[life-evaluator] 处方生成失败（宁缺毋滥）: ${err instanceof Error ? err.message : err}`);
+      return null;
     }
   }
 }
