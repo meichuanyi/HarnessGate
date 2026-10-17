@@ -88,7 +88,7 @@ export class SettingsStore {
     if (typeof patch.autoProjectTags === "boolean") next.autoProjectTags = patch.autoProjectTags;
     if (typeof patch.autoSemanticTags === "boolean") next.autoSemanticTags = patch.autoSemanticTags;
     if (patch.utilityMode === "harness" || patch.utilityMode === "api") next.utilityMode = patch.utilityMode;
-    for (const k of ["utilityHarnessId", "utilityModel", "utilityApiBase", "utilityApiKey", "utilityApiModel"] as const) {
+    for (const k of ["utilityHarnessId", "utilityModel", "utilityApiBase", "utilityApiKey", "utilityApiModel", "lightApiBase", "lightApiKey", "lightApiModel"] as const) {
       if (typeof patch[k] === "string") next[k] = (patch[k] as string).trim();
     }
     if (patch.notification && typeof patch.notification === "object") {
