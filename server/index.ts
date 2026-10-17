@@ -2802,6 +2802,49 @@ function applyGoalSave(incoming: Partial<Goal>): void {
   saveAndBroadcastGoals();
 }
 
+/* ---------- 主动提醒：触发层只认时间（行动前 15 分钟 / warning 出现），
+   内容层由 LifeEvaluator 的小模型带着真实上下文现写——不预存任何教程/模板 ---------- */
+const proactivePushed = new Map<string, number>();   // 去重：每任务每状态只推一次
+const PROACTIVE_LEAD_MIN = Number(process.env.HG_PROACTIVE_LEAD_MIN ?? 15);
+
+function inQuietHours(d = new Date()): boolean {
+  const h = d.getHours() + d.getMinutes() / 60;
+  return h >= 23 || h < 7.5;   // 23:00–07:30 不主动打扰
+}
+
+async function pushProactiveBriefs(tasks: MindwtrTaskView[]): Promise<void> {
+  if (!tasks.length) return;
+  const cfg = settingsStore.get().notification;
+  if (!cfg?.enabled || !cfg.endpoint) return;
+  const now = Date.now();
+  const quiet = inQuietHours();
+  const leadMs = PROACTIVE_LEAD_MIN * 60_000;
+  for (const t of tasks) {
+    const p = t.prescription;
+    if (!p) continue;
+    const startMs = t.startTime ? new Date(t.startTime).getTime() : NaN;
+    const isWarning = p.status === "warning";
+    const inLeadWindow = !isNaN(startMs) && startMs > now && startMs - now <= leadMs;
+    if (!isWarning && !inLeadWindow) continue;
+    const key = `${t.id}:${t.startTime ?? ""}:${isWarning ? p.summary.slice(0, 40) : ""}`;
+    if (proactivePushed.has(key)) continue;
+    if (quiet) { console.log(`[proactive] 静默时段，跳过推送: ${t.title}`); continue; }
+    const when = isNaN(startMs) ? "" : `（${new Date(startMs).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}）`;
+    const lines = (p.evidence?.perceptions ?? []).slice(0, 2).map((x) => `· ${String(x).replace(/^【[^】]*】/, "")}`);
+    const content = [isWarning ? `⚠ ${p.summary}` : `即将开始：${t.title} ${when}`, ...lines].join("\n");
+    const res = await sendNotification(cfg, {
+      title: isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】",
+      content,
+      level: isWarning ? "warn" : "info",
+    });
+    proactivePushed.set(key, now);
+    console.log(`[proactive] ${res.ok ? "已推送" : "推送失败"}: ${t.title}${res.ok ? "" : " → " + (res.error ?? "")}`);
+  }
+  if (proactivePushed.size > 500) {
+    for (const [k, v] of proactivePushed) if (now - v > 7 * 86400_000) proactivePushed.delete(k);
+  }
+}
+
 /* ---------- Sentinel 伴生神经中枢：感官 × 张力 × 快慢双系统（server/sentinel.ts） ---------- */
 const sentinel = new SentinelService({ dataDir: DATA_DIR, audit, log: (l) => console.log(l) });
 sentinel.broadcast = broadcast;
@@ -2912,6 +2955,7 @@ idleSpeculator = new IdleSpeculator({
   refreshLifeTrajectory: async (sensorContext) => {
     const payload = await mindwtrPayloadFresh(sensorContext);
     broadcast({ type: "goals", ...payload } as never);
+    void pushProactiveBriefs(payload.lifeTasks || []);   // 唤醒即检查：到期任务的贴题简报推送到外部通道
     // 从当前所有生成的处方中，提取最早的下次推演唤醒时间 (min nextSpeculateAt)
     let minNextMs: number | null = null;
     const allTasks = [...(payload.lifeTasks || []), ...(payload.goals || []).flatMap((g) => g.linkedTasks || [])];
