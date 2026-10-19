@@ -2952,7 +2952,9 @@ function enqueueProactiveNotifications(tasks: MindwtrTaskView[]): void {
   for (const t of tasks) {
     const p = t.prescription;
     if (!p) continue;
-    const key = `${t.id}:${t.startTime ?? ""}`;
+    // 去重键不含措辞：同一任务同一时间窗，重推措辞再变也只是同一个事实，只推一次；
+    // 只有状态跨档（ready→warning）才算新事实
+    const key = `${t.id}:${t.startTime ?? ""}:${p.status === "warning" ? "w" : "n"}`;
     const hash = hashState(`${p.status}|${p.summary}`);
     if (notifyDelivered.get(key) === hash) continue;   // 该状态已送过：沉默
     if (notifyScheduled.has(key)) continue;            // 已排程，等它自己到点
