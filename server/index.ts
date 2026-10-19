@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -337,6 +337,8 @@ const settingsStore = new SettingsStore(settingsFileOf(DATA_DIR));
 const hub = new WorkspaceHub(audit);
 const history = new HistorySync(store, join(DATA_DIR, "history-index.json"), undefined, (line) => console.log(`[history] ${line}`));
 hub.onTouch = (sid, path) => live.get(sid)?.recordChange(path);
+// 双胞胎修复的接线：同步收编时要避开还挂着进程内实例的会话（它们会回写记录）
+history.liveLookup = (id) => live.has(id);
 const rooms = new RoomManager(join(DATA_DIR, "rooms.json"), audit, {
   onRoom: (room) => broadcast({ type: "room", room }),
   getSession: (id) => live.get(id),
@@ -345,6 +347,64 @@ const rooms = new RoomManager(join(DATA_DIR, "rooms.json"), audit, {
 const defaultCwd = process.env.HG_DEFAULT_CWD ?? registry.defaults?.cwd ?? homedir();
 /** 只有"活着"的会话在这里；落盘的会话在 store 里 */
 const live = new Map<string, HarnessSession>();
+
+// ── 侧问分身的闲置回收：每次提问重置计时，30 分钟无活动才回收（纯资源兜底，不与用户抢时间）；
+//    自动回收时把问答留痕进主会话（在线写台账、离线写持久台账窗口+全量归档），绝不唤醒/打断主会话 ──
+const sideIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleSideIdleReap(sideSession: HarnessSession): void {
+  const prev = sideIdleTimers.get(sideSession.id);
+  if (prev) clearTimeout(prev);
+  const tick = (): void => {
+    if (sideSession.info().inTurn) {   // 最后一问还在跑：等答完再开始算闲置
+      sideIdleTimers.set(sideSession.id, setTimeout(tick, 60_000));
+      return;
+    }
+    reapSideSession(sideSession, "idle");
+  };
+  sideIdleTimers.set(sideSession.id, setTimeout(tick, 30 * 60_000));
+}
+
+function reapSideSession(sideSession: HarnessSession, reason: "manual" | "idle"): void {
+  sideIdleTimers.delete(sideSession.id);
+  void (async () => {
+    try { await sideSession.stop(); } catch { /* 进程已死不追 */ }
+    live.delete(sideSession.id);
+    store.remove(sideSession.id);
+    if (reason === "idle") deliverSideTrace(sideSession);
+    broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
+    console.log(`[side] 侧问分身 ${sideSession.id} 已${reason === "idle" ? "闲置回收（问答留痕已投主会话）" : "手动销毁"}`);
+  })();
+}
+
+/** 闲置回收的留痕：完整记录本就在分身自己的归档 JSONL 里，这里把摘要投进主会话让它可被看见 */
+function deliverSideTrace(sideSession: HarnessSession): void {
+  try {
+    const srcId = sideSession.record().sideOf;
+    if (!srcId) return;
+    const title = String(sideSession.record().title ?? "").replace(/^侧问 · /, "");
+    const qa = sideSession.transcriptView
+      .filter((e) => e.kind === "user" || e.kind === "assistant")
+      .map((e) => `${e.kind === "user" ? "问" : "答"}: ${String((e as { text?: string }).text ?? "").slice(0, 500)}`)
+      .join("\n")
+      .slice(0, 2400);
+    const note = `📎 侧问「${title}」闲置 30 分钟已自动回收，问答留痕：\n${qa || "（无问答内容）"}`;
+    const main = live.get(srcId);
+    if (main) { main.note(note); return; }
+    // 主会话离线：写进持久台账窗口（恢复后聊天页可见）+ 全量归档（可检索），不唤醒进程
+    const stored = store.get(srcId);
+    const entry = { kind: "log" as const, ts: new Date().toISOString(), text: note };
+    if (stored) {
+      stored.transcript.push(entry);
+      if (stored.transcript.length > 800) stored.transcript = stored.transcript.slice(-800);
+      store.upsert(stored);
+    }
+    mkdirSync(join(DATA_DIR, "archives"), { recursive: true });
+    appendFileSync(join(DATA_DIR, "archives", `${srcId}.jsonl`), JSON.stringify(entry) + "\n");
+  } catch (err) {
+    console.warn(`[side] 回收留痕失败: ${err instanceof Error ? err.message : err}`);
+  }
+}
 let idleSpeculator: IdleSpeculator | undefined;
 let executeGoalSpeculation: (gid: string, purpose: string) => Promise<{ ok: boolean; error?: string }>;
 /** 每个客户端连接最多一路实时通话（VoiceLive tap 本连接 WS 推音频/字幕） */
@@ -1334,15 +1394,7 @@ wss.on("connection", (ws, req) => {
           audit.append({ session: sideSession.id, harness: spec.id, op: "session.side", from: msg.sessionId });
           void (async () => {
             // 漏调 start() 分身永远停在 starting（已修）——启动失败也必须回收孤儿
-            const reap = () => {
-              const info = sideSession.info();
-              if (info.inTurn) { setTimeout(reap, 60_000); return; }
-              void sideSession.stop().catch(() => {});
-              live.delete(sideSession.id);
-              store.remove(sideSession.id);
-              broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
-              console.log(`[side] 侧问分身已销毁（启动失败回收）`);
-            };
+            const reap = () => reapSideSession(sideSession, "manual");
             try {
               await sideSession.start("new");
             } catch (err) {
@@ -1362,18 +1414,8 @@ wss.on("connection", (ws, req) => {
             const forked = await sideSession.tryForkFrom(srcRec.acpSessionId);
             broadcast({ type: "session", session: sideSession.info() });
             await sideSession.prompt(msg.text);
-            // 回合结束后留 10 分钟供追问，然后停机销毁（完整记录已在 JSONL 归档）
-            const reapAfterTurn = () => {
-              const info = sideSession.info();
-              if (info.inTurn) { setTimeout(reapAfterTurn, 60_000); return; }
-              void sideSession.stop().then(() => {
-                live.delete(sideSession.id);
-                store.remove(sideSession.id);
-                broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
-                console.log(`[side] 侧问分身 ${sideSession.id} 已销毁`);
-              });
-            };
-            setTimeout(reapAfterTurn, 10 * 60_000);
+            // 回合结束起算闲置 30 分钟；每次追问都会重置计时。到点自动回收并把问答留痕投回主会话
+            scheduleSideIdleReap(sideSession);
           })();
           break;
         }
@@ -1390,7 +1432,7 @@ wss.on("connection", (ws, req) => {
         }
 
         case "side-destroy": {
-          // 清空按钮：立即停机并销毁分身（不等回合后 10 分钟自动回收）。
+          // 清空按钮：立即停机并销毁分身（不等闲置 30 分钟自动回收，也不做留痕投递——用户明确要丢弃）。
           // 只接受确实是侧问分身的 id，防止这个通道误删常规会话。
           const victim = live.get(msg.sessionId);
           const vrec = victim?.record() ?? store.get(msg.sessionId);
@@ -1398,13 +1440,10 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: "该会话不是侧问分身，拒绝销毁" } satisfies ServerMsg));
             break;
           }
-          void (async () => {
-            if (victim) await victim.stop().catch(() => {});
-            live.delete(msg.sessionId);
-            store.remove(msg.sessionId);
-            broadcast({ type: "deleted", sessionId: msg.sessionId } as unknown as ServerMsg);
-            console.log(`[side] 侧问分身 ${msg.sessionId} 已手动销毁（清空）`);
-          })();
+          if (victim) { reapSideSession(victim, "manual"); break; }
+          // 仅存档残留（不在运行）：直接摘除
+          store.remove(msg.sessionId);
+          broadcast({ type: "deleted", sessionId: msg.sessionId } as unknown as ServerMsg);
           break;
         }
 
@@ -1631,6 +1670,7 @@ wss.on("connection", (ws, req) => {
             );
             return;
           }
+          if (session.record().sideOf) scheduleSideIdleReap(session);   // 侧问追问：重置闲置回收计时
           void session.prompt(msg.text, msg.attachments ?? []);
           break;
         }

@@ -3737,9 +3737,9 @@ function openSideDrawer(srcId) {
   wrap.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line,#2a2d35)">
       <b style="font-size:13px">❓ 侧问</b>
-      <span class="meta2" style="flex:1">不打断主会话 · 回答来自同上下文分身</span>
+      <span class="meta2" style="flex:1">不打断主会话 · 分身闲置 30 分钟自动回收并留痕</span>
       <button class="mini ghost" id="sideDeliver" title="把这条侧问的内容投递给主会话">投递</button>
-      <button class="mini ghost" id="sideKill" title="立即销毁当前分身（含其对话，不等 10 分钟自动回收）">清空</button>
+      <button class="mini ghost" id="sideKill" title="立即销毁当前分身（含其对话，不等闲置 30 分钟自动回收）">清空</button>
       <button class="mini ghost" id="sideClose">收起</button>
     </div>
     <div id="sideList" style="flex:1;overflow:auto;padding:10px 12px;font-size:12.5px;line-height:1.6">

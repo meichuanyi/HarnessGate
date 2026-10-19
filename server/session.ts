@@ -446,6 +446,16 @@ export class HarnessSession {
     }
   }
 
+  /** 外部留痕：把与会话流程无关但需要可见的说明写进台账+归档（如同源侧问分身闲置回收的问答摘要） */
+  note(text: string): void {
+    this.push({ kind: "log", ts: now(), text });
+  }
+
+  /** 台账只读视图（外部读取摘要用；写入一律走 push 管道保证归档同步） */
+  get transcriptView(): TranscriptEntry[] {
+    return this.transcript;
+  }
+
   setTags(tags: string[], opts?: { manual?: boolean; semantic?: boolean }): void {
     this.tags = tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20);
     if (opts?.manual !== undefined) this.tagsManual = opts.manual;
