@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -1092,8 +1092,11 @@ function harnessSnapshot(): HarnessAvailability[] {
   return registry.harnesses.map((h) => availWithManage(availability(h, trust, currentProbe()), h));
 }
 
-// 全量归档目录：每条台账同步 append 进 archives/<id>.jsonl（永不裁剪，搜索/回溯用）
-registerArchiveDir(join(DATA_DIR, "archives"));
+// 全量归档目录：每条台账同步 append 进 archives/<id>.jsonl（短期保险，30 天自动过期）
+const ARCHIVE_DIR = join(DATA_DIR, "archives");
+const ARCHIVE_RETENTION_MS = Number(process.env.HG_ARCHIVE_RETENTION_DAYS ?? 30) * 86400_000;
+let archiveSweptAt = 0;   // 归档清扫节流（每小时最多一次）
+registerArchiveDir(ARCHIVE_DIR);
 
 // harness 版本管理：启动时探测本机/上游版本 + 6h 刷新（harness.json manage 声明的才参与）
 initManage(registry.harnesses, () => {});
@@ -3300,6 +3303,18 @@ setInterval(() => void (async () => {
     if (!mwCache) return;   // Mindwtr 不可达：本轮跳过，下轮再试
     const payload = await mindwtrPayloadFresh();
     enqueueProactiveNotifications(payload.lifeTasks || []);
+    // 归档过期清扫（每小时最多跑一次）
+    if (Date.now() - archiveSweptAt >= 3600_000) {
+      archiveSweptAt = Date.now();
+      for (const f of readdirSync(ARCHIVE_DIR)) {
+        if (!f.endsWith(".jsonl")) continue;
+        const fp = join(ARCHIVE_DIR, f);
+        if (Date.now() - statSync(fp).mtimeMs > ARCHIVE_RETENTION_MS) {
+          unlinkSync(fp);
+          console.log(`[archive] 过期清理: ${f}（${process.env.HG_ARCHIVE_RETENTION_DAYS ?? 30} 天未更新）`);
+        }
+      }
+    }
   } catch (err) {
     console.warn(`[life-heartbeat] 扫描失败: ${err instanceof Error ? err.message : err}`);
   }
