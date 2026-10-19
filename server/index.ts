@@ -87,6 +87,85 @@ function gitAsync(args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; ou
 }
 type UpdateCheckMsg = Extract<ServerMsg, { type: "update-check" }>;
 
+/* ---------- VSCode 插件中转：同 /release-apk 模式 ----------
+   GET /release-vscode[?tag=vscode-vX.Y.Z]（默认最新的 vscode-* Release）→ *.vsix */
+const VSIX_CACHE_DIR = join(DATA_DIR, "vsix-cache");
+mkdirSync(VSIX_CACHE_DIR, { recursive: true });
+const vsixDlLocks = new Map<string, Promise<boolean>>();
+
+/** 最新的 vscode-* Release（含 .vsix 资产）；tag 传了就精确找那个 */
+async function ghLatestVscodeRelease(tag: string): Promise<{ tag: string; name: string; size: number } | null> {
+  return new Promise((resolve) => {
+    const args = ["api", "repos/meichuanyi/HarnessGate/releases?per_page=30"];
+    const child = spawn("gh", args, { cwd: ROOT });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", () => { clearTimeout(timer); resolve(null); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) { console.log(`[release-vscode] gh api 失败: ${err.slice(0, 200)}`); resolve(null); return; }
+      try {
+        const releases = JSON.parse(out) as Array<{ tag_name: string; assets: Array<{ name: string; size: number }> }>;
+        for (const r of releases) {
+          if (tag && r.tag_name !== tag) continue;
+          if (!r.tag_name.startsWith("vscode-")) continue;
+          const vsix = (r.assets ?? []).find((a) => a.name.endsWith(".vsix"));
+          if (vsix) { resolve({ tag: r.tag_name, name: vsix.name, size: vsix.size }); return; }
+        }
+        resolve(null);
+      } catch { resolve(null); }
+    });
+  });
+}
+
+function ghDownloadVsix(tag: string, name: string): Promise<boolean> {
+  const dest = join(VSIX_CACHE_DIR, name);
+  const tmp = `${dest}.tmp`;
+  const url = `https://github.com/meichuanyi/HarnessGate/releases/download/${tag}/${name}`;
+  const run = (resume: boolean): Promise<boolean> =>
+    new Promise((resolve) => {
+      const proxy = process.env.HG_GH_PROXY ?? "http://127.0.0.1:7890";
+      const args = ["-sSL", "-m", "3600", "-o", tmp, url];
+      if (proxy && proxy !== "off") args.splice(1, 0, "--proxy", proxy);
+      if (resume) args.unshift("-C", "-");
+      const child = spawn("curl", args);
+      let err = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 1_800_000);
+      child.stderr.on("data", (c) => { err += c; });
+      child.on("error", () => { clearTimeout(timer); resolve(false); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.log(`[release-vscode] curl 下载失败(resume=${resume}): ${err.slice(0, 200)}`);
+          resolve(false);
+          return;
+        }
+        try { renameSync(tmp, dest); resolve(true); } catch { resolve(false); }
+      });
+    });
+  return run(true).then((ok) => {
+    if (ok) return true;
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    return run(false);
+  });
+}
+
+setTimeout(() => void (async () => {
+  const info = await ghLatestVscodeRelease("");
+  if (!info) return;
+  const file = join(VSIX_CACHE_DIR, info.name);
+  if (existsSync(file) && statSync(file).size === info.size) return;
+  console.log(`[release-vscode] 预取 ${info.name}`);
+  const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.tag, info.name);
+  vsixDlLocks.set(info.tag, job);
+  const ok = await job;
+  vsixDlLocks.delete(info.tag);
+  console.log(`[release-vscode] 预取${ok ? "完成" : "失败"}: ${info.name}`);
+})(), 90_000).unref?.();
+
 /* ---------- APP 更新中转：手机直连 GitHub 慢，服务器（gh 有网络）下载一次并缓存 ----------
    GET /release-apk[?tag=vX.Y.Z]（默认 latest）→ 找 Release 里的 *-android.apk */
 const APK_CACHE_DIR = join(DATA_DIR, "apk-cache");
@@ -637,6 +716,44 @@ const http = createServer(async (req, res) => {
         "content-type": "application/vnd.android.package-archive",
         "content-length": size,
         "content-disposition": `attachment; filename="${info.apkName}"`,
+      });
+      createReadStream(file).pipe(res);
+    })();
+    return;
+  }
+
+  if (url.pathname === "/release-vscode") {
+    if (!authorized(req)) {
+      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.end("unauthorized");
+      return;
+    }
+    void (async () => {
+      const tag = url.searchParams.get("tag") ?? "";
+      const info = await ghLatestVscodeRelease(tag);
+      if (!info) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end(tag ? `release ${tag} 没有找到 .vsix` : "没有找到 vscode-* Release 的 .vsix");
+        return;
+      }
+      const file = join(VSIX_CACHE_DIR, info.name);
+      let size = existsSync(file) ? statSync(file).size : 0;
+      if (size !== info.size) {
+        const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.tag, info.name);
+        vsixDlLocks.set(info.tag, job);
+        const okDl = await job;
+        vsixDlLocks.delete(info.tag);
+        if (!okDl || !existsSync(file)) {
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end("VSIX 下载失败（服务器无法访问 GitHub？稍后再试）");
+          return;
+        }
+        size = statSync(file).size;
+      }
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": size,
+        "content-disposition": `attachment; filename="${info.name}"`,
       });
       createReadStream(file).pipe(res);
     })();
