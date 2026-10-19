@@ -14,6 +14,13 @@
  */
 
 /** 感官通道：fs 文件系统 · temporal 时间 · process 进程/命令 · webhook 外部推送 · siyuan 思源数据 · custom 预留 */
+/** 感知一级分类：外部客观现实（身外之物） vs 内部共生体（自身之态） */
+export type SensoryCategory = "external" | "internal";
+
+/** 感知二级分类（MECE 细分）：自然环境 · 外部信号 · 生活心智 · 数字工坊 */
+export type SensorySubCategory = "environment" | "signal" | "life" | "workspace";
+
+/** 感官通道：fs 文件系统 · temporal 时间 · process 进程/命令 · webhook 外部推送 · siyuan 思源数据 · custom 预留 */
 export type SensoryModality = "fs" | "temporal" | "process" | "webhook" | "siyuan" | "custom";
 
 /** 显著性四档：whisper 垫底累积 / normal 常规 / loud 强信号 / siren 警笛（无视阈值立即唤起） */
@@ -30,6 +37,8 @@ export const DEFAULT_SALIENCE_WEIGHTS: Record<Salience, number> = {
 export interface SensoryEvent {
   id: string;
   modality: SensoryModality;
+  /** 触发此事件的感官实例 ID（如 sen-weather-hz, sen-fs-harnessgate） */
+  sensorId?: string;
   /** 事件种类，如 fs.change / temporal.pulse / temporal.alarm / siyuan.goal-changed */
   kind: string;
   /** epoch ms */

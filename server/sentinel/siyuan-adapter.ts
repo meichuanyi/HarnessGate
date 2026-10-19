@@ -99,6 +99,8 @@ export function toHarnessGateGoal(g: SiyuanGoal): Record<string, unknown> {
     : status === "archived" ? "archived"
     : "active";
   const category = HG_CATEGORIES.includes(String(g.category)) ? String(g.category) : "general";
+  const tags = Array.isArray(g.tags) ? g.tags.map(String) : undefined;
+  const cwd = typeof g.cwd === "string" && g.cwd.trim() ? g.cwd.trim() : undefined;
   return {
     id: `siyuan-${g.id}`,
     title: String(g.title),
@@ -106,6 +108,8 @@ export function toHarnessGateGoal(g: SiyuanGoal): Record<string, unknown> {
     category,
     progress: Math.max(0, Math.min(100, Math.round(Number(g.progress) || 0))),
     status: mapped,
+    cwd,
+    tags,
   };
 }
 

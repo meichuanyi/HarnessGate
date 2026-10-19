@@ -37,6 +37,11 @@ export type Goal = {
   progress?: number; // 0 - 100
   cwd?: string; // 关联的核心工作目录
   deadline?: string; // ISO 8601
+  /**
+   * 关联的传感器标签列表（可选）。
+   * 注意：并非所有目标都需要传感器！仅当目标需要响应外部环境或代码变动时，才填入对应传感器 ID（如 'sen-weather-hz', 'sen-fs-xxx'）。
+   */
+  tags?: string[];
   speculative?: GoalSpeculativeConfig;
   createdAt: string;
   updatedAt: string;
@@ -228,6 +233,12 @@ export function classifyMindwtrTasks(
   return { lifeTasks, linkedTasksByGoal };
 }
 
+export type SensorMeta = {
+  id: string;
+  kind: string;
+  dirs?: string[];
+};
+
 /**
  * 任务转 SpeculativeItem
  */
@@ -236,12 +247,54 @@ export function taskToSpeculativeItem(
   domain: "life" | "career" | "skill" | "social" | "health" | "finance" = "life",
   horizon: "immediate" | "weekly" | "macro" = "immediate",
   context?: Record<string, any>,
+  availableSensors?: SensorMeta[],
 ): SpeculativeItem {
+  const sensorDeps = new Set<string>();
+
+  // 1. 任务显式 tags（如果打上了传感器 ID）
+  if (Array.isArray(t.tags) && availableSensors) {
+    for (const rawTag of t.tags) {
+      const clean = rawTag.replace(/^#/, "");
+      if (availableSensors.some((s) => s.id === clean)) {
+        sensorDeps.add(clean);
+      }
+    }
+  }
+
+  // 2. 目标继承 tags（如果目标显式声明了传感器 ID）
+  if (Array.isArray(context?.goalTags) && availableSensors) {
+    for (const rawTag of context.goalTags) {
+      const clean = String(rawTag).replace(/^#/, "");
+      if (availableSensors.some((s) => s.id === clean)) {
+        sensorDeps.add(clean);
+      }
+    }
+  }
+
+  // 3. 目标 cwd 自动匹配 FS 传感器（只有配置了该目录的 FS 传感器才绑定）
+  if (context?.cwd && availableSensors) {
+    const cwd = String(context.cwd);
+    for (const s of availableSensors) {
+      if (s.kind === "fs" && s.dirs?.some((d) => cwd === d || cwd.startsWith(d + "/"))) {
+        sensorDeps.add(s.id);
+      }
+    }
+  }
+
+  // 4. 生活类任务中明确涉及户外/洗晒的，自动关联气象传感器（室内日常如煎冷面/力量训练绝不关联）
+  if (domain === "life" && /晒|户外|露营|洗衣服|晾衣服|洗晒|出门跑步/.test(t.title) && availableSensors) {
+    const weatherSensor = availableSensors.find((s) => s.kind === "weather");
+    if (weatherSensor) {
+      sensorDeps.add(weatherSensor.id);
+    }
+  }
+
   return {
     id: t.id,
     title: t.title,
     domain,
     horizon,
+    sensorDependencies: sensorDeps.size > 0 ? Array.from(sensorDeps) : undefined,
     timeWindow: {
       start: t.startTime,
       due: t.dueDate,
@@ -266,6 +319,7 @@ export async function enrichTasksWithPrescriptions(
   classified: ClassifiedTasks,
   engine: SpeculationEngine,
   goals: Goal[] = [],
+  availableSensors?: SensorMeta[],
 ): Promise<ClassifiedTasks> {
   const items: SpeculativeItem[] = [];
 
@@ -277,7 +331,7 @@ export async function enrichTasksWithPrescriptions(
     } else if (/见朋友|约饭|聚餐|聚会/.test(t.title)) {
       domain = "social";
     }
-    items.push(taskToSpeculativeItem(t, domain, "immediate"));
+    items.push(taskToSpeculativeItem(t, domain, "immediate", undefined, availableSensors));
   }
 
   // 2. 目标支撑任务转化
@@ -295,8 +349,9 @@ export async function enrichTasksWithPrescriptions(
           goalId,
           goalTitle: g?.title,
           cwd: g?.cwd,
+          goalTags: g?.tags,
           promptTemplate: g?.speculative?.promptTemplate,
-        }),
+        }, availableSensors),
       );
     }
   }

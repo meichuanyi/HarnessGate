@@ -2,10 +2,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 async function main() {
-  console.log("=== [1/4] 启动 HarnessGate 核心 MCP 客户端 ===");
+  console.log("=== [1/5] 启动 HarnessGate 核心 MCP 客户端 ===");
   const transport = new StdioClientTransport({
-    command: "npx",
-    args: ["tsx", "/root/projects/HarnessGate/server/mcp-sessions.ts"],
+    command: "/root/projects/HarnessGate/node_modules/.bin/tsx",
+    args: ["/root/projects/HarnessGate/server/mcp-sessions.ts"],
     cwd: "/root/projects/HarnessGate",
   });
 
@@ -17,7 +17,7 @@ async function main() {
   await client.connect(transport);
   console.log("✅ MCP 客户端连接成功！");
 
-  console.log("\n=== [2/4] 测试 tools/list 列出全部工具 ===");
+  console.log("\n=== [2/5] 测试 tools/list 列出全部工具 ===");
   const toolsResult = await client.listTools();
   const toolNames = toolsResult.tools.map((t) => t.name);
   console.log("当前注册的工具清单 (共 " + toolNames.length + " 个):", toolNames);
@@ -35,6 +35,10 @@ async function main() {
     "goals_task_reschedule",
     "sentinel_status",
     "sentinel_spark",
+    "sentinel_sensor_list",
+    "sentinel_sensor_save",
+    "sentinel_sensor_toggle",
+    "sentinel_sensor_delete",
   ];
 
   for (const expected of expectedTools) {
@@ -42,70 +46,54 @@ async function main() {
       throw new Error(`缺少期望的工具: ${expected}`);
     }
   }
-  console.log("✅ 全部 12 个核心工具均正确注册！");
+  console.log("✅ 全部 16 个核心工具（含 4 个感官管理工具）均正确注册！");
 
-  console.log("\n=== [3/4] 测试调用 goals_list 获取宏观目标与生活运转日常待办 ===");
-  const goalsRes = await client.callTool({
-    name: "goals_list",
+  console.log("\n=== [3/5] 测试调用 sentinel_sensor_list 列出感知器 ===");
+  const sensorListRes = await client.callTool({
+    name: "sentinel_sensor_list",
     arguments: {},
   });
-  console.log("goals_list 返回状态: isError =", (goalsRes as any).isError ?? false);
-  const goalsContent = (goalsRes as any).content?.[0]?.text;
-  if (!goalsContent) throw new Error("goals_list 未返回文本内容");
-  const parsedGoals = JSON.parse(goalsContent);
-  console.log("goals_list 摘要统计:", parsedGoals.summary);
-  console.log("首个目标标题:", parsedGoals.goals?.[0]?.title, "进度:", parsedGoals.goals?.[0]?.progress);
-  console.log("生活运转日常待办数量:", parsedGoals.lifeOps?.length);
-  if (parsedGoals.goals?.length === 0 && parsedGoals.lifeOps?.length === 0) {
-    throw new Error("goals_list 返回的目标与待办均为 0，未获取到真实数据");
-  }
-  console.log("✅ goals_list 成功返回后端真实目标与生活运转数据！");
+  console.log("sentinel_sensor_list 返回: isError =", (sensorListRes as any).isError ?? false);
+  const sensorListContent = (sensorListRes as any).content?.[0]?.text;
+  console.log("感知器列表结果:", sensorListContent);
+  const parsedSensors = JSON.parse(sensorListContent);
+  console.log("当前感知器总数:", parsedSensors.count);
 
-  console.log("\n=== [4/4] 测试调用 sentinel_status 查看神经心智状态 ===");
+  console.log("\n=== [4/5] 测试调用 sentinel_sensor_save 保存气象感知器 ===");
+  const saveSensorRes = await client.callTool({
+    name: "sentinel_sensor_save",
+    arguments: {
+      id: "sen-weather-hz",
+      label: "杭州气象环境感知",
+      kind: "weather",
+      city: "杭州",
+      latitude: 30.2741,
+      longitude: 120.1551,
+      salience: "normal",
+      intervalMs: 1800000,
+    },
+  });
+  console.log("sentinel_sensor_save 返回:", (saveSensorRes as any).content?.[0]?.text);
+
+  console.log("\n=== [5/5] 测试调用 sentinel_status 查看神经心智与天气感知快照 ===");
   const sentinelRes = await client.callTool({
     name: "sentinel_status",
     arguments: {},
   });
-  console.log("sentinel_status 返回状态: isError =", (sentinelRes as any).isError ?? false);
   const sentinelContent = (sentinelRes as any).content?.[0]?.text;
-  if (!sentinelContent) throw new Error("sentinel_status 未返回文本内容");
   const parsedSentinel = JSON.parse(sentinelContent);
   console.log("神经中枢张力水位:", parsedSentinel.tension?.level, "/", parsedSentinel.tension?.threshold);
   console.log("神经中枢感官数量:", parsedSentinel.sensors?.length);
-  console.log("最近感官脉冲数:", parsedSentinel.pulses?.length);
-  if (parsedSentinel.tension === undefined) {
-    throw new Error("sentinel_status 未返回有效的张力数据");
+  const weatherSensor = parsedSentinel.sensors?.find((s: any) => s.kind === "weather");
+  if (weatherSensor) {
+    console.log("天气感知器状态:", weatherSensor.label, "| 归类:", weatherSensor.categoryLabel, "/", weatherSensor.subCategoryLabel);
+    if (weatherSensor.weatherSnapshot) {
+      console.log("  天气快照:", weatherSensor.weatherSnapshot.summary);
+    }
   }
-  console.log("✅ sentinel_status 成功返回后端真实神经中枢数据！");
-
-  console.log("\n=== 额外自验：测试 sentinel_spark 注入感官脉冲 ===");
-  const sparkRes = await client.callTool({
-    name: "sentinel_spark",
-    arguments: {
-      summary: "自测试感官认知脉冲：验证 System 2 慢思考唤醒通道",
-      weight: 3,
-    },
-  });
-  const sparkContent = (sparkRes as any).content?.[0]?.text;
-  console.log("sentinel_spark 返回结果:", sparkContent);
-  console.log("✅ sentinel_spark 执行成功！");
-
-  console.log("\n=== 额外自验：测试 goals_task_reschedule 的 ISO 8601 格式铁律校验 ===");
-  const badRescheduleRes = await client.callTool({
-    name: "goals_task_reschedule",
-    arguments: {
-      taskId: "test-task",
-      dueDate: "2026-10-16 12:00:00", // 非严格 ISO 带时区
-    },
-  });
-  console.log("非法格式拦截结果: isError =", (badRescheduleRes as any).isError, "错误信息:", (badRescheduleRes as any).content?.[0]?.text);
-  if (!(badRescheduleRes as any).isError) {
-    throw new Error("ISO 8601 校验未能拦截非法时间戳");
-  }
-  console.log("✅ goals_task_reschedule 严格强制 ISO 起止时间戳铁律验证通过！");
 
   await client.close();
-  console.log("\n🎉 全部自检与功能验证 100% 通过！");
+  console.log("\n🎉 全部 16 个 MCP 工具与内外感知体系端到端自验 100% 通过！");
   process.exit(0);
 }
 

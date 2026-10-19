@@ -19,6 +19,11 @@ export type SpeculativeItem = {
     type: "mindwtr" | "siyuan_plan" | "calendar";
     rawId: string;
   };
+  /**
+   * 关联的传感器 ID 列表（如 ["sen-weather-hz"] 或 ["sen-fs-harnessgate"]）。
+   * 注意：不是所有目标/待办都需要传感器！无外部传感器依赖的目标此项留空或为空数组，不受任何外部传感器破线波及。
+   */
+  sensorDependencies?: string[];
   context?: Record<string, any>;
 };
 
@@ -37,6 +42,13 @@ export type SpeculativePrescription = {
     memories: string[];
   };
   actions?: SpeculativePrescriptionAction[];
+  /** 
+   * 处方自估的保质期与下次复核时间戳（ISO 8601 或 epoch ms）
+   * 系统休眠直至此时间戳，或中途被传感器张力突破唤醒
+   */
+  nextSpeculateAt?: string;
+  /** 处方置信度与有效生命周期 (毫秒) */
+  ttlMs?: number;
 };
 
 export interface SpeculativeEvaluator {
