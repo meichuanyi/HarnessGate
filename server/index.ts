@@ -88,13 +88,16 @@ function gitAsync(args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; ou
 type UpdateCheckMsg = Extract<ServerMsg, { type: "update-check" }>;
 
 /* ---------- VSCode 插件中转：同 /release-apk 模式 ----------
-   GET /release-vscode[?tag=vscode-vX.Y.Z]（默认最新的 vscode-* Release）→ *.vsix */
+   GET /release-vscode[?tag=vscode-vX.Y.Z]（默认最新的 vscode-* Release）→ *.vsix
+   ⚠ 发布 vscode Release 务必 `gh release create ... --prerelease`：插件 Release 若标成
+   Latest，会遮蔽 APP Release（GitHub /releases/latest 只认非 prerelease），APP 检查更新
+   误判「已是最新」、APK 中转发错包（2026-10-19 踩坑）。服务端另有 tag 前缀过滤兜底。 */
 const VSIX_CACHE_DIR = join(DATA_DIR, "vsix-cache");
 mkdirSync(VSIX_CACHE_DIR, { recursive: true });
 const vsixDlLocks = new Map<string, Promise<boolean>>();
 
 /** 最新的 vscode-* Release（含 .vsix 资产）；tag 传了就精确找那个 */
-async function ghLatestVscodeRelease(tag: string): Promise<{ tag: string; name: string; size: number } | null> {
+async function ghLatestVscodeRelease(tag: string): Promise<{ tag: string; name: string; size: number; vsixId: number } | null> {
   return new Promise((resolve) => {
     const args = ["api", "repos/meichuanyi/HarnessGate/releases?per_page=30"];
     const child = spawn("gh", args, { cwd: ROOT });
@@ -108,12 +111,12 @@ async function ghLatestVscodeRelease(tag: string): Promise<{ tag: string; name: 
       clearTimeout(timer);
       if (code !== 0) { console.log(`[release-vscode] gh api 失败: ${err.slice(0, 200)}`); resolve(null); return; }
       try {
-        const releases = JSON.parse(out) as Array<{ tag_name: string; assets: Array<{ name: string; size: number }> }>;
+        const releases = JSON.parse(out) as Array<{ tag_name: string; assets: Array<{ id: number; name: string; size: number }> }>;
         for (const r of releases) {
           if (tag && r.tag_name !== tag) continue;
           if (!r.tag_name.startsWith("vscode-")) continue;
           const vsix = (r.assets ?? []).find((a) => a.name.endsWith(".vsix"));
-          if (vsix) { resolve({ tag: r.tag_name, name: vsix.name, size: vsix.size }); return; }
+          if (vsix) { resolve({ tag: r.tag_name, name: vsix.name, size: vsix.size, vsixId: vsix.id }); return; }
         }
         resolve(null);
       } catch { resolve(null); }
@@ -121,15 +124,34 @@ async function ghLatestVscodeRelease(tag: string): Promise<{ tag: string; name: 
   });
 }
 
-function ghDownloadVsix(tag: string, name: string): Promise<boolean> {
+/** gh CLI 的访问令牌。仓库转私有后 release 资产直链对匿名请求 404（api.github.com 也一样），
+ *  中转下载必须带 Authorization——本机 gh 已登录，取一次缓存住（令牌只进子进程 argv，不落盘） */
+let _ghToken = "";
+function ghToken(): Promise<string> {
+  if (_ghToken) return Promise.resolve(_ghToken);
+  return new Promise((resolve) => {
+    const child = spawn("gh", ["auth", "token"], { cwd: ROOT });
+    let out = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    child.stdout.on("data", (c) => { out += c; });
+    child.on("error", () => { clearTimeout(timer); resolve(""); });
+    child.on("close", () => { clearTimeout(timer); _ghToken = out.trim(); resolve(_ghToken); });
+  });
+}
+
+async function ghDownloadVsix(assetId: number, name: string): Promise<boolean> {
   const dest = join(VSIX_CACHE_DIR, name);
   const tmp = `${dest}.tmp`;
-  const url = `https://github.com/meichuanyi/HarnessGate/releases/download/${tag}/${name}`;
+  // 私有仓库下 github.com 直链任何认证姿势都 404，唯一可行的是 API 资产端点
+  // （Accept: application/octet-stream → 302 到带签名的 CDN，Range 透传、断点续传可用）
+  const url = `https://api.github.com/repos/meichuanyi/HarnessGate/releases/assets/${assetId}`;
+  const token = await ghToken();
   const run = (resume: boolean): Promise<boolean> =>
     new Promise((resolve) => {
       const proxy = process.env.HG_GH_PROXY ?? "http://127.0.0.1:7890";
       const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
       if (proxy && proxy !== "off") args.splice(1, 0, "--proxy", proxy);
+      if (token) args.push("-H", `Authorization: Bearer ${token}`, "-H", "Accept: application/octet-stream");
       if (resume) args.unshift("-C", "-");
       const child = spawn("curl", args);
       let err = "";
@@ -159,7 +181,7 @@ setTimeout(() => void (async () => {
   const file = join(VSIX_CACHE_DIR, info.name);
   if (existsSync(file) && statSync(file).size === info.size) return;
   console.log(`[release-vscode] 预取 ${info.name}`);
-  const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.tag, info.name);
+  const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.vsixId, info.name);
   vsixDlLocks.set(info.tag, job);
   const ok = await job;
   vsixDlLocks.delete(info.tag);
@@ -172,10 +194,45 @@ const APK_CACHE_DIR = join(DATA_DIR, "apk-cache");
 mkdirSync(APK_CACHE_DIR, { recursive: true });
 const apkDlLocks = new Map<string, Promise<boolean>>();
 
-/** gh release view → { tag, apkName, apkSize }；找不到 APK 产物返回 null */
-function ghReleaseApk(tag: string): Promise<{ tag: string; apkName: string; apkSize: number } | null> {
+/** 最新 APP Release（tag 以 v+数字 开头，排除 vscode-* 等插件发布），含 -android.apk 产物。
+ *  不取 GitHub「Latest」标记：vscode-* Release 曾占据 Latest，导致 APP 检查更新误判「已是最新」、
+ *  中转发错 APK——插件发布务必标 prerelease（双保险），此处再按 tag 前缀过滤兜底。 */
+function ghLatestAppRelease(): Promise<{ tag: string; apkName: string; apkSize: number; apkId: number } | null> {
   return new Promise((resolve) => {
-    const child = spawn("gh", ["release", "view", ...(tag ? [tag] : []), "--json", "tagName,assets"], { cwd: ROOT });
+    const child = spawn("gh", ["api", "repos/meichuanyi/HarnessGate/releases?per_page=30"], { cwd: ROOT });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", () => { clearTimeout(timer); resolve(null); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.log(`[release-apk] gh api 列 Release 失败: ${err.slice(0, 300)}`);
+        resolve(null);
+        return;
+      }
+      try {
+        const releases = JSON.parse(out) as Array<{ tag_name: string; assets: Array<{ id: number; name: string; size: number }> }>;
+        for (const r of releases) {
+          if (!/^v\d/.test(r.tag_name)) continue; // 只要 APP Release（vscode-* 等插件发布排除）
+          const apk = (r.assets ?? []).find((a) => a.name.endsWith("-android.apk"));
+          if (apk) { resolve({ tag: r.tag_name, apkName: apk.name, apkSize: apk.size, apkId: apk.id }); return; }
+        }
+        resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/** 指定 tag → gh api releases/tags/<tag>（要资产 id 供认证下载）；缺省 → 最新 APP Release（见 ghLatestAppRelease） */
+function ghReleaseApk(tag: string): Promise<{ tag: string; apkName: string; apkSize: number; apkId: number } | null> {
+  if (!tag) return ghLatestAppRelease();
+  return new Promise((resolve) => {
+    const child = spawn("gh", ["api", `repos/meichuanyi/HarnessGate/releases/tags/${encodeURIComponent(tag)}`], { cwd: ROOT });
     let out = "";
     let err = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
@@ -190,9 +247,9 @@ function ghReleaseApk(tag: string): Promise<{ tag: string; apkName: string; apkS
         return;
       }
       try {
-        const j = JSON.parse(out) as { tagName: string; assets: Array<{ name: string; size: number }> };
+        const j = JSON.parse(out) as { tag_name: string; assets: Array<{ id: number; name: string; size: number }> };
         const apk = j.assets?.find((a) => a.name.endsWith("-android.apk"));
-        resolve(apk ? { tag: j.tagName, apkName: apk.name, apkSize: apk.size } : null);
+        resolve(apk ? { tag: j.tag_name, apkName: apk.name, apkSize: apk.size, apkId: apk.id } : null);
       } catch {
         resolve(null);
       }
@@ -209,7 +266,7 @@ function prefetchLatestApk(): void {
     const file = join(APK_CACHE_DIR, info.apkName);
     if (existsSync(file) && statSync(file).size === info.apkSize) return; // 已缓存
     console.log(`[release-apk] 预取 ${info.apkName}（后台下载进缓存）`);
-    const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.tag, info.apkName);
+    const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.apkId, info.apkName);
     apkDlLocks.set(info.tag, job);
     const ok = await job;
     apkDlLocks.delete(info.tag);
@@ -220,17 +277,22 @@ setTimeout(() => prefetchLatestApk(), 60_000).unref?.();
 /** curl -C - 断点续传下载：服务重启/预取被杀后，下次从 .tmp 半截继续，不再从零爬
  *  （gh release download 不支持续传——一天连发多版时缓存永远追不上，实测踩坑）。
  *  续传失败（文件损坏/服务端不支持 Range）自动删 .tmp 从头再来一次。 */
-function ghDownloadApk(tag: string, name: string): Promise<boolean> {
+async function ghDownloadApk(assetId: number, name: string): Promise<boolean> {
   const dest = join(APK_CACHE_DIR, name);
   const tmp = `${dest}.tmp`;
-  const url = `https://github.com/meichuanyi/HarnessGate/releases/download/${tag}/${name}`;
+  // 私有仓库下 github.com 直链任何认证姿势都 404（Bearer/token/Basic 都试过），
+  // 唯一可行的是 API 资产端点：Accept: application/octet-stream → 302 到带签名 CDN
+  const url = `https://api.github.com/repos/meichuanyi/HarnessGate/releases/assets/${assetId}`;
+  const token = await ghToken();
   const run = (resume: boolean): Promise<boolean> =>
     new Promise((resolve) => {
       // 本机直连 github.com release 下载会挂死（api.github.com 却能通），v0.6.29 起
       // 中转下载一直失败且 -s 把报错吞成空串；实测走本地 sing-box 秒下。可用 env 换/关。
       const proxy = process.env.HG_GH_PROXY ?? "http://127.0.0.1:7890";
-      const args = ["-sSL", "-m", "3600", "-o", tmp, url];
+      // -f 必带：否则 HTTP 404 的响应体（9 字节 "Not Found"）会被当成文件落进缓存
+      const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
       if (proxy && proxy !== "off") args.splice(1, 0, "--proxy", proxy);
+      if (token) args.push("-H", `Authorization: Bearer ${token}`, "-H", "Accept: application/octet-stream");
       if (resume) args.unshift("-C", "-");
       const child = spawn("curl", args);
       let err = "";
@@ -782,6 +844,22 @@ const http = createServer(async (req, res) => {
     });
     return;
   }
+  if (url.pathname === "/release-apk-meta") {
+    // APP 检查更新的中转元数据端点（update.dart 回退通道）。私有仓库时代 APP 侧就设计好了，
+    // 服务端一直漏实现 → 手机直连 GitHub 失败时回退必 404。公开分发通道：永不鉴权。
+    void (async () => {
+      const info = await ghLatestAppRelease();
+      if (!info) {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("没有找到带 Android APK 产物的 APP Release");
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ tag: info.tag, apkName: info.apkName, size: info.apkSize }));
+    })();
+    return;
+  }
+
   if (url.pathname === "/release-apk") {
     // 公开分发通道：设计上不鉴权（无论 HG_AUTH 开关），token 可有可无
     void (async () => {
@@ -789,18 +867,18 @@ const http = createServer(async (req, res) => {
       const info = await ghReleaseApk(tag);
       if (!info) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        res.end(tag ? `release ${tag} 没有找到 Android APK` : "latest release 没有找到 Android APK");
+        res.end(tag ? `release ${tag} 没有找到 Android APK` : "没有找到带 Android APK 的 APP Release");
         return;
       }
       const file = join(APK_CACHE_DIR, info.apkName);
       let size = existsSync(file) ? statSync(file).size : 0;
       if (size !== info.apkSize) {
         // 缓存缺失/大小不符：经服务器下载（并发请求共用一次下载）
-        const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.tag, info.apkName);
+        const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.apkId, info.apkName);
         apkDlLocks.set(info.tag, job);
         const okDl = await job;
         apkDlLocks.delete(info.tag);
-        if (!okDl || !existsSync(file)) {
+        if (!okDl || !existsSync(file) || statSync(file).size !== info.apkSize) {
           res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
           res.end("APK 下载失败（服务器无法访问 GitHub？稍后再试）");
           return;
@@ -830,7 +908,7 @@ const http = createServer(async (req, res) => {
       const file = join(VSIX_CACHE_DIR, info.name);
       let size = existsSync(file) ? statSync(file).size : 0;
       if (size !== info.size) {
-        const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.tag, info.name);
+        const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.vsixId, info.name);
         vsixDlLocks.set(info.tag, job);
         const okDl = await job;
         vsixDlLocks.delete(info.tag);
@@ -2590,7 +2668,15 @@ wss.on("connection", (ws, req) => {
 
         case "goals-get":
         case "goals-list": {
-          const payload = await mindwtrPayloadFresh();
+          // 绝不让目标页陪推演链等 60s×N：4s 预算内拿不到带处方的新鲜载荷，
+          // 就用缓存（或纯目标列表）即时回包；处方就绪后由 Life Ops 心跳广播补发
+          const payload = await Promise.race([
+            mindwtrPayloadFresh(),
+            new Promise<ReturnType<typeof mindwtrPayloadSync>>((resolve) => {
+              const t = setTimeout(() => resolve(mindwtrPayloadSync()), 4000);
+              t.unref?.();
+            }),
+          ]);
           ws.send(JSON.stringify({ type: "goals", ...payload } satisfies ServerMsg));
           enqueueProactiveNotifications(payload.lifeTasks || []);   // 查询也是一次状态扫描
           break;
@@ -3084,20 +3170,32 @@ async function computeClassifiedTasks(sensorContext?: SensorWakeContext): Promis
 }
 
 let cachedPayload: { at: number; payload: { goals: GoalView[]; lifeTasks?: MindwtrTaskView[] } } | null = null;
+let lastGoalsBroadcastFp = "";   // 上次广播的载荷指纹：处方/任务就绪或变化才广播，不空转刷屏
 
+let payloadInflight: Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean }> | null = null;
 async function mindwtrPayloadFresh(sensorContext?: SensorWakeContext): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean }> {
-  if (!mwCache || Date.now() - mwCache.at > MW_CACHE_TTL) await mindwtrRefresh();
-  if (!sensorContext && cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
-    return cachedPayload.payload;
+  // 单飞锁：处方推演最坏 60s/条（本地小模型 2 线程），心跳每 60s 一轮 + 用户查询
+  // 各起各的池会互相抢算力越堆越多——在飞的直接搭车，不再新开
+  if (payloadInflight) return payloadInflight;
+  payloadInflight = (async (): Promise<{ goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean }> => {
+    if (!mwCache || Date.now() - mwCache.at > MW_CACHE_TTL) await mindwtrRefresh();
+    if (!sensorContext && cachedPayload && mwCache && cachedPayload.at >= mwCache.at && (Date.now() - cachedPayload.at < 30_000)) {
+      return cachedPayload.payload;
+    }
+    if (!mwCache) return { goals, lifeOpsPending: true };
+    const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks(sensorContext);
+    const payload = {
+      goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
+      lifeTasks,
+    };
+    cachedPayload = { at: Date.now(), payload };
+    return payload;
+  })();
+  try {
+    return await payloadInflight;
+  } finally {
+    payloadInflight = null;
   }
-  if (!mwCache) return { goals, lifeOpsPending: true };
-  const { lifeTasks, linkedTasksByGoal } = await computeClassifiedTasks(sensorContext);
-  const payload = {
-    goals: goals.map((g) => ({ ...g, linkedTasks: linkedTasksByGoal[g.id] })),
-    lifeTasks,
-  };
-  cachedPayload = { at: Date.now(), payload };
-  return payload;
 }
 
 function mindwtrPayloadSync(): { goals: GoalView[]; lifeTasks?: MindwtrTaskView[]; lifeOpsPending?: boolean } {
@@ -3302,6 +3400,12 @@ setInterval(() => void (async () => {
     await mindwtrRefresh();
     if (!mwCache) return;   // Mindwtr 不可达：本轮跳过，下轮再试
     const payload = await mindwtrPayloadFresh();
+    // goals-get 用缓存快回后，这里负责把就绪的处方/任务变化补推给前端
+    const fp = JSON.stringify(payload);
+    if (fp !== lastGoalsBroadcastFp) {
+      lastGoalsBroadcastFp = fp;
+      broadcast({ type: "goals", ...payload } as never);
+    }
     enqueueProactiveNotifications(payload.lifeTasks || []);
     // 归档过期清扫（每小时最多跑一次）
     if (Date.now() - archiveSweptAt >= 3600_000) {

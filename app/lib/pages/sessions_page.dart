@@ -211,6 +211,62 @@ class _SessionsPageState extends State<SessionsPage> {
     }
   }
 
+  /// 服务器配置：原地对话框编辑（不动当前连接）；只有明确点「保存并重连」才断线重进。
+  /// 之前齿轮一按就 softReset+整页替换，配置早已保存时 ConnectPage 秒连秒跳，
+  /// 表现为「点一下闪断重连」，没有任何可编辑的机会。
+  Future<void> _editServerConfig() async {
+    final cfg = await ServerConfig.load();
+    if (!mounted) return;
+    final url = TextEditingController(text: cfg.url);
+    final token = TextEditingController(text: cfg.token);
+    final saveAndReconnect = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('服务器配置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: url,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '服务器地址',
+                hintText: 'https://… / 局域网IP:端口',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: token,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: '访问 token（未开认证可留空）',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('保存并重连')),
+        ],
+      ),
+    );
+    final newUrl = url.text.trim();
+    final newToken = token.text;
+    url.dispose();
+    token.dispose();
+    if (saveAndReconnect != true || !mounted) return;
+    await ServerConfig.save(newUrl, newToken);
+    if (!mounted) return;
+    widget.client.softReset();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => ConnectPage(client: widget.client)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -252,15 +308,9 @@ class _SessionsPageState extends State<SessionsPage> {
             },
           ),
           IconButton(
-            tooltip: '服务器配置',
-            icon: const Icon(Icons.settings_outlined, size: 20),
-            onPressed: () {
-              widget.client.softReset();
-              Navigator.of(context).pushReplacement(
-                MaterialPageRoute(
-                    builder: (_) => ConnectPage(client: widget.client)),
-              );
-            },
+            tooltip: '服务器地址',
+            icon: const Icon(Icons.dns_outlined, size: 20),
+            onPressed: () => _editServerConfig(),
           ),
           IconButton(
             tooltip: _starredOnly ? '显示全部会话' : '只看收藏',
