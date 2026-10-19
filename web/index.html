@@ -2688,7 +2688,7 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatCall" title="实时语音通话：全双工、可插话；接通自动切快速模型，挂断还原">📞 通话</button>
     ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
     <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
-    ${s.parentId ? `<button class="mini ghost" id="chatAdopt" title="把这个分支的结论蒸馏后收编回主线">⇱ 收编</button>` : `<button class="mini ghost" id="chatBranch" title="从这里分叉一个分支会话（继承当前上下文，探索不同想法）">⎇ 分支</button>`}
+    ${s.parentId ? `<button class="mini ghost" id="chatAdopt" title="结论合并回主线并清除该分支（全史在归档可回查）">⇱ 收编</button>` : `<button class="mini ghost" id="chatBranch" title="从这里分叉一个分支会话（继承当前上下文，探索不同想法）">⎇ 分支</button>`}
     <button class="mini ghost" id="chatSide" title="侧问：临时问点什么，不打断正在跑的会话（回答来自同上下文的临时分身）">❓ 侧问</button>
     <button class="mini ghost" id="chatArchive" title="全量归档检索：台账窗口（800条）之外的完整历史也能查">📚 归档</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>

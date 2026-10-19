@@ -1350,7 +1350,19 @@ wss.on("connection", (ws, req) => {
             const adoptedLen = branch.adoptedLen;
             const adoptedTail = branch.adoptedTailTs;
             if ((branch.tags ?? []).includes("已收编") && adoptedTail && branch.transcript.at(-1)?.ts === adoptedTail) {
-              ws.send(JSON.stringify({ type: "error", message: "该分支已收编且无新增内容，跳过重复合并（分支有新进展后再收编只会合并新增部分）" } satisfies ServerMsg));
+              // 已收编且无新增：使命已完成——再次点击即确认清除（全史在 JSONL 归档永可回查）
+              const liveB0 = live.get(branch.id);
+              if (liveB0) {
+                void liveB0.stop().then(() => {
+                  live.delete(branch.id);
+                  store.remove(branch.id);
+                  broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
+                });
+              } else {
+                store.remove(branch.id);
+                broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
+              }
+              ws.send(JSON.stringify({ type: "toast", message: `「${branch.branchName ?? branch.id}」已收编且无新增，分支记录已清除` } as unknown as ServerMsg));
               return;
             }
             let start = 0;
@@ -1405,6 +1417,18 @@ wss.on("connection", (ws, req) => {
             }
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
+            // 收编完成：结论已入主线待注入队列、全史已在 JSONL 归档——分支删除（合并即关闭）
+            const liveB2 = live.get(branch.id);
+            if (liveB2) {
+              void liveB2.stop().then(() => {
+                live.delete(branch.id);
+                store.remove(branch.id);
+                broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
+              });
+            } else {
+              store.remove(branch.id);
+              broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
+            }
           })();
           break;
         }
