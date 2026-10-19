@@ -5,6 +5,9 @@ on:
     paths: ["app/**", ".github/workflows/flutter-apk.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -28,7 +31,17 @@ jobs:
         working-directory: app
       - run: flutter build apk --release
         working-directory: app
+      # tag 构建直接发 Release（绕开 artifact 存储配额）；main 构建保留 artifact 供排查
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd app/build/app/outputs/flutter-apk
+          cp app-release.apk "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk"
+          gh release create "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --title "${GITHUB_REF_NAME#refs/tags/}" --notes "自动发布（CI 直出）" || gh release upload "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --clobber
       - uses: actions/upload-artifact@v4
+        if: !startsWith(github.ref, 'refs/tags/')
         with:
           name: harnessgate-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
