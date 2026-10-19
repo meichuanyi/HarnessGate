@@ -253,6 +253,10 @@ export type ClientMsg =
   | { type: "archive"; sessionId: string; q?: string }
   /** 侧问：fork 源会话上下文到临时分身提问（不打断原会话），答完自动销毁 */
   | { type: "side-question"; sessionId: string; text: string }
+  /** 侧问：抽屉重开时按源会话找回仍在跑的分身（客户端不持久 sideSessionId） */
+  | { type: "side-find"; srcId: string }
+  /** 侧问：立即销毁分身（抽屉「清空」按钮；仅接受确实是侧问分身的 id） */
+  | { type: "side-destroy"; sessionId: string }
   /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
   | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
@@ -567,6 +571,8 @@ export type ServerMsg =
   | { type: "archive-content"; sessionId: string; total: number; lines: string[] }
   /** 侧问临时分身已创建（客户端据此打开侧问抽屉并拉取其台账） */
   | { type: "side-created"; sessionId: string; srcId: string }
+  /** side-find 的回复：该源当前在跑的分身 id（null=没有在跑的） */
+  | { type: "side-found"; srcId: string; sessionId: string | null }
   /** harness 可用性快照更新（安装完成等会改变可用性的事件后 broadcast） */
   | { type: "harnesses"; harnesses: HarnessAvailability[] }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */

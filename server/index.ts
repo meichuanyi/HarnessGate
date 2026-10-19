@@ -1378,6 +1378,36 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "side-find": {
+          // 抽屉重开找回在跑的侧问分身：客户端不持久 sideSessionId，切走再回来后按源查 live，
+          // 找回即可继续追问/看到结果，不再"看别的会话一眼就永远丢失分身"
+          let found: string | null = null;
+          for (const s of live.values()) {
+            if (s.record().sideOf === msg.srcId) { found = s.id; break; }
+          }
+          ws.send(JSON.stringify({ type: "side-found", srcId: msg.srcId, sessionId: found } satisfies ServerMsg));
+          break;
+        }
+
+        case "side-destroy": {
+          // 清空按钮：立即停机并销毁分身（不等回合后 10 分钟自动回收）。
+          // 只接受确实是侧问分身的 id，防止这个通道误删常规会话。
+          const victim = live.get(msg.sessionId);
+          const vrec = victim?.record() ?? store.get(msg.sessionId);
+          if (!vrec?.sideOf) {
+            ws.send(JSON.stringify({ type: "error", message: "该会话不是侧问分身，拒绝销毁" } satisfies ServerMsg));
+            break;
+          }
+          void (async () => {
+            if (victim) await victim.stop().catch(() => {});
+            live.delete(msg.sessionId);
+            store.remove(msg.sessionId);
+            broadcast({ type: "deleted", sessionId: msg.sessionId } as unknown as ServerMsg);
+            console.log(`[side] 侧问分身 ${msg.sessionId} 已手动销毁（清空）`);
+          })();
+          break;
+        }
+
         case "archive": {
           // 全量归档检索：按关键词过滤某会话的完整历史（q 空则返回最近 400 条）
           const af = join(DATA_DIR, "archives", `${msg.sessionId}.jsonl`);

@@ -1617,6 +1617,11 @@ function handleServer(msg) {
     case "deleted": /* 2026-09-19 新增：会话删除广播 */
       sessions.delete(msg.sessionId);
       if (state.sessionId === msg.sessionId) { state.view = "harnesses"; state.sessionId = null; }
+      if (sideSessionId === msg.sessionId) {   // 在跑的侧问分身被回收（10 分钟自动/手动清空）：抽屉回到初始态
+        sideSessionId = null;
+        const drawerList = document.querySelector("#sideDrawer #sideList");
+        if (drawerList) drawerList.innerHTML = `<div class="meta2">分身已销毁。此刻没有分身——发出第一条问题后才会重新启动（fork 当前上下文），主会话毫无感知。</div>`;
+      }
       render();
       break;
     case "handoff_done": /* 2026-09-19 新增：接续完成后跳到新会话 */
@@ -1649,6 +1654,16 @@ function handleServer(msg) {
       sideSessionId = msg.sessionId;
       send({ type: "transcript", sessionId: msg.sessionId, limit: 40 });
       break;
+    case "side-found": { /* 抽屉重开找回在跑的分身：恢复 sessionId 并拉台账，切走再回来不再丢结果 */
+      if (msg.srcId !== sideSrcId || !document.getElementById("sideDrawer")) break;
+      if (msg.sessionId) {
+        sideSessionId = msg.sessionId;
+        const drawerList = document.querySelector("#sideDrawer #sideList");
+        if (drawerList) drawerList.innerHTML = `<div class="meta2">已找回在跑的分身，载入对话…</div>`;
+        send({ type: "transcript", sessionId: msg.sessionId, limit: 40 });
+      }
+      break;
+    }
     case "harnesses": /* 服务端推的可用性快照（安装完成等）：卡片/按钮态即时翻转 */
       harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
       renderSetPanel();
@@ -3724,10 +3739,11 @@ function openSideDrawer(srcId) {
       <b style="font-size:13px">❓ 侧问</b>
       <span class="meta2" style="flex:1">不打断主会话 · 回答来自同上下文分身</span>
       <button class="mini ghost" id="sideDeliver" title="把这条侧问的内容投递给主会话">投递</button>
+      <button class="mini ghost" id="sideKill" title="立即销毁当前分身（含其对话，不等 10 分钟自动回收）">清空</button>
       <button class="mini ghost" id="sideClose">收起</button>
     </div>
     <div id="sideList" style="flex:1;overflow:auto;padding:10px 12px;font-size:12.5px;line-height:1.6">
-      <div class="meta2">分身启动中（fork 当前上下文）… 问什么都可以，主会话毫无感知。</div>
+      <div class="meta2">此刻还没有分身——发出第一条问题后才会启动（fork 当前上下文），主会话毫无感知。</div>
     </div>
     <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--line,#2a2d35)">
       <input id="sideInput" placeholder="问点什么…" style="flex:1;padding:6px 9px" />
@@ -3735,6 +3751,13 @@ function openSideDrawer(srcId) {
     </div>`;
   document.body.appendChild(wrap);
   wrap.querySelector("#sideClose").onclick = () => { wrap.remove(); sideSessionId = null; };
+  wrap.querySelector("#sideKill").onclick = () => {
+    if (!sideSessionId) return;
+    send({ type: "side-destroy", sessionId: sideSessionId });
+    sideSessionId = null;
+    wrap.querySelector("#sideList").innerHTML = `<div class="meta2">分身已销毁。此刻没有分身——发出第一条问题后才会重新启动（fork 当前上下文），主会话毫无感知。</div>`;
+  };
+  send({ type: "side-find", srcId });   // 重开抽屉时找回仍在跑的分身（切走再回来不丢结果）
   wrap.querySelector("#sideSend").onclick = () => sideSendText(wrap);
   wrap.querySelector("#sideInput").addEventListener("keydown", (e) => { if (e.key === "Enter") sideSendText(wrap); });
   wrap.querySelector("#sideDeliver").onclick = () => {
