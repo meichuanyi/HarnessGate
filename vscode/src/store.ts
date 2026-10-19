@@ -8,6 +8,8 @@ export class Store {
   harnesses: HarnessAvailability[] = [];
   sessions = new Map<string, SessionInfo>();
   rooms = new Map<string, Room>();
+  /** 服务端配置的 MCP 服务器（hello 下发，新建会话勾选用） */
+  mcpServers: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; args?: string[]; url?: string }> = [];
   defaultCwd = "";
   /** 定时任务（schedules 消息维护） */
   schedules: Schedule[] = [];
@@ -38,6 +40,7 @@ export class Store {
     rooms?: Room[],
     schedules?: Schedule[],
     assistantSessionId?: string | null,
+    mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>,
   ): void {
     this.harnesses = harnesses;
     this.sessions = new Map(sessions.map((s) => [s.id, s]));

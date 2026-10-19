@@ -47,6 +47,9 @@ export type SessionInfo = {
   branchName?: string;
   /** 侧问分身标记：临时分身不进常规列表 */
   sideOf?: string;
+  /** 本会话挂载的 MCP 服务器（会话 gear 可改） */
+  mcpServerIds?: string[];
+  /** 本会话挂载的 MCP 服务器（gear 里可改） */
   /** 版本管理（harness.json manage 声明的才有） */
   installedVersion?: string;
   latestVersion?: string;
@@ -233,7 +236,8 @@ export type GoalView = Goal & {
 };
 
 export type ClientMsg =
-  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean }
+  | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; mcpServerIds?: string[] }
+  | { type: "session-gear-save"; sessionId: string; mcpServerIds: string[] }
   | { type: "archive"; sessionId: string; q?: string }
   | { type: "side-question"; sessionId: string; text: string }
   | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
@@ -343,6 +347,9 @@ export type ServerMsg =
       schedules?: Schedule[];
       /** 常驻助理会话 id（null = 尚未创建） */
       assistantSessionId?: string | null;
+      mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>;
+      goals?: Goal[];
+      lifeTasks?: MindwtrTaskView[];
     }
   | { type: "session"; session: SessionInfo }
   | { type: "update"; sessionId: string; update: Record<string, unknown> }

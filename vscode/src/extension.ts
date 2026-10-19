@@ -322,8 +322,9 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     rooms?: Room[];
     schedules?: import("./protocol.ts").Schedule[];
     assistantSessionId?: string | null;
+    mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>;
   }) => {
-    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms, msg.schedules, msg.assistantSessionId);
+    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms, msg.schedules, msg.assistantSessionId, msg.mcpServers);
     if (msg.schedules) setSchedulesData(msg.schedules);
     output.appendLine(
       `已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话，${msg.rooms?.length ?? 0} 个圆桌，${msg.schedules?.length ?? 0} 个定时任务`,
@@ -420,7 +421,32 @@ async function newSession(): Promise<void> {
   const cwd = await promptCwd(client, saved || store.defaultCwd);
   if (cwd === undefined) return;
 
-  if (!client.send({ type: "create", harnessId: picked.id, cwd })) {
+  // MCP 选择（可多选、可跳过）：只列「新建会话默认勾选」的启用项
+  const mcpPick = await new Promise<string[] | undefined>((resolve) => {
+    const qp = vscode.window.createQuickPick();
+    qp.title = "挂载 MCP 服务器（空格勾选 / 回车确认，Esc 跳过）";
+    qp.canSelectMany = true;
+    qp.matchOnDescription = true;
+    qp.items = store.mcpServers
+      .filter((x) => x.enabled !== false)
+      .map((x) => ({
+        label: x.name,
+        description: x.type === "stdio" ? [x.command, ...(x.args ?? [])].filter(Boolean).join(" ") : x.url ?? "",
+      }));
+    let done = false;
+    const finish = (ids: string[] | undefined) => {
+      if (done) return;
+      done = true;
+      resolve(ids);
+      qp.dispose();
+    };
+    qp.onDidAccept(() => finish(qp.selectedItems.map((i) => (i as { id?: string }).id ?? i.label)));
+    qp.onDidHide(() => finish(undefined));
+    qp.show();
+  });
+  if (mcpPick === undefined) return;   // Esc：放弃新建
+
+  if (!client.send({ type: "create", harnessId: picked.id, cwd, mcpServerIds: mcpPick })) {
     void vscode.window.showErrorMessage("发送失败：连接已断开");
     return;
   }

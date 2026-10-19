@@ -159,6 +159,7 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
           "",
           `目录：\`${s.cwd}\``,
           (s.tags ?? []).length ? `标签：${(s.tags ?? []).map((t) => `\`${t}\``).join(" ")}` : "",
+          (s.mcpServerIds ?? []).length ? `MCP：${(s.mcpServerIds ?? []).join("、")}` : "",
           s.worktree ? `worktree：\`${s.worktree.branch}\`` : "",
           s.error ? `\n错误：${s.error}` : "",
         ]
