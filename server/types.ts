@@ -257,6 +257,8 @@ export type ClientMsg =
   | { type: "side-find"; srcId: string }
   /** 侧问：立即销毁分身（抽屉「清空」按钮；仅接受确实是侧问分身的 id） */
   | { type: "side-destroy"; sessionId: string }
+  /** 投递（方案C）：侧问内容留痕进主会话 + 待注入队列，随主线下一条消息进模型（不触发回合） */
+  | { type: "side-deliver"; sessionId: string; text: string }
   /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
   | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */

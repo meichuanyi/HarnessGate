@@ -3738,7 +3738,7 @@ function openSideDrawer(srcId) {
     <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line,#2a2d35)">
       <b style="font-size:13px">❓ 侧问</b>
       <span class="meta2" style="flex:1">不打断主会话 · 分身闲置 30 分钟自动回收并留痕</span>
-      <button class="mini ghost" id="sideDeliver" title="把这条侧问的内容投递给主会话">投递</button>
+      <button class="mini ghost" id="sideDeliver" title="留痕进主会话并随其下一条消息注入模型（不打断当前回合）">投递</button>
       <button class="mini ghost" id="sideKill" title="立即销毁当前分身（含其对话，不等闲置 30 分钟自动回收）">清空</button>
       <button class="mini ghost" id="sideClose">收起</button>
     </div>
@@ -3762,10 +3762,10 @@ function openSideDrawer(srcId) {
   wrap.querySelector("#sideInput").addEventListener("keydown", (e) => { if (e.key === "Enter") sideSendText(wrap); });
   wrap.querySelector("#sideDeliver").onclick = () => {
     const last = [...wrap.querySelectorAll("#sideList .side-a")].pop();
-    const text = last ? last.textContent : "";
+    const text = last ? last.textContent.replace(/^✦\s*/, "") : "";
     if (!text) return;
-    send({ type: "prompt", sessionId: srcId, text: `（来自侧问，请纳入考虑）\n${text.slice(0, 800)}` });
-    wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", '<div class="meta2" style="margin-top:6px">↳ 已投递到主会话</div>');
+    send({ type: "side-deliver", sessionId: srcId, text });
+    wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", '<div class="meta2" style="margin-top:6px">↳ 已投递：随主会话下一条消息注入（不打断）</div>');
   };
 }
 

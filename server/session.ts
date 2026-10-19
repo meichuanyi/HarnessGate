@@ -456,6 +456,14 @@ export class HarnessSession {
     return this.transcript;
   }
 
+  /** 待注入的外部内容块（收编摘要/侧问投递）：下一条 prompt 拼在最前，模型本次即知晓 */
+  private pendingContext: string[] = [];
+
+  /** 外部内容入队（去重由调用方的指纹表负责）；主会话离线时调用方自行暂存 */
+  queueContext(block: string): void {
+    this.pendingContext.push(block);
+  }
+
   setTags(tags: string[], opts?: { manual?: boolean; semantic?: boolean }): void {
     this.tags = tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20);
     if (opts?.manual !== undefined) this.tagsManual = opts.manual;
@@ -911,6 +919,11 @@ export class HarnessSession {
       this.healContext = undefined;
       this.log("已注入自愈进度摘要");
       text = `【接续背景】上一个底层会话因连续故障被自动重建。以下是你此前工作的最近进度摘录：\n${bg}\n\n请基于以上背景继续。当前请求：${text}`;
+    }
+    if (this.pendingContext.length) {   // 收编/投递的内容随下一条消息进模型——不打断、不单独烧回合
+      const blocks = this.pendingContext;
+      this.pendingContext = [];
+      text = `${blocks.join("\n\n")}\n\n当前请求：${text}`;
     }
     if (this.stopRequested || (this.status !== "ready" && this.status !== "starting")) {
       this.hooks.onUpdate(this.id, {

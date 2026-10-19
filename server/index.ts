@@ -377,6 +377,25 @@ function reapSideSession(sideSession: HarnessSession, reason: "manual" | "idle")
   })();
 }
 
+/** 往任意会话写一条无打扰留痕：在线走台账实例；离线写持久台账窗口（恢复后可见）+ 全量归档，不唤醒进程 */
+function noteToSession(id: string, text: string): void {
+  const s = live.get(id);
+  if (s) { s.note(text); return; }
+  try {
+    const stored = store.get(id);
+    const entry = { kind: "log" as const, ts: new Date().toISOString(), text };
+    if (stored) {
+      stored.transcript.push(entry);
+      if (stored.transcript.length > 800) stored.transcript = stored.transcript.slice(-800);
+      store.upsert(stored);
+    }
+    mkdirSync(join(DATA_DIR, "archives"), { recursive: true });
+    appendFileSync(join(DATA_DIR, "archives", `${id}.jsonl`), JSON.stringify(entry) + "\n");
+  } catch (err) {
+    console.warn(`[side] 留痕写入失败: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 /** 闲置回收的留痕：完整记录本就在分身自己的归档 JSONL 里，这里把摘要投进主会话让它可被看见 */
 function deliverSideTrace(sideSession: HarnessSession): void {
   try {
@@ -388,22 +407,40 @@ function deliverSideTrace(sideSession: HarnessSession): void {
       .filter((e) => e.kind === "user" || e.kind === "assistant")
       .map((e) => `${e.kind === "user" ? "问" : "答"}: ${String((e as { text?: string }).text ?? "")}`)
       .join("\n");
-    const note = `📎 侧问「${title}」闲置 30 分钟已自动回收，问答留痕：\n${qa || "（无问答内容）"}`;
-    const main = live.get(srcId);
-    if (main) { main.note(note); return; }
-    // 主会话离线：写进持久台账窗口（恢复后聊天页可见）+ 全量归档（可检索），不唤醒进程
-    const stored = store.get(srcId);
-    const entry = { kind: "log" as const, ts: new Date().toISOString(), text: note };
-    if (stored) {
-      stored.transcript.push(entry);
-      if (stored.transcript.length > 800) stored.transcript = stored.transcript.slice(-800);
-      store.upsert(stored);
-    }
-    mkdirSync(join(DATA_DIR, "archives"), { recursive: true });
-    appendFileSync(join(DATA_DIR, "archives", `${srcId}.jsonl`), JSON.stringify(entry) + "\n");
+    noteToSession(srcId, `📎 侧问「${title}」闲置 30 分钟已自动回收，问答留痕：\n${qa || "（无问答内容）"}`);
   } catch (err) {
     console.warn(`[side] 回收留痕失败: ${err instanceof Error ? err.message : err}`);
   }
+}
+
+// ── 内容投递（方案C）：留痕立即可见 + 内容进待注入队列，随主会话的下一条 prompt 进入模型——
+//    不打断当前回合、不唤醒已停止的会话、不单独烧回合。去重双层：内容指纹拦「同文重发」，
+//    收编游标（adoptedLen）拦「同分支重复收编」──
+const pendingInjections = new Map<string, string[]>();   // 主会话离线时暂存；其下次 prompt 前并入实例队列
+const injectedSigs = new Map<string, Set<string>>();     // 每个主会话已注入内容的指纹（规范化空白后 sha1）
+
+function sigOf(body: string): string {
+  return createHash("sha1").update(body.replace(/\s+/g, " ").trim()).digest("hex");
+}
+
+/** 投递/收编共用入口。返回是否真正入队（false=与已注入内容重复，被拦下） */
+function deliverIntoMain(mainId: string, title: string, body: string, notePrefix: string): boolean {
+  const sig = sigOf(body);
+  let seen = injectedSigs.get(mainId);
+  if (!seen) { seen = new Set(); injectedSigs.set(mainId, seen); }
+  const dup = seen.has(sig);
+  seen.add(sig);
+  noteToSession(mainId, dup
+    ? `${notePrefix}（与已注入内容相同，跳过重复合并）\n${body}`
+    : `${notePrefix}（将随主会话的下一条消息注入模型上下文）\n${body}`);
+  if (dup) return false;
+  const block = `【${title}】\n${body}`;
+  const s = live.get(mainId);
+  if (s) { s.queueContext(block); return true; }
+  let q = pendingInjections.get(mainId);
+  if (!q) { q = []; pendingInjections.set(mainId, q); }
+  q.push(block);
+  return true;
 }
 let idleSpeculator: IdleSpeculator | undefined;
 let executeGoalSpeculation: (gid: string, purpose: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1315,11 +1352,19 @@ wss.on("connection", (ws, req) => {
             // 分支台账蒸馏（用户/助手的结论为主，工具行只留标题）。
             // 兜底路径的分支开头有注入的父上下文摘要（【分支会话】… + agent 确认）——
             // 主线本来就懂这些，蒸馏只取分支自己的探索内容；fork 路径台账天然干净
+            // 收编游标：已收编且分支无新增内容 → 拒绝（防重复合并）；有新内容只蒸馏上次之后的部分
+            const adoptedLen = branch.adoptedLen;
+            const adoptedTail = branch.adoptedTailTs;
+            if ((branch.tags ?? []).includes("已收编") && adoptedTail && branch.transcript.at(-1)?.ts === adoptedTail) {
+              ws.send(JSON.stringify({ type: "error", message: "该分支已收编且无新增内容，跳过重复合并（分支有新进展后再收编只会合并新增部分）" } satisfies ServerMsg));
+              return;
+            }
             let start = 0;
             const firstU = branch.transcript[0] as { text?: string } | undefined;
             if (branch.transcript[0]?.kind === "user" && (firstU?.text ?? "").startsWith("【分支会话】")) {
               start = branch.transcript[1]?.kind === "assistant" ? 2 : 1;
             }
+            if (adoptedLen !== undefined && adoptedLen <= branch.transcript.length) start = Math.max(start, adoptedLen);
             const lines: string[] = [];
             for (const e of branch.transcript.slice(start)) {
               const a = e as unknown as Record<string, unknown>;
@@ -1330,32 +1375,32 @@ wss.on("connection", (ws, req) => {
             const r = await utility.ask({
               purpose: "adopt-branch",
               prompt: [
-                "你是会话合并助手。下面是一个「主会话」分出去的「分支会话」的完整记录（分支带着主线上下文探索了一个方向）。",
+                "你是会话合并助手。下面是一个「主会话」分出去的「分支会话」的探索记录（分支带着主线上下文探索了一个方向）。" + ((adoptedLen ?? 0) > 0 ? "本次只包含上次收编之后的新增部分。" : ""),
                 "提炼这个分支的关键结论：做了什么尝试、得到什么结果/结论、改了哪些文件（如有）、下一步建议。控制在 300 字内，直接输出要点，不要客套。",
                 "", "——— 分支记录 ———", ...lines.slice(-120), "—————————————",
               ].join("\n"),
               timeoutMs: 90_000,
             });
-            const summary = r.ok ? r.text.slice(0, 1200) : `（蒸馏失败：${r.error}；原始记录见分支会话 #${branch.id}）`;
-            // 注入主线（拉活主线会话并 prompt）
-            reviveSession(main.id);
-            const mainSess = live.get(main.id);
-            if (!mainSess) {
-              ws.send(JSON.stringify({ type: "error", message: "主线会话无法拉活" } satisfies ServerMsg));
-              return;
+            // 方案C注入：留痕+待注入队列，不拉活主线、不烧确认回合（内容随主线下一条消息进模型）
+            const summary = r.ok ? r.text.slice(0, 1200) : `（蒸馏失败：${r.error}）`;
+            if (r.ok) {
+              deliverIntoMain(
+                main.id,
+                `分支收编「${branch.branchName ?? branch.id}」的关键结论（视为已确认的事实/进展）`,
+                summary,
+                `📎 分支「${branch.branchName ?? branch.id}」已收编，关键结论摘要`,
+              );
+            } else {
+              noteToSession(main.id, `📎 分支「${branch.branchName ?? branch.id}」收编蒸馏失败：${r.error}（原始记录见分支会话 #${branch.id}）`);
             }
-            const deadline = Date.now() + 60_000;
-            while (Date.now() < deadline && mainSess.info().status !== "ready") {
-              if (mainSess.info().status === "error") break;
-              await new Promise((r2) => setTimeout(r2, 300));
-            }
-            await mainSess.prompt([
-              `【分支收编】之前从本会话分出去的分支「${branch.branchName ?? branch.id}」（会话 #${branch.id}）已经探索完毕，以下是它的关键结论摘要：`,
-              "", summary, "",
-              "请把这些结论纳入你的上下文（视为已确认的事实/进展），一句话确认后等我的下一步指令。",
-            ].join("\n"));
-            // 分支标记已收编（标题加 ✓，广播）
-            const updated = { ...branch, branchName: `${branch.branchName ?? "分支"}✓已收编`, tags: [...new Set([...(branch.tags ?? []), "已收编"])].slice(0, 20) };
+            // 分支标记已收编（标题加 ✓，广播）+ 记录收编游标（下次只合并新增内容）
+            const updated = {
+              ...branch,
+              branchName: `${String(branch.branchName ?? "分支").replace(/✓已收编$/, "")}✓已收编`,
+              tags: [...new Set([...(branch.tags ?? []), "已收编"])].slice(0, 20),
+              adoptedLen: branch.transcript.length,
+              adoptedTailTs: branch.transcript.at(-1)?.ts,
+            };
             store.upsert(updated);
             const liveB = live.get(branch.id);
             if (liveB) {
@@ -1367,6 +1412,18 @@ wss.on("connection", (ws, req) => {
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
           })();
+          break;
+        }
+
+        case "side-deliver": {
+          // 投递（方案C）：留痕进主会话台账 + 内容进待注入队列（随下一条消息进模型）。
+          // 不唤醒已停止的主会话、不插队正在跑的回合、不单独烧确认回合。内容指纹去重。
+          const mrec = store.get(msg.sessionId);
+          if (!mrec) {
+            ws.send(JSON.stringify({ type: "error", message: "主会话不存在" } satisfies ServerMsg));
+            break;
+          }
+          deliverIntoMain(mrec.id, "来自侧问的投递（请纳入考虑）", msg.text, "📎 侧问内容已投递到主会话");
           break;
         }
 
@@ -1669,6 +1726,11 @@ wss.on("connection", (ws, req) => {
               } satisfies ServerMsg),
             );
             return;
+          }
+          const pend = pendingInjections.get(msg.sessionId);
+          if (pend?.length) {   // 会话离线期间收到的投递/收编内容：并入实例队列，随本条消息进模型
+            pendingInjections.set(msg.sessionId, []);
+            for (const b of pend) session.queueContext(b);
           }
           if (session.record().sideOf) scheduleSideIdleReap(session);   // 侧问追问：重置闲置回收计时
           void session.prompt(msg.text, msg.attachments ?? []);

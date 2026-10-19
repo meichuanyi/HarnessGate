@@ -43,6 +43,10 @@ export type PersistedSession = {
   parentId?: string;
   /** 分支名（用户起的，如「方案A」「试试rust」；主线无此字段） */
   branchName?: string;
+  /** 上次收编时的台账长度（收编游标）：再收编只蒸馏此后新增的内容，防重复合并 */
+  adoptedLen?: number;
+  /** 上次收编时台账最后一条的时间戳：配对 adoptedLen 判断分支有无新增（窗口被裁剪后长度失真，以它为准） */
+  adoptedTailTs?: string;
   /** 本会话由哪次「接续」分叉而来（快照文件名也用它定位） */
   handoffFrom?: string;
   /** 本会话碰过的文件（hub 实时回填，上限 500） */
