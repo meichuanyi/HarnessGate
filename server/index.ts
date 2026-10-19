@@ -783,11 +783,7 @@ const http = createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/release-apk") {
-    if (!authorized(req)) {
-      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
-      res.end("unauthorized");
-      return;
-    }
+    // 公开分发通道：设计上不鉴权（无论 HG_AUTH 开关），token 可有可无
     void (async () => {
       const tag = url.searchParams.get("tag") ?? "";
       const info = await ghReleaseApk(tag);
@@ -822,11 +818,7 @@ const http = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/release-vscode") {
-    if (!authorized(req)) {
-      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
-      res.end("unauthorized");
-      return;
-    }
+    // 同上：公开分发，永不鉴权
     void (async () => {
       const tag = url.searchParams.get("tag") ?? "";
       const info = await ghLatestVscodeRelease(tag);
