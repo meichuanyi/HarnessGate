@@ -2,7 +2,7 @@
   "name": "harnessgate",
   "displayName": "HarnessGate",
   "description": "HarnessGate 的 VS Code 客户端（瘦客户端，本机无需装任何 agent CLI）。需要先在服务器上安装并运行后端 HarnessGate：git clone 后 npm install && npm start（监听 9830），插件里填 ws://<服务器IP>:9830/ws 即可远程驱动 OpenCode/Claude Code/Codex/ZCode 等多个编码 agent",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "publisher": "meichuan",
   "license": "MIT",
   "engines": {
@@ -144,6 +144,18 @@
         "command": "harnessgate.workspace",
         "title": "HarnessGate: 工作区归因",
         "icon": "$(folder-library)"
+      },
+      {
+        "command": "harnessgate.archive",
+        "title": "HarnessGate: 📚 全量归档检索"
+      },
+      {
+        "command": "harnessgate.sideQuestion",
+        "title": "HarnessGate: ❓ 侧问（不打断主会话）"
+      },
+      {
+        "command": "harnessgate.harnessManage",
+        "title": "HarnessGate: ⬆ Harness 安装/升级"
       }
     ],
     "menus": {
@@ -234,6 +246,21 @@
           "command": "harnessgate.editTags",
           "when": "view == harnessgate.harnesses && viewItem =~ /session/",
           "group": "1_mod@2"
+        },
+        {
+          "command": "harnessgate.archive",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "2_archive@1"
+        },
+        {
+          "command": "harnessgate.sideQuestion",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "2_archive@2"
+        },
+        {
+          "command": "harnessgate.harnessManage",
+          "when": "view == harnessgate.harnesses && viewItem =~ /harness/",
+          "group": "1_harness@1"
         }
       ]
     },

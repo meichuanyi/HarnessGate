@@ -23,7 +23,8 @@ export class HarnessNode {
 
 export class SessionNode {
   readonly kind = "session";
-  constructor(readonly session: SessionInfo) {}
+  /** 该会话下挂了分支（树视图折叠展示） */
+  constructor(readonly session: SessionInfo, readonly hasBranches = false) {}
 }
 
 export class InfoNode {
@@ -106,6 +107,9 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       );
       const count = this.store.sessionsOf(h.id).length;
       if (count) item.description = `${h.available ? "" : "未就绪 · "}${count} 个会话`;
+      if (h.manageSupported && h.installedVersion && h.latestVersion && h.installedVersion !== h.latestVersion) {
+        item.description += ` · ↑ v${h.latestVersion} 可升级`;
+      }
       return item;
     }
 
@@ -142,11 +146,13 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
     if (node.kind === "session") {
       const s = node.session;
-      const item = new vscode.TreeItem(s.title || `(空会话 #${s.id})`, vscode.TreeItemCollapsibleState.None);
+      const collapsible = node.hasBranches ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+      const item = new vscode.TreeItem(s.title || `(空会话 #${s.id})`, collapsible);
       item.id = `s:${s.id}#${this.gen}`;
       item.contextValue = s.live ? "session-live" : s.resumable ? "session-saved" : "session";
       const tagPart = (s.tags ?? []).length ? ` [${(s.tags ?? []).join(", ")}]` : "";
-      item.description = `${s.starred ? "★ " : ""}${STATUS_LABEL[s.status] ?? s.status}${tagPart} · ${s.cwd}`;
+      const branchPart = node.hasBranches ? " ⎇" : s.parentId ? " ⎙" : "";
+      item.description = `${s.starred ? "★ " : ""}${STATUS_LABEL[s.status] ?? s.status}${tagPart} · ${s.cwd}${branchPart}`;
       item.tooltip = new vscode.MarkdownString(
         [
           `**${s.harnessLabel}** · \`#${s.id}\`${s.starred ? " · ★ 已收藏" : ""}`,
@@ -204,7 +210,9 @@ export class HarnessTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     if (node.kind === "harness") {
       const ss = this.store.sessionsOf(node.harness.id);
       if (!ss.length) return [new InfoNode("还没有会话", "dash")];
-      return ss.map((s) => new SessionNode(s));
+      // 树形排列：分支邻接其主干会话（主干可折叠展开），排序对齐 web/APP
+      const branchParents = new Set(ss.map((x) => x.parentId).filter(Boolean) as string[]);
+      return ss.map((s) => new SessionNode(s, branchParents.has(s.id)));
     }
     return [];
   }

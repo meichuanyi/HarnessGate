@@ -103,6 +103,100 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       client.send({ type: "star", sessionId: id, starred: v });
       if (s) store.upsertSession({ ...s, starred: v });
     }),
+    // 📚 全量归档检索
+    vscode.commands.registerCommand("harnessgate.archive", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const q = await vscode.window.showInputBox({ placeHolder: "关键词（空 = 最近 400 条）", title: "📚 全量归档检索 · 会话 #" + id });
+      if (q === undefined) return;
+      const lines: string[] = [];
+      let total = 0;
+      const onArchive = (m: any) => {
+        if (m.sessionId !== id) return;
+        total = m.total ?? 0;
+        lines.length = 0;
+        lines.push(...(m.lines ?? []));
+      };
+      client.on("archive-content", onArchive);
+      client.send({ type: "archive", sessionId: id, q });
+      // 等回包（最长 15s）
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 300));
+        if (lines.length || total) break;
+      }
+      client.off("archive-content", onArchive);
+      if (!lines.length) {
+        vscode.window.showInformationMessage(`归档无匹配（共 ${total} 条记录）`);
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        lines.map((l, i) => ({ label: l.slice(0, 120), detail: `第 ${i + 1} 条 / 共 ${total} 条命中`, line: l })),
+        { placeHolder: `📚 归档命中 ${total} 条（选择复制该行）`, matchOnDetail: false },
+      );
+      if (pick) {
+        await vscode.env.clipboard.writeText(pick.line);
+        vscode.window.showInformationMessage("已复制该行到剪贴板");
+      }
+    }),
+
+    // ❓ 侧问
+    vscode.commands.registerCommand("harnessgate.sideQuestion", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const text = await vscode.window.showInputBox({
+        placeHolder: "问点什么…（fork 当前上下文回答，不打断正在跑的会话）",
+        title: "❓ 侧问 · 会话 #" + id,
+      });
+      if (!text?.trim()) return;
+      let sideId: string | null = null;
+      const onSide = (m: any) => {
+        if (m.srcId === id) {
+          sideId = m.sessionId as string;
+          client.off("side-created", onSide);
+          // 在聊天面板中直接打开分身（完整流式回答）
+          vscode.commands.executeCommand("harnessgate.openChat", sideId);
+        }
+      };
+      client.on("side-created", onSide);
+      client.send({ type: "side-question", sessionId: id, text: text.trim() });
+      setTimeout(() => client.off("side-created", onSide), 120_000);
+    }),
+
+    // Harness 版本管理（安装/升级）
+    vscode.commands.registerCommand("harnessgate.harnessManage", async (node?: { harness?: { id?: string } }) => {
+      const candidates = store.harnesses.filter((h) => h.manageSupported);
+      if (!candidates.length) {
+        vscode.window.showInformationMessage("没有可管理的 harness（服务端 manage 未声明）");
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        candidates.map((h) => ({
+          label: `${h.label}  ${h.installedVersion ?? "未安装"}${h.latestVersion ? ` → v${h.latestVersion}` : ""}`,
+          harnessId: h.id,
+          action: h.installedVersion ? ("update" as const) : ("install" as const),
+        })),
+        { placeHolder: "选择要安装/升级的 harness（走服务端 manage 白名单）" },
+      );
+      if (!pick) return;
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Harness ${pick.action === "install" ? "安装" : "升级"}中…（可能需要数分钟）` },
+        async () => {
+          await new Promise<void>((resolve) => {
+            const onManaged = (m: any) => {
+              if (m.harnessId !== pick.harnessId) return;
+              client.off("harness-managed", onManaged);
+              resolve();
+              if (m.ok) vscode.window.showInformationMessage(`✅ ${m.action === "install" ? "安装" : "升级"}完成${m.to ? `：v${m.to}` : ""}（新会话生效）`);
+              else vscode.window.showErrorMessage(`❌ 管理失败：${String(m.output ?? "未知错误").slice(-160)}`);
+            };
+            client.on("harness-managed", onManaged);
+            client.send({ type: "harness-manage", harnessId: pick.harnessId, action: pick.action });
+          });
+        },
+      );
+    }),
+
     // 过滤：选标签或手动输入
     vscode.commands.registerCommand("harnessgate.filterSessions", async () => {
       const counts = [...store.tagCounts().entries()].sort((a, b) => b[1] - a[1]);

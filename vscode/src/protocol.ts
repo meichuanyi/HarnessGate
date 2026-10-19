@@ -42,6 +42,24 @@ export type SessionInfo = {
   tags?: string[];
   /** 常驻助理会话（树顶直达、永不空闲回收） */
   assistant?: boolean;
+  /** 分支关系：fork/分支自哪个父会话（树形嵌套展示） */
+  parentId?: string;
+  branchName?: string;
+  /** 侧问分身标记：临时分身不进常规列表 */
+  sideOf?: string;
+  /** 版本管理（harness.json manage 声明的才有） */
+  installedVersion?: string;
+  latestVersion?: string;
+  manageBusy?: boolean;
+  manageSupported?: boolean;
+};
+
+export type HarnessManageInfo = {
+  id: string;
+  label: string;
+  installedVersion?: string;
+  latestVersion?: string;
+  busy?: boolean;
 };
 
 export type HarnessAvailability = {
@@ -58,6 +76,11 @@ export type HarnessAvailability = {
   blocked?: boolean;
   state?: string;
   configs?: ConfigOption[];
+  /** 版本管理（harness.json manage 声明的才有） */
+  installedVersion?: string;
+  latestVersion?: string;
+  manageBusy?: boolean;
+  manageSupported?: boolean;
 };
 
 export type PermissionOption = { optionId: string; name: string; kind?: string };
@@ -211,6 +234,9 @@ export type GoalView = Goal & {
 
 export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean }
+  | { type: "archive"; sessionId: string; q?: string }
+  | { type: "side-question"; sessionId: string; text: string }
+  | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
   | { type: "set-auto-approve"; sessionId: string; level: "off" | "readonly" | "all" }
@@ -225,6 +251,9 @@ export type ClientMsg =
   | { type: "interrupt"; sessionId: string }
   | { type: "delete"; sessionId: string }
   | { type: "star"; sessionId: string; starred: boolean }
+  | { type: "archive-content"; sessionId: string; total: number; lines: string[] }
+  | { type: "side-created"; sessionId: string; srcId: string }
+  | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
   | { type: "set-tags"; sessionId: string; tags: string[] }
   /** 确保助理会话存在（无则服务端用默认 harness 创建） */
   | { type: "assistant-ensure"; harnessId?: string }
