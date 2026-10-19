@@ -9,6 +9,7 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
 import '../core/client.dart';
+import 'chat_extras.dart';
 import '../core/md_style.dart';
 import '../core/math_markdown.dart';
 import '../core/protocol.dart';
@@ -1087,6 +1088,24 @@ class _ChatPageState extends State<ChatPage> {
             tooltip: '搜索对话内容',
             icon: const Icon(Icons.search, size: 20),
             onPressed: _openSearch,
+          ),
+          IconButton(
+            tooltip: '📚 全量归档检索（800 条窗口之外的完整历史）',
+            icon: const Icon(Icons.inventory_2_outlined, size: 20),
+            onPressed: () => showModalBottomSheet(
+              context: context,
+              isScrollControlled: true,
+              builder: (_) => ArchiveDialog(client: widget.client, sessionId: widget.sessionId),
+            ),
+          ),
+          IconButton(
+            tooltip: '❓ 侧问：临时问点什么，不打断正在跑的会话',
+            icon: const Icon(Icons.help_outline, size: 20),
+            onPressed: () => showModalBottomSheet(
+              context: context,
+              isScrollControlled: true,
+              builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId),
+            ),
           ),
           if (inTurn)
             IconButton(
