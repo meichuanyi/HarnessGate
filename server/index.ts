@@ -128,7 +128,7 @@ function ghDownloadVsix(tag: string, name: string): Promise<boolean> {
   const run = (resume: boolean): Promise<boolean> =>
     new Promise((resolve) => {
       const proxy = process.env.HG_GH_PROXY ?? "http://127.0.0.1:7890";
-      const args = ["-sSL", "-m", "3600", "-o", tmp, url];
+      const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
       if (proxy && proxy !== "off") args.splice(1, 0, "--proxy", proxy);
       if (resume) args.unshift("-C", "-");
       const child = spawn("curl", args);
@@ -749,6 +749,11 @@ const http = createServer(async (req, res) => {
           return;
         }
         size = statSync(file).size;
+        if (size !== info.size) {
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end(`VSIX 大小不符（${size} ≠ ${info.size}），拒绝提供疑似损坏文件`);
+          return;
+        }
       }
       res.writeHead(200, {
         "content-type": "application/octet-stream",
