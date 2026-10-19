@@ -81,6 +81,16 @@ const titleFrom = (transcript: TranscriptEntry[], dbTitle?: string): string | un
   return (dbTitle ?? "").slice(0, 40) || undefined;
 };
 
+/** 台账里出现过的工具调用 id 集合：判断"两份记录是不是同一段对话"用的指纹 */
+const toolCallIds = (transcript: TranscriptEntry[]): Set<string> => {
+  const out = new Set<string>();
+  for (const e of transcript) {
+    const id = (e as { toolCallId?: string }).toolCallId;
+    if (id) out.add(id);
+  }
+  return out;
+};
+
 const mergeAdjacent = (out: TranscriptEntry[]): TranscriptEntry[] => {
   const merged: TranscriptEntry[] = [];
   for (const e of out) {
@@ -801,6 +811,8 @@ type IndexFile = { version: 1; entries: Record<string, { fingerprint: string; se
 export class HistorySync {
   private index: IndexFile = { version: 1, entries: {} };
   private running = false;
+  /** 由宿主注入：会话 id 是否还有进程内实例（实例会回写记录，收编时不能动它） */
+  liveLookup: (id: string) => boolean = () => false;
 
   constructor(
     private readonly store: SessionStore,
@@ -846,6 +858,14 @@ export class HistorySync {
     const taken = new Set(this.store.all().map((s) => s.id));
     const byAcp = new Map<string, PersistedSession>();
     for (const s of this.store.all()) if (s.acpSessionId) byAcp.set(`${s.harnessId}:${s.acpSessionId}`, s);
+    // 索引指向的会话也入匹配表：认领发生时本体往往还活着（acpSessionId 没换），
+    // 之后靠索引键续上，内容不用反复比对
+    for (const [k, e] of Object.entries(this.index.entries)) {
+      if (byAcp.has(k)) continue;
+      const s = this.store.get(e.sessionId);
+      if (s) byAcp.set(k, s);
+    }
+    const twinIds = new Map<string, Set<string>>();
 
     for (const provider of this.providers) {
       const summary: ProviderSummary = { provider: provider.id, label: provider.label, available: provider.available(), found: 0, imported: 0, updated: 0, skipped: 0 };
@@ -882,7 +902,11 @@ export class HistorySync {
         }
         const idx = this.index.entries[key];
         if (!opts.force && existing && idx?.fingerprint === c.fingerprint) {
-          summary.skipped += 1;
+          // 内容没变也给收编一个机会：拿现有台账当代理判定——否则旧双胞胎因为
+          // 对话早已停止、指纹永远不变，会一直漏掉
+          if (!this.reconcileTwin(key, c, existing.transcript, existing, byAcp, twinIds, summary)) {
+            summary.skipped += 1;
+          }
           continue;
         }
         let transcript: TranscriptEntry[];
@@ -906,6 +930,7 @@ export class HistorySync {
         const kept = transcript.length > 800
           ? ([{ kind: "log", ts: c.createdAt, text: `（更早的 ${transcript.length - 800} 条已省略；本工具每个会话保留最近 800 条）` }] as TranscriptEntry[]).concat(transcript.slice(-800))
           : transcript;
+        if (this.reconcileTwin(key, c, kept, existing, byAcp, twinIds, summary)) continue;
         const rec: PersistedSession = existing ?? {
           id: this.newId(taken),
           harnessId: c.harnessId,
@@ -937,6 +962,110 @@ export class HistorySync {
     this.saveIndex();
     this.store.flush();
     return summaries.filter((s) => s.available);
+  }
+
+  /**
+   * 在本工具自建的会话（origin=new）里找与这段 harness 历史同源的那条。
+   * 判定依据：同 harness + 同 cwd + 创建时间贴近（±30 分钟），内容上工具调用高度重叠；
+   * 双方都没有工具调用时退化为"首条用户消息一致 + 时间越近分越高"。取分数最高的一条——
+   * 一段对话的落库记录和它自己的活动台账永远匹配得最好，所以不会认错到相似的其他会话。
+   */
+  private findTwin(
+    c: DiscoveredSession,
+    transcript: TranscriptEntry[],
+    excludeId: string | undefined,
+    cache: Map<string, Set<string>>,
+  ): PersistedSession | undefined {
+    const t0 = Date.parse(c.createdAt);
+    if (!Number.isFinite(t0)) return undefined;
+    const windowMs = 30 * 60_000;
+    const dset = toolCallIds(transcript);
+    const dFirst = transcript.find((e) => e.kind === "user" && "text" in e)?.text ?? "";
+    let best: { rec: PersistedSession; score: number } | undefined;
+    for (const s of this.store.all()) {
+      if (s.id === excludeId) continue;
+      if (s.harnessId !== c.harnessId || s.cwd !== c.cwd) continue;
+      if (s.origin !== "new" || s.utility || s.sideOf) continue;
+      const dt = Math.abs(Date.parse(s.createdAt) - t0);
+      if (!Number.isFinite(dt) || dt > windowMs) continue;
+      let set = cache.get(s.id);
+      if (!set) {
+        set = toolCallIds(s.transcript);
+        cache.set(s.id, set);
+      }
+      const smaller = Math.min(set.size, dset.size);
+      let score = 0;
+      if (smaller >= 3) {
+        let inter = 0;
+        for (const id of set) if (dset.has(id)) inter += 1;
+        if (inter >= 3) score = inter / smaller;
+      } else if (smaller === 0 && dset.size === 0 && dFirst) {
+        const sFirst = s.transcript.find((e) => e.kind === "user" && "text" in e)?.text ?? "";
+        if (sFirst && sFirst === dFirst) score = 1 - Math.min(dt / windowMs, 0.999);
+      }
+      if (score >= 0.6 && (!best || score > best.score)) best = { rec: s, score };
+    }
+    return best?.rec;
+  }
+
+  /**
+   * 双胞胎修复：UI 新建会话存的是 ACP 层 UUID，而 harness 落库用自己的会话 id（zcode 是
+   * sess_*），两套 id 永远对不上——不认领的话，下一次同步就会把正在进行的对话再导入一份，
+   * 列表出现两条同源会话。这里把历史收养到它真正的本体记录上：
+   *  - 本体还活着（进程内实例会回写）：只把索引指过去认领，不动记录；
+   *  - 本体已回收：收养——acpSessionId 换成 harness 侧 id、origin 转 imported（恢复走
+   *    有实测保证的 fork 优先链），旧导入件的收藏/标签并入后删除。
+   * existing 是当前按 acpSessionId 认到的记录；只有"没有记录认领"或"existing 是按 id
+   * 直接认到的导入件（修复前的双胞胎残骸）"两种情况才找本体。返回 true 表示已处理。
+   */
+  private reconcileTwin(
+    key: string,
+    c: DiscoveredSession,
+    transcript: TranscriptEntry[],
+    existing: PersistedSession | undefined,
+    byAcp: Map<string, PersistedSession>,
+    cache: Map<string, Set<string>>,
+    summary: ProviderSummary,
+  ): boolean {
+    if (existing && existing.acpSessionId !== c.externalId) return false;
+    const twin = this.findTwin(c, transcript, existing?.id, cache);
+    if (!twin) return false;
+    if (this.liveLookup(twin.id) || (existing ? this.liveLookup(existing.id) : false)) {
+      if (existing) return false;   // 任一侧存活：这次先不动，等空闲回收后的下一次同步
+      byAcp.set(key, twin);
+      this.index.entries[key] = { fingerprint: c.fingerprint, sessionId: twin.id, at: new Date().toISOString() };
+      summary.updated += 1;
+      this.log(`认领活动会话 ${twin.id} ← ${key}（实例存活，记录暂不改写）`);
+      return true;
+    }
+    twin.cwd = c.cwd;
+    twin.createdAt = c.createdAt;
+    twin.lastActiveAt = c.updatedAt;
+    twin.acpSessionId = c.externalId;
+    twin.resumable = true;
+    twin.origin = "imported";
+    twin.title = titleFrom(transcript, c.title);
+    twin.transcript = transcript;
+    if (existing) {
+      twin.starred = twin.starred || existing.starred;
+      twin.tagsManual = twin.tagsManual || existing.tagsManual;
+      const mergedTags = twin.tagsManual
+        ? (twin.tags?.length ? twin.tags : existing.tags)
+        : [...new Set([...(twin.tags ?? []), ...(existing.tags ?? [])])];
+      if (mergedTags?.length) twin.tags = mergedTags;
+      twin.parentId = twin.parentId ?? existing.parentId;
+      twin.branchName = twin.branchName ?? existing.branchName;
+      twin.semanticTagged = twin.semanticTagged || existing.semanticTagged || undefined;
+      this.store.remove(existing.id);
+      this.log(`收编双胞胎：${existing.id} 并入 ${twin.id}（${key}）`);
+    } else {
+      this.log(`认领本工具会话 ${twin.id} ← ${key}`);
+    }
+    this.store.upsert(twin);
+    byAcp.set(key, twin);
+    this.index.entries[key] = { fingerprint: c.fingerprint, sessionId: twin.id, at: new Date().toISOString() };
+    summary.updated += 1;
+    return true;
   }
 
   private newId(taken: Set<string>): string {
