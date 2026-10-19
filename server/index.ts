@@ -2868,8 +2868,16 @@ function applyGoalSave(incoming: Partial<Goal>): void {
    触发：处方内容哈希变化 = 现实有新事实（每状态只推一次，重推结论相同则沉默）。
    时机：小模型看处境（现在几点/任务何时/是否 warning）决定 now 或指定时刻；
          深眠时段(23:00-07:30)是物理约束——模型想推也强制顺延到 07:30。 */
-const notifyDelivered = new Map<string, string>();          // key → 已送达状态的哈希
+const NOTIFY_DELIVERED_FILE = join(DATA_DIR, "proactive-delivered.json");
+const notifyDelivered = new Map<string, string>((() => {
+  try {
+    return Object.entries(JSON.parse(readFileSync(NOTIFY_DELIVERED_FILE, "utf8")) as Record<string, string>);
+  } catch { return []; }
+})());   // 持久化：重启不清零——「同一状态只推一次」必须跨重启成立，否则每次部署都会重复打扰
 const notifyScheduled = new Map<string, NodeJS.Timeout>();  // key → 排程定时器
+function saveNotifyDelivered(): void {
+  try { writeFileSync(NOTIFY_DELIVERED_FILE, JSON.stringify(Object.fromEntries(notifyDelivered))); } catch {}
+}
 
 function hashState(s: string): string {
   return createHash("sha1").update(s).digest("hex").slice(0, 16);
@@ -2939,7 +2947,7 @@ function deliverProactive(key: string, hash: string, title: string, content: str
   const cfg = settingsStore.get().notification;
   void sendNotification(cfg, { title, content, level }).then((res) => {
     console.log(`[proactive] ${res.ok ? "已送达" : "送达失败"}: ${title.split("\n")[0]}${res.ok ? "" : " → " + (res.error ?? "")}`);
-    if (res.ok) notifyDelivered.set(key, "1");
+    if (res.ok) { notifyDelivered.set(key, "1"); saveNotifyDelivered(); }
     else notifyScheduled.delete(key);   // 失败允许下次状态扫描重新排程
   });
 }
