@@ -383,11 +383,11 @@ function deliverSideTrace(sideSession: HarnessSession): void {
     const srcId = sideSession.record().sideOf;
     if (!srcId) return;
     const title = String(sideSession.record().title ?? "").replace(/^侧问 · /, "");
+    // 台账只是显示+归档层，模型看不见——写全量既不影响主会话对话，也不占模型上下文
     const qa = sideSession.transcriptView
       .filter((e) => e.kind === "user" || e.kind === "assistant")
-      .map((e) => `${e.kind === "user" ? "问" : "答"}: ${String((e as { text?: string }).text ?? "").slice(0, 500)}`)
-      .join("\n")
-      .slice(0, 2400);
+      .map((e) => `${e.kind === "user" ? "问" : "答"}: ${String((e as { text?: string }).text ?? "")}`)
+      .join("\n");
     const note = `📎 侧问「${title}」闲置 30 分钟已自动回收，问答留痕：\n${qa || "（无问答内容）"}`;
     const main = live.get(srcId);
     if (main) { main.note(note); return; }
