@@ -2999,6 +2999,14 @@ sentinel.onBreach = (level: number, context) => {
 void mindwtrRefresh().then((ok) => {
   if (ok) console.log(`[goals] Mindwtr 任务已就位（${mwCache?.tasks.length ?? 0} 条活跃任务）`);
 });
+/* 启动清扫：侧问分身是临时的——跨重启存活超过 30 分钟的一律回收（记录已在 JSONL 归档） */
+for (const rec of store.all()) {
+  if (rec.sideOf && new Date(rec.lastActiveAt).getTime() < Date.now() - 30 * 60_000) {
+    store.remove(rec.id);
+    console.log(`[side] 启动清扫残留侧问分身: ${rec.id}`);
+  }
+}
+
 /* Life Ops 心跳：每 60s 刷新任务缓存 → 计算处方 → 扫描推送。
    独立于 sentinel 唤醒与用户查询——09:45 的提醒不需要任何人先打开页面。
    成本可忽略：处方有缓存 TTL，未到期直接复用；真正重推的只有状态变化的那条。 */
