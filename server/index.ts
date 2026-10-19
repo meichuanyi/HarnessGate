@@ -2939,7 +2939,7 @@ function deliverProactive(key: string, hash: string, title: string, content: str
   const cfg = settingsStore.get().notification;
   void sendNotification(cfg, { title, content, level }).then((res) => {
     console.log(`[proactive] ${res.ok ? "已送达" : "送达失败"}: ${title.split("\n")[0]}${res.ok ? "" : " → " + (res.error ?? "")}`);
-    if (res.ok) notifyDelivered.set(key, hash);
+    if (res.ok) notifyDelivered.set(key, "1");
     else notifyScheduled.delete(key);   // 失败允许下次状态扫描重新排程
   });
 }
@@ -2954,9 +2954,9 @@ function enqueueProactiveNotifications(tasks: MindwtrTaskView[]): void {
     if (!p) continue;
     // 去重键不含措辞：同一任务同一时间窗，重推措辞再变也只是同一个事实，只推一次；
     // 只有状态跨档（ready→warning）才算新事实
+    // 去重键只含 任务+时间窗+状态档：措辞重写、天气触发重推都只是同一个事实，永远沉默
     const key = `${t.id}:${t.startTime ?? ""}:${p.status === "warning" ? "w" : "n"}`;
-    const hash = hashState(`${p.status}|${p.summary}`);
-    if (notifyDelivered.get(key) === hash) continue;   // 该状态已送过：沉默
+    if (notifyDelivered.has(key)) continue;
     if (notifyScheduled.has(key)) continue;            // 已排程，等它自己到点
     const startMs = t.startTime ? new Date(t.startTime).getTime() : NaN;
     const isWarning = p.status === "warning";
@@ -2972,7 +2972,7 @@ function enqueueProactiveNotifications(tasks: MindwtrTaskView[]): void {
       console.log(`[proactive-judge] ${t.title} → ${new Date(atC).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（${reason}）`);
       notifyScheduled.set(key, setTimeout(() => {
         notifyScheduled.delete(key);
-        deliverProactive(key, hash, isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】", content, level);
+        deliverProactive(key, key, isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】", content, level);
       }, Math.max(0, atC - Date.now())));
     });
   }
