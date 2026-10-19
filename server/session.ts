@@ -266,6 +266,8 @@ export class HarnessSession {
   intentTag?: string;
   /** 侧问分身标记：fork 自哪个会话（运行时同 record.sideOf） */
   sideOf?: string;
+  /** 已收编：列表隐藏 */
+  adopted?: boolean;
 
   constructor(
     private readonly spec: HarnessSpec,
@@ -290,6 +292,7 @@ export class HarnessSession {
     this.assistant = Boolean(record.assistant);
     this.parentId = record.parentId;
     this.sideOf = record.sideOf;
+    this.adopted = Boolean(record.adopted);
     this.branchName = record.branchName;
     this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
     this.tagsManual = Boolean(record.tagsManual);
@@ -352,6 +355,7 @@ export class HarnessSession {
       assistant: this.assistant || undefined,
       parentId: this.parentId,
       sideOf: this.sideOf,
+      adopted: this.adopted || undefined,
       branchName: this.branchName,
       semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,

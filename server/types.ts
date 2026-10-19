@@ -115,6 +115,8 @@ export type SessionInfo = {
   status: SessionStatus;
   /** 侧问会话标记：fork 自某会话的临时分身（答完自动销毁，不进常规列表） */
   sideOf?: string;
+  /** 已收编：结论并入主线，从列表隐藏 */
+  adopted?: boolean;
   createdAt: string;
   lastActiveAt: string;
   live: boolean;

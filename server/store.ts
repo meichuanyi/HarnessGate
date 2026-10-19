@@ -7,6 +7,8 @@ export type PersistedSession = {
   harnessId: string;
   /** 侧问会话：fork 自某会话的临时分身（答完自动销毁），值为源会话 id */
   sideOf?: string;
+  /** 已收编：结论已并入主线，列表隐藏（JSONL 归档保留全史） */
+  adopted?: boolean;
   cwd: string;
   createdAt: string;
   lastActiveAt: string;

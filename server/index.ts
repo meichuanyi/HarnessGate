@@ -608,6 +608,7 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     assistant: rec.assistant || undefined,
     parentId: rec.parentId,
     sideOf: rec.sideOf,
+    adopted: rec.adopted,
     branchName: rec.branchName,
     handoffFrom: rec.handoffFrom,
     roomId: rec.roomId,
@@ -617,7 +618,8 @@ function savedInfo(rec: PersistedSession): SessionInfo {
 }
 
 function sessionList(): SessionInfo[] {
-  const isHidden = (x: { sideOf?: string; utility?: boolean }) => Boolean(x.sideOf) || Boolean(x.utility);
+  const isHidden = (x: { sideOf?: string; utility?: boolean; adopted?: boolean }) =>
+    Boolean(x.sideOf) || Boolean(x.utility) || Boolean(x.adopted);
   const list: SessionInfo[] = [...live.values()].filter((s) => !isHidden(s)).map((s) => s.info());
   const liveIds = new Set(list.map((s) => s.id));
   for (const rec of store.all()) {
