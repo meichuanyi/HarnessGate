@@ -113,6 +113,8 @@ export type SessionInfo = {
   harnessLabel: string;
   cwd: string;
   status: SessionStatus;
+  /** 侧问会话标记：fork 自某会话的临时分身（答完自动销毁，不进常规列表） */
+  sideOf?: string;
   createdAt: string;
   lastActiveAt: string;
   live: boolean;
@@ -248,8 +250,9 @@ export type ClientMsg =
   | { type: "branch"; sessionId: string; branchName?: string; harnessId?: string; model?: string }
   /** harness 一键安装/升级：只允许执行 harness.json manage 里预声明的包/命令 */
   | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
-  /** 全量归档检索：q 空 = 最近 400 条；命中按时间序返回（最早的在前） */
   | { type: "archive"; sessionId: string; q?: string }
+  /** 侧问：fork 源会话上下文到临时分身提问（不打断原会话），答完自动销毁 */
+  | { type: "side-question"; sessionId: string; text: string }
   /** 收编分支：蒸馏其关键结论注入主线（可选 git 合并 worktree 改动） */
   | { type: "adopt-branch"; branchId: string; mainId: string }
   /** APP 心跳（死链检测：客户端 20s 一发，45s 无 pong 判死强制重连） */
@@ -561,8 +564,9 @@ export type ServerMsg =
   | { type: "pong" }
   /** harness 一键安装/升级的执行报告（broadcast，所有客户端同步按钮态） */
   | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
-  /** 全量归档检索结果：lines 已格式化为 "ts kind text"，最多 400 条 */
   | { type: "archive-content"; sessionId: string; total: number; lines: string[] }
+  /** 侧问临时分身已创建（客户端据此打开侧问抽屉并拉取其台账） */
+  | { type: "side-created"; sessionId: string; srcId: string }
   /** harness 可用性快照更新（安装完成等会改变可用性的事件后 broadcast） */
   | { type: "harnesses"; harnesses: HarnessAvailability[] }
   /** 运行时配置（自动标签等）；settings-get/变更时推送 */

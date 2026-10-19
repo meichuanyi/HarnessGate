@@ -5,6 +5,8 @@ import type { SessionStatus, TranscriptEntry, WorktreeInfo } from "./types.ts";
 export type PersistedSession = {
   id: string;
   harnessId: string;
+  /** 侧问会话：fork 自某会话的临时分身（答完自动销毁），值为源会话 id */
+  sideOf?: string;
   cwd: string;
   createdAt: string;
   lastActiveAt: string;

@@ -264,6 +264,8 @@ export class HarnessSession {
   permissiveMode = false;
   /** 当前正在干的事（圆桌/工作队设置，如「T1 完成RQ2实证分析」）——权限决策记录的任务上下文 */
   intentTag?: string;
+  /** 侧问分身标记：fork 自哪个会话（运行时同 record.sideOf） */
+  sideOf?: string;
 
   constructor(
     private readonly spec: HarnessSpec,
@@ -287,6 +289,7 @@ export class HarnessSession {
     this.utility = Boolean(record.utility);
     this.assistant = Boolean(record.assistant);
     this.parentId = record.parentId;
+    this.sideOf = record.sideOf;
     this.branchName = record.branchName;
     this.tags = Array.isArray(record.tags) ? record.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
     this.tagsManual = Boolean(record.tagsManual);
@@ -348,6 +351,7 @@ export class HarnessSession {
       tagsManual: this.tagsManual || undefined,
       assistant: this.assistant || undefined,
       parentId: this.parentId,
+      sideOf: this.sideOf,
       branchName: this.branchName,
       semanticTagged: this.semanticTagged || undefined,
       handoffFrom: this.handoffFrom,

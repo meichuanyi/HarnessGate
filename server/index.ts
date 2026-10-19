@@ -431,6 +431,7 @@ function savedInfo(rec: PersistedSession): SessionInfo {
     // 树形关系字段必须随存档态下发，否则「会话一关，侧栏分支缩进就没了」
     assistant: rec.assistant || undefined,
     parentId: rec.parentId,
+    sideOf: rec.sideOf,
     branchName: rec.branchName,
     handoffFrom: rec.handoffFrom,
     roomId: rec.roomId,
@@ -440,9 +441,11 @@ function savedInfo(rec: PersistedSession): SessionInfo {
 }
 
 function sessionList(): SessionInfo[] {
-  const list: SessionInfo[] = [...live.values()].filter((s) => !s.utility).map((s) => s.info());
+  const isHidden = (x: { sideOf?: string; utility?: boolean }) => Boolean(x.sideOf) || Boolean(x.utility);
+  const list: SessionInfo[] = [...live.values()].filter((s) => !isHidden(s)).map((s) => s.info());
   const liveIds = new Set(list.map((s) => s.id));
   for (const rec of store.all()) {
+    if (liveIds.has(rec.id) || rec.sideOf) continue;   // 侧问分身只活在抽屉里，不进常规列表
     if (!liveIds.has(rec.id)) list.push(savedInfo(rec));
   }
   // 收藏的会话置顶，其余按最近活动倒序
@@ -1181,6 +1184,56 @@ wss.on("connection", (ws, req) => {
             }
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
+          })();
+          break;
+        }
+
+        case "side-question": {
+          // 侧问：fork 源会话上下文到临时分身提问——不打断原会话，答完自动销毁
+          const srcRec = store.get(msg.sessionId);
+          if (!srcRec?.acpSessionId) {
+            ws.send(JSON.stringify({ type: "error", message: "该会话没有可 fork 的上下文（先恢复运行一次）" } satisfies ServerMsg));
+            break;
+          }
+          const spec = specOf(srcRec.harnessId);
+          if (!spec) {
+            ws.send(JSON.stringify({ type: "error", message: `注册表里没有 harness: ${srcRec.harnessId}` } satisfies ServerMsg));
+            break;
+          }
+          const record = HarnessSession.newRecord(spec, srcRec.cwd);
+          record.sideOf = srcRec.id;
+          record.parentId = srcRec.id;
+          record.title = `侧问 · ${msg.text.slice(0, 20)}`;
+          const sideSession = new HarnessSession(spec, record, audit, makeHooks(), hub);
+          live.set(sideSession.id, sideSession);
+          store.upsert(sideSession.record());
+          broadcast({ type: "session", session: sideSession.info() });
+          ws.send(JSON.stringify({ type: "side-created", sessionId: sideSession.id, srcId: msg.sessionId } satisfies ServerMsg));
+          audit.append({ session: sideSession.id, harness: spec.id, op: "session.side", from: msg.sessionId });
+          void (async () => {
+            const deadline = Date.now() + 90_000;
+            while (Date.now() < deadline && sideSession.info().status !== "ready" && sideSession.info().status !== "error") {
+              await new Promise((r2) => setTimeout(r2, 300));
+            }
+            if (sideSession.info().status !== "ready") {
+              ws.send(JSON.stringify({ type: "error", message: "侧问分身启动失败" } satisfies ServerMsg));
+              return;
+            }
+            const forked = await sideSession.tryForkFrom(srcRec.acpSessionId);
+            broadcast({ type: "session", session: sideSession.info() });
+            await sideSession.prompt(msg.text);
+            // 回合结束后留 10 分钟供追问，然后停机销毁（完整记录已在 JSONL 归档）
+            const reap = () => {
+              const info = sideSession.info();
+              if (info.inTurn) { setTimeout(reap, 60_000); return; }
+              void sideSession.stop().then(() => {
+                live.delete(sideSession.id);
+                store.remove(sideSession.id);
+                broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
+                console.log(`[side] 侧问分身 ${sideSession.id} 已销毁`);
+              });
+            };
+            setTimeout(reap, 10 * 60_000);
           })();
           break;
         }

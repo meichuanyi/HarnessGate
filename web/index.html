@@ -1374,6 +1374,7 @@ function handleServer(msg) {
       }
       break;
     case "update":
+      if (sideSessionId && msg.sessionId === sideSessionId) sideScheduleRefresh();
       if (callActive && msg.sessionId === callSid) {   // 通话字幕：搭车 agent 流式文本
         const cu = msg.update || {};
         if (cu.sessionUpdate === "agent_message_chunk" && cu.content?.text) callShowAgent(cu.content.text);
@@ -1402,6 +1403,7 @@ function handleServer(msg) {
       }
       break;
     case "transcript":
+      if (sideSessionId && msg.sessionId === sideSessionId) { renderSideTranscript(msg.entries || []); break; }
       if (state.view === "chat" && state.sessionId === msg.sessionId) {
         const incoming = msg.entries || [];
         transcriptTotal = msg.total ?? incoming.length;
@@ -1642,6 +1644,10 @@ function handleServer(msg) {
     }
     case "archive-content":
       renderArchiveContent(msg);
+      break;
+    case "side-created":
+      sideSessionId = msg.sessionId;
+      send({ type: "transcript", sessionId: msg.sessionId, limit: 40 });
       break;
     case "harnesses": /* 服务端推的可用性快照（安装完成等）：卡片/按钮态即时翻转 */
       harnesses = new Map((msg.harnesses || []).map((h) => [h.id, h]));
@@ -2668,6 +2674,7 @@ function updateChatHeader() {
     ${s.handoffFrom ? `<button class="mini ghost" id="chatSrc" title="这条会话是从 #${esc(s.handoffFrom)} 接续来的，跳回原会话">↩ 原会话</button>` : ""}
     <button class="mini ghost" id="chatHandoff" title="把这条会话的历史复制到一个新会话继续跑（可选 harness 和模型）">⇄ 接续</button>
     ${s.parentId ? `<button class="mini ghost" id="chatAdopt" title="把这个分支的结论蒸馏后收编回主线">⇱ 收编</button>` : `<button class="mini ghost" id="chatBranch" title="从这里分叉一个分支会话（继承当前上下文，探索不同想法）">⎇ 分支</button>`}
+    <button class="mini ghost" id="chatSide" title="侧问：临时问点什么，不打断正在跑的会话（回答来自同上下文的临时分身）">❓ 侧问</button>
     <button class="mini ghost" id="chatArchive" title="全量归档检索：台账窗口（800条）之外的完整历史也能查">📚 归档</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
@@ -2681,6 +2688,8 @@ function updateChatHeader() {
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
   const chatArchive = $("chatArchive");
   if (chatArchive) chatArchive.onclick = () => openArchiveDialog(s.id);
+  const chatSide = $("chatSide");
+  if (chatSide) chatSide.onclick = () => openSideDrawer(s.id);
   const chatBranch = $("chatBranch");
   if (chatBranch) chatBranch.onclick = () => {
     const name = prompt("分支名（比如：方案A / 试试rust / 换个思路）：", "");
@@ -3698,6 +3707,83 @@ function runSearch(q) {
   if (!searchHits.length) { cnt.textContent = "无匹配"; renderSearchDrop(); return; }
   cnt.textContent = `${searchHits.length} 处`;
   renderSearchDrop();   // 只列结果，不跳转——跳转由点结果 / Enter / ▲▼ 触发
+}
+
+let sideSessionId = null;   // 当前侧问分身
+let sideSrcId = null;
+function openSideDrawer(srcId) {
+  sideSrcId = srcId;
+  sideSessionId = null;
+  const old = document.getElementById("sideDrawer");
+  if (old) old.remove();
+  const wrap = document.createElement("div");
+  wrap.id = "sideDrawer";
+  wrap.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:min(430px,94vw);background:var(--bg,#0b0d12);border-left:1px solid var(--line,#333);z-index:97;display:flex;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.4)";
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line,#2a2d35)">
+      <b style="font-size:13px">❓ 侧问</b>
+      <span class="meta2" style="flex:1">不打断主会话 · 回答来自同上下文分身</span>
+      <button class="mini ghost" id="sideDeliver" title="把这条侧问的内容投递给主会话">投递</button>
+      <button class="mini ghost" id="sideClose">收起</button>
+    </div>
+    <div id="sideList" style="flex:1;overflow:auto;padding:10px 12px;font-size:12.5px;line-height:1.6">
+      <div class="meta2">分身启动中（fork 当前上下文）… 问什么都可以，主会话毫无感知。</div>
+    </div>
+    <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--line,#2a2d35)">
+      <input id="sideInput" placeholder="问点什么…" style="flex:1;padding:6px 9px" />
+      <button class="mini primary" id="sideSend">发送</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector("#sideClose").onclick = () => { wrap.remove(); sideSessionId = null; };
+  wrap.querySelector("#sideSend").onclick = () => sideSendText(wrap);
+  wrap.querySelector("#sideInput").addEventListener("keydown", (e) => { if (e.key === "Enter") sideSendText(wrap); });
+  wrap.querySelector("#sideDeliver").onclick = () => {
+    const last = [...wrap.querySelectorAll("#sideList .side-a")].pop();
+    const text = last ? last.textContent : "";
+    if (!text) return;
+    send({ type: "prompt", sessionId: srcId, text: `（来自侧问，请纳入考虑）\n${text.slice(0, 800)}` });
+    wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", '<div class="meta2" style="margin-top:6px">↳ 已投递到主会话</div>');
+  };
+}
+
+function sideSendText(wrap) {
+  const inp = wrap.querySelector("#sideInput");
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = "";
+  if (!sideSessionId) {
+    wrap.querySelector("#sideList").innerHTML = `<div class="side-q">🙋 ${esc(text)}</div><div class="meta2" style="margin:4px 0">fork 上下文并思考中…</div>`;
+    send({ type: "side-question", sessionId: sideSrcId, text });
+    return;
+  }
+  wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", `<div class="side-q">🙋 ${esc(text)}</div>`);
+  send({ type: "prompt", sessionId: sideSessionId, text });
+  sideScheduleRefresh();
+}
+
+function renderSideTranscript(entries) {
+  const wrap = document.getElementById("sideDrawer");
+  if (!wrap) return;
+  const list = wrap.querySelector("#sideList");
+  const keepInput = wrap.querySelector("#sideInput").value;
+  const html = (entries || []).filter((e) => e.kind === "user" || e.kind === "assistant").map((e) =>
+    e.kind === "user"
+      ? `<div class="side-q">🙋 ${esc(String(e.text || "").slice(0, 400))}</div>`
+      : `<div class="side-a" style="margin:4px 0;padding:6px 8px;border-left:2px solid var(--accent,#5b9cf8);color:var(--fg)">✦ ${esc(String(e.text || "").slice(0, 1200))}</div>`
+  ).join("");
+  list.innerHTML = html || list.innerHTML;
+  wrap.querySelector("#sideInput").value = keepInput;
+  list.scrollTop = list.scrollHeight;
+}
+
+let sideRefreshTimer = null;
+function sideScheduleRefresh() {
+  if (!sideSessionId) return;
+  if (sideRefreshTimer) return;   // 流式期间去抖：最多 800ms 拉一次台账
+  sideRefreshTimer = setTimeout(() => {
+    sideRefreshTimer = null;
+    if (sideSessionId) send({ type: "transcript", sessionId: sideSessionId, limit: 40 });
+  }, 800);
 }
 
 let _archiveReq = null;   // { sessionId, ts }——配对回包，防串台
