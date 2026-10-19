@@ -1211,21 +1211,39 @@ wss.on("connection", (ws, req) => {
           ws.send(JSON.stringify({ type: "side-created", sessionId: sideSession.id, srcId: msg.sessionId } satisfies ServerMsg));
           audit.append({ session: sideSession.id, harness: spec.id, op: "session.side", from: msg.sessionId });
           void (async () => {
-            const deadline = Date.now() + 90_000;
+            // 漏调 start() 分身永远停在 starting（已修）——启动失败也必须回收孤儿
+            const reap = () => {
+              const info = sideSession.info();
+              if (info.inTurn) { setTimeout(reap, 60_000); return; }
+              void sideSession.stop().catch(() => {});
+              live.delete(sideSession.id);
+              store.remove(sideSession.id);
+              broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
+              console.log(`[side] 侧问分身已销毁（启动失败回收）`);
+            };
+            try {
+              await sideSession.start("new");
+            } catch (err) {
+              console.warn(`[side] 分身启动异常: ${err instanceof Error ? err.message : err}`);
+              reap();
+              return;
+            }
+            const deadline = Date.now() + 120_000;
             while (Date.now() < deadline && sideSession.info().status !== "ready" && sideSession.info().status !== "error") {
               await new Promise((r2) => setTimeout(r2, 300));
             }
             if (sideSession.info().status !== "ready") {
               ws.send(JSON.stringify({ type: "error", message: "侧问分身启动失败" } satisfies ServerMsg));
+              reap();
               return;
             }
             const forked = await sideSession.tryForkFrom(srcRec.acpSessionId);
             broadcast({ type: "session", session: sideSession.info() });
             await sideSession.prompt(msg.text);
             // 回合结束后留 10 分钟供追问，然后停机销毁（完整记录已在 JSONL 归档）
-            const reap = () => {
+            const reapAfterTurn = () => {
               const info = sideSession.info();
-              if (info.inTurn) { setTimeout(reap, 60_000); return; }
+              if (info.inTurn) { setTimeout(reapAfterTurn, 60_000); return; }
               void sideSession.stop().then(() => {
                 live.delete(sideSession.id);
                 store.remove(sideSession.id);
@@ -1233,7 +1251,7 @@ wss.on("connection", (ws, req) => {
                 console.log(`[side] 侧问分身 ${sideSession.id} 已销毁`);
               });
             };
-            setTimeout(reap, 10 * 60_000);
+            setTimeout(reapAfterTurn, 10 * 60_000);
           })();
           break;
         }
