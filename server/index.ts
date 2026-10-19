@@ -1331,6 +1331,25 @@ wss.on("connection", (ws, req) => {
         }
 
         case "adopt-branch": {
+          // 分支清除：停机（10s 超时兜底）+ 移除记录 + 广播。失败也强制移除，下次重启收尸进程
+          const purgeBranch = (id: string): void => {
+            const lb = live.get(id);
+            if (lb) {
+              void Promise.race([
+                lb.stop(),
+                new Promise((r) => setTimeout(r, 10_000)),
+              ]).then(() => {
+                live.delete(id);
+                store.remove(id);
+                broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
+                console.log(`[adopt] 分支 ${id} 已清除`);
+              });
+            } else {
+              live.delete(id);
+              store.remove(id);
+              broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
+            }
+          };
           // 收编分支：蒸馏其关键结论 → 注入主线（新回合）；分支标记已收编
           const branch = store.get(msg.branchId);
           const main = store.get(msg.mainId);
@@ -1351,17 +1370,7 @@ wss.on("connection", (ws, req) => {
             const adoptedTail = branch.adoptedTailTs;
             if ((branch.tags ?? []).includes("已收编") && adoptedTail && branch.transcript.at(-1)?.ts === adoptedTail) {
               // 已收编且无新增：使命已完成——再次点击即确认清除（全史在 JSONL 归档永可回查）
-              const liveB0 = live.get(branch.id);
-              if (liveB0) {
-                void liveB0.stop().then(() => {
-                  live.delete(branch.id);
-                  store.remove(branch.id);
-                  broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
-                });
-              } else {
-                store.remove(branch.id);
-                broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
-              }
+              purgeBranch(branch.id);
               ws.send(JSON.stringify({ type: "toast", message: `「${branch.branchName ?? branch.id}」已收编且无新增，分支记录已清除` } as unknown as ServerMsg));
               return;
             }
@@ -1418,17 +1427,7 @@ wss.on("connection", (ws, req) => {
             audit.append({ session: branch.id, op: "branch.adopted", main: main.id });
             broadcast({ type: "branch-adopted", branchId: branch.id, mainId: main.id, summary } satisfies ServerMsg);
             // 收编完成：结论已入主线待注入队列、全史已在 JSONL 归档——分支删除（合并即关闭）
-            const liveB2 = live.get(branch.id);
-            if (liveB2) {
-              void liveB2.stop().then(() => {
-                live.delete(branch.id);
-                store.remove(branch.id);
-                broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
-              });
-            } else {
-              store.remove(branch.id);
-              broadcast({ type: "deleted", sessionId: branch.id } as unknown as ServerMsg);
-            }
+            purgeBranch(branch.id);
           })();
           break;
         }
