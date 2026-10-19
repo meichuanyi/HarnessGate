@@ -2734,6 +2734,11 @@ let goals: Goal[] = loadGoals(GOALS_FILE);
 /* ---------- 统一推演引擎（Speculation Engine） ---------- */
 const lifeEvaluator = new LifeEvaluator({
   apiConfig: () => lightModelApi(),
+  getWeather: async () => {
+    const snap = sentinel.getWeatherSnapshot();
+    if (!snap) return null;
+    return { condition: snap.condition, summary: snap.summary || snap.conditionLabel, temperature: snap.temperature, humidity: snap.humidity, uvIndex: snap.uvIndex ?? 0 };
+  },
   getGoalsContext: () => goals.map((g) => `${g.title}(${g.progress ?? 0}%)`).join("；"),
 });
 const codeSandboxEvaluator = new CodeSandboxEvaluator({

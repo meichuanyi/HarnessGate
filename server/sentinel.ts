@@ -10,6 +10,8 @@ import { FsSensor } from "./sentinel/fs-sensor.ts";
 import { SessionSensor } from "./sentinel/session-sensor.ts";
 import { SiyuanPlanHubAdapter, toHarnessGateGoal } from "./sentinel/siyuan-adapter.ts";
 import { TemporalSensor } from "./sentinel/temporal-sensor.ts";
+import { WeatherSensor, type WeatherSnapshot } from "./sentinel/weather-sensor.ts";
+import type { SensoryCategory, SensorySubCategory } from "./sentinel/types.ts";
 import { makeEvent, type CognitionAction, type Dispatcher, type Salience, type Sensor, type SensoryEvent } from "./sentinel/types.ts";
 import type { SentinelPulseView, SentinelSensorView, SentinelStatus } from "./types.ts";
 import type { ServerMsg } from "./types.ts";
@@ -30,19 +32,31 @@ import type { ServerMsg } from "./types.ts";
  */
 
 /** 传感器配置（持久化；UI 可增删改） */
+export type SentinelBreachContext = {
+  sensorIds: string[];
+  sensorKinds: string[];
+  baseDirs: string[];
+};
+
 export type SentinelSensorConfig = {
   id: string;
   label: string;
-  kind: "fs" | "temporal" | "siyuan" | "session";
+  kind: "fs" | "temporal" | "siyuan" | "session" | "weather";
+  category: SensoryCategory;
+  subCategory: SensorySubCategory;
   enabled: boolean;
   /** 该感官事件的显著性等级（用户申报的信号强度；siren 保留给 spark 特权） */
   salience: Salience;
   /** fs：监听目录列表（递归） */
   dirs?: string[];
-  /** temporal：脉冲间隔 ms */
+  /** temporal / weather：脉冲或采样间隔 ms */
   intervalMs?: number;
   /** siyuan：plans.json 绝对路径 */
   plansPath?: string;
+  /** weather：城市名称（如 杭州） */
+  city?: string;
+  latitude?: number;
+  longitude?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -59,7 +73,24 @@ const ACTION_BUFFER_MAX = 6;
 /** 张力持续衰减，前端需要周期性快照刷新能量槽 */
 const STATUS_BROADCAST_MS = 15_000;
 
+export const CATEGORY_MAP: Record<
+  SentinelSensorConfig["kind"],
+  {
+    category: SensoryCategory;
+    categoryLabel: string;
+    subCategory: SensorySubCategory;
+    subCategoryLabel: string;
+  }
+> = {
+  weather: { category: "external", categoryLabel: "外部感知", subCategory: "environment", subCategoryLabel: "自然环境" },
+  fs: { category: "internal", categoryLabel: "内部感知", subCategory: "workspace", subCategoryLabel: "数字工坊" },
+  session: { category: "internal", categoryLabel: "内部感知", subCategory: "workspace", subCategoryLabel: "数字工坊" },
+  temporal: { category: "internal", categoryLabel: "内部感知", subCategory: "life", subCategoryLabel: "生活心智" },
+  siyuan: { category: "internal", categoryLabel: "内部感知", subCategory: "life", subCategoryLabel: "生活心智" },
+};
+
 const KIND_LABEL: Record<SentinelSensorConfig["kind"], string> = {
+  weather: "气象感知",
   fs: "目录监听",
   temporal: "时间心跳",
   siyuan: "目标罗盘",
@@ -69,8 +100,23 @@ const KIND_LABEL: Record<SentinelSensorConfig["kind"], string> = {
 function defaultConfigs(): SentinelSensorConfig[] {
   const now = new Date().toISOString();
   return [
-    { id: "sen-heartbeat", label: "时间心跳", kind: "temporal", enabled: true, salience: "whisper", intervalMs: 60_000, createdAt: now, updatedAt: now },
-    { id: "sen-session", label: "工兵完工监听", kind: "session", enabled: true, salience: "normal", createdAt: now, updatedAt: now },
+    {
+      id: "sen-weather-hz",
+      label: "杭州气象环境感知",
+      kind: "weather",
+      category: "external",
+      subCategory: "environment",
+      enabled: true,
+      salience: "normal",
+      city: "杭州",
+      latitude: 30.2741,
+      longitude: 120.1551,
+      intervalMs: 3600_000,
+      createdAt: now,
+      updatedAt: now,
+    },
+    { id: "sen-heartbeat", label: "时间心跳", kind: "temporal", category: "internal", subCategory: "life", enabled: true, salience: "whisper", intervalMs: 60_000, createdAt: now, updatedAt: now },
+    { id: "sen-session", label: "工兵完工监听", kind: "session", category: "internal", subCategory: "workspace", enabled: true, salience: "normal", createdAt: now, updatedAt: now },
   ];
 }
 
@@ -93,6 +139,7 @@ export class SentinelService {
   /** index.ts 注入：全客户端广播 / 思源目标同步出口 */
   broadcast?: (msg: ServerMsg) => void;
   onGoalSave?: (goal: Partial<Goal>) => void;
+  onBreach?: (level: number, context: SentinelBreachContext) => void;
 
   constructor(
     private readonly opts: {
@@ -135,6 +182,17 @@ export class SentinelService {
     this.siyuanAdapters.clear();
   }
 
+  /** 获取当前环境天气快照（供推演引擎或外部消费） */
+  getWeatherSnapshot(city = "杭州"): WeatherSnapshot | null {
+    for (const inst of this.instances.values()) {
+      if (inst instanceof WeatherSensor) {
+        const snap = inst.getSnapshot();
+        if (snap) return snap;
+      }
+    }
+    return null;
+  }
+
   /* ---------------- 配置持久化 ---------------- */
 
   private loadConfigs(): SentinelSensorConfig[] {
@@ -146,8 +204,29 @@ export class SentinelService {
       const out: SentinelSensorConfig[] = [];
       for (const c of raw.sensors ?? []) {
         if (!c || typeof c.id !== "string" || typeof c.label !== "string") continue;
-        if (!["fs", "temporal", "siyuan", "session"].includes(c.kind)) continue;
+        if (!["fs", "temporal", "siyuan", "session", "weather"].includes(c.kind)) continue;
+        const cat = CATEGORY_MAP[c.kind] ?? { category: "internal", subCategory: "workspace" };
+        c.category = c.category ?? cat.category;
+        c.subCategory = c.subCategory ?? cat.subCategory;
         out.push(c);
+      }
+      if (!out.some((c) => c.kind === "weather")) {
+        const now = new Date().toISOString();
+        out.unshift({
+          id: "sen-weather-hz",
+          label: "杭州气象环境感知",
+          kind: "weather",
+          category: "external",
+          subCategory: "environment",
+          enabled: true,
+          salience: "normal",
+          city: "杭州",
+          latitude: 30.2741,
+          longitude: 120.1551,
+          intervalMs: 3600_000,
+          createdAt: now,
+          updatedAt: now,
+        });
       }
       return out;
     } catch {
@@ -191,9 +270,26 @@ export class SentinelService {
         this.recordPulse(evt, "noise");
       }
     };
-    this.dual.onBreach = () => {
+    this.dual.onBreach = (breach) => {
       this.stats.breaches++;
-      this.opts.audit.append({ op: "sentinel.breach", level: Number(this.dual.engine.level().toFixed(2)) });
+      const lvl = Number(this.dual.engine.level().toFixed(2));
+      this.opts.audit.append({ op: "sentinel.breach", level: lvl });
+
+      const sensorIds = new Set<string>();
+      const sensorKinds = new Set<string>();
+      const baseDirs = new Set<string>();
+      for (const e of breach?.events || []) {
+        if (e.sensorId) sensorIds.add(e.sensorId);
+        const k = e.kind.split(".")[0];
+        if (k) sensorKinds.add(k);
+        const bd = (e.payload as any)?.baseDir;
+        if (typeof bd === "string" && bd) baseDirs.add(bd);
+      }
+      this.onBreach?.(lvl, {
+        sensorIds: Array.from(sensorIds),
+        sensorKinds: Array.from(sensorKinds),
+        baseDirs: Array.from(baseDirs),
+      });
     };
 
     for (const cfg of this.configs) {
@@ -210,6 +306,16 @@ export class SentinelService {
   }
 
   private buildSensor(cfg: SentinelSensorConfig): Sensor | null {
+    if (cfg.kind === "weather") {
+      return new WeatherSensor({
+        city: cfg.city ?? "杭州",
+        latitude: cfg.latitude ?? 30.2741,
+        longitude: cfg.longitude ?? 120.1551,
+        intervalMs: cfg.intervalMs ?? 3600_000,
+        salience: cfg.salience,
+        log: (l) => this.log(l),
+      });
+    }
     if (cfg.kind === "session") return this.sessionSensor;   // 进程内单例：宿主 onTurnEnd 直喂
     if (cfg.kind === "fs") return new FsSensor({ paths: cfg.dirs ?? [], log: (l) => this.log(l) });
     if (cfg.kind === "temporal") return new TemporalSensor({ intervalMs: cfg.intervalMs ?? 60_000, pulseSalience: cfg.salience });
@@ -276,7 +382,10 @@ export class SentinelService {
     if (this.stopped) return;
     if (cfg && !cfg.enabled) return;
     // 用户为该感官申报的显著性优先（siren 是 spark 特权，不被配置降级/冒领）
-    const evt = cfg && cfg.salience && evt0.salience !== "siren" ? { ...evt0, salience: cfg.salience } : evt0;
+    const evt = cfg && cfg.salience && evt0.salience !== "siren" ? { ...evt0, salience: cfg.salience } : { ...evt0 };
+    if (cfg?.id) {
+      evt.sensorId = cfg.id;
+    }
     this.stats.ingested++;
     this.dual.ingest(evt);
     this.recordPulse(evt, "queued");
@@ -350,16 +459,19 @@ export class SentinelService {
       if (!found) throw new Error(`找不到感官: ${partial.id}`);
       cfg = found;
     } else {
-      if (kind !== "fs" && kind !== "temporal" && kind !== "siyuan" && kind !== "session") {
-        throw new Error("新感官必须指定类型（fs/temporal/siyuan/session）");
+      if (kind !== "fs" && kind !== "temporal" && kind !== "siyuan" && kind !== "session" && kind !== "weather") {
+        throw new Error("新感官必须指定类型（weather/fs/temporal/siyuan/session）");
       }
       if (kind === "session" && this.configs.some((c) => c.kind === "session")) {
         throw new Error("会话感官是进程内单例，最多一个");
       }
+      const cat = CATEGORY_MAP[kind] ?? { category: "internal", subCategory: "workspace" };
       cfg = {
         id: `sen-${randomUUID().slice(0, 8)}`,
         label: (partial.label || "未命名感官").slice(0, 40),
         kind,
+        category: partial.category ?? cat.category,
+        subCategory: partial.subCategory ?? cat.subCategory,
         enabled: partial.enabled !== false,
         salience: partial.salience ?? "normal",
         createdAt: now,
@@ -380,6 +492,9 @@ export class SentinelService {
       if (cfg.kind === "siyuan" && !String(partial.plansPath).trim()) throw new Error("目标罗盘需要 plans.json 路径");
       cfg.plansPath = String(partial.plansPath).trim() || undefined;
     }
+    if (partial.city !== undefined) cfg.city = String(partial.city).trim() || undefined;
+    if (partial.latitude !== undefined) cfg.latitude = Number(partial.latitude) || undefined;
+    if (partial.longitude !== undefined) cfg.longitude = Number(partial.longitude) || undefined;
     cfg.updatedAt = now;
     this.opts.audit.append({ op: "sentinel.sensor.save", id: cfg.id, label: cfg.label, kind: cfg.kind, enabled: cfg.enabled });
     this.saveConfigs();
@@ -400,20 +515,53 @@ export class SentinelService {
 
   /* ---------------- 快照与广播 ---------------- */
 
+  getSensors(): SentinelSensorConfig[] {
+    return [...this.configs];
+  }
+
   status(): SentinelStatus {
     const snap = this.dual.engine.snapshot();
     const sensors: SentinelSensorView[] = this.configs.map((c) => {
       const rt = this.runtime.get(c.id);
+      const cat = CATEGORY_MAP[c.kind] ?? {
+        category: "internal",
+        categoryLabel: "内部感知",
+        subCategory: "workspace",
+        subCategoryLabel: "数字工坊",
+      };
+      const inst = this.instances.get(c.id);
+      const weatherSnapshot = inst instanceof WeatherSensor ? inst.getSnapshot() ?? undefined : undefined;
+
       return {
         id: c.id,
         label: c.label,
         kind: c.kind,
         kindLabel: KIND_LABEL[c.kind],
+        category: c.category ?? cat.category,
+        categoryLabel: cat.categoryLabel,
+        subCategory: c.subCategory ?? cat.subCategory,
+        subCategoryLabel: cat.subCategoryLabel,
         enabled: c.enabled,
         salience: c.salience,
         dirs: c.dirs,
         intervalMs: c.intervalMs,
         plansPath: c.plansPath,
+        city: c.city,
+        latitude: c.latitude,
+        longitude: c.longitude,
+        weatherSnapshot: weatherSnapshot
+          ? {
+              condition: weatherSnapshot.condition,
+              conditionLabel: weatherSnapshot.conditionLabel,
+              summary: weatherSnapshot.summary,
+              temperature: weatherSnapshot.temperature,
+              apparentTemperature: weatherSnapshot.apparentTemperature,
+              humidity: weatherSnapshot.humidity,
+              uvIndex: weatherSnapshot.uvIndex,
+              precipitation: weatherSnapshot.precipitation,
+              updatedAt: weatherSnapshot.updatedAt,
+            }
+          : undefined,
         lastFiredAt: rt?.lastFiredAt || undefined,
         events: rt?.events ?? 0,
       };
