@@ -41,7 +41,7 @@ jobs:
           cp app-release.apk "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk"
           gh release create "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --title "${GITHUB_REF_NAME#refs/tags/}" --notes "自动发布（CI 直出）" || gh release upload "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --clobber
       - uses: actions/upload-artifact@v4
-        if: !startsWith(github.ref, 'refs/tags/')
+        if: "!startsWith(github.ref, 'refs/tags/')"
         with:
           name: harnessgate-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
