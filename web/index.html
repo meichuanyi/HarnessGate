@@ -786,12 +786,6 @@
   <div class="brand"><span>⚡</span>HarnessGate</div>
   <div class="crumbs" id="crumbs"></div>
   <div class="spacer"></div>
-  <div id="cfg" style="display:inline-flex;gap:8px;align-items:center"></div>
-  <div class="cfgw" id="modeWrap" style="display:none">
-    <span class="cfgl">模式</span>
-    <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
-  </div>
-  <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能" style="display:none">🛠 装备</button>
   <button id="roomBtn" class="mini ghost">圆桌</button>
   <button id="schedBtn" class="mini ghost" title="定时执行 agent 任务">定时</button>
   <button id="goalsBtn" class="mini ghost" title="目标看板与前瞻推演">目标</button>
@@ -2742,7 +2736,13 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatSide" title="侧问：临时问点什么，不打断正在跑的会话（回答来自同上下文的临时分身）">❓ 侧问</button>
     <button class="mini ghost" id="chatArchive" title="全量归档检索：台账窗口（800条）之外的完整历史也能查">📚 归档</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
-    <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>`;
+    <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>
+    <span id="cfg" style="display:inline-flex;gap:8px;align-items:center"></span>
+    <div class="cfgw" id="modeWrap" style="display:none">
+      <span class="cfgl">模式</span>
+      <select id="mode" class="sm" title="切换当前 ACP 会话的权限模式"></select>
+    </div>
+    <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能">🛠 装备</button>`;
   const chatCall = $("chatCall");
   if (chatCall) chatCall.onclick = () => openCallDialog(s.id);
   const chatSrc = $("chatSrc");
@@ -2751,6 +2751,10 @@ function updateChatHeader() {
   if (chatHandoff) chatHandoff.onclick = () => openHandoffDialog(s.id);   // 对话框选 harness/模型；handoff_done 到达后自动跳进新会话
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
+  const gearB = $("gearBtn");
+  if (gearB) gearB.onclick = () => openGearPanel(state.sessionId);
+  renderModes();
+  renderConfig();
   const chatArchive = $("chatArchive");
   if (chatArchive) chatArchive.onclick = () => openArchiveDialog(s.id);
   const chatSide = $("chatSide");
