@@ -1029,6 +1029,49 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// 工具输出里的图片路径 → 内嵌预览（/download 走会话 cwd 校验；加载失败自动收起）
+  static final _imgPathRe = RegExp(r'(?:[\w.\-]+/)*[\w.\-]+\.(?:png|jpe?g|webp|gif)\b', caseSensitive: false);
+
+  List<Widget> _imagePreviews(String? output) {
+    if (output == null || output.isEmpty) return const [];
+    final paths = <String>[];
+    for (final m in _imgPathRe.allMatches(output)) {
+      final p = m[0];
+      if (!paths.contains(p)) paths.add(p);
+      if (paths.length >= 4) break;
+    }
+    if (paths.isEmpty) return const [];
+    final c = widget.client;
+    return [
+      Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 4),
+        child: Align(alignment: Alignment.centerLeft, child: Text('图片产出', style: TextStyle(fontSize: 10.5, color: Colors.grey[600]))),
+      ),
+      SizedBox(
+        height: 140,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (final p in paths)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(
+                    '${c.httpBase}/download?session=${widget.sessionId}&path=${Uri.encodeComponent(p)}&${c.tokenQuery}',
+                    height: 140,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    loadingBuilder: (_, child, progress) => progress == null ? child : const SizedBox(width: 60, height: 60, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = _session;
@@ -1453,6 +1496,7 @@ class _ChatPageState extends State<ChatPage> {
                             width: double.infinity,
                             child: SingleChildScrollView(child: SelectableText(e.output ?? '', style: TextStyle(fontSize: 11, color: Colors.grey[500]))),
                           ),
+                        ..._imagePreviews(e.output),
                       ],
                     ),
                   )

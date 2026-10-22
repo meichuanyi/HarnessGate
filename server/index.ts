@@ -3352,13 +3352,35 @@ function enqueueProactiveNotifications(tasks: MindwtrTaskView[]): void {
     const lines = (p.evidence?.perceptions ?? []).slice(0, 2).map((x) => `· ${String(x).replace(/^【[^】]*】/, "")}`);
     const content = [isWarning ? `⚠ ${p.summary}` : `即将开始：${t.title} ${when}`, ...lines].join("\n");
     const level = (isWarning ? "warn" : "info") as "info" | "warn";
+    // 立即上排程占位锁，防止在大模型异步判断窗口期内被高频状态扫描并发重入
+    const placeholderTimer = setTimeout(() => {}, 86400_000);
+    notifyScheduled.set(key, placeholderTimer);
+
     void judgeSendTiming({ title: t.title ?? "", startMs, isWarning }).then(({ at, reason }) => {
-      const atC = clampToWaking(at);
+      clearTimeout(placeholderTimer);
+      notifyScheduled.delete(key);
+      if (notifyDelivered.has(key)) return;
+
+      // 防模型幻觉熔断：对于常规日程，如果离开始时间还很远（> 45分钟），而模型给出了 now 或提前过早的时间，强制钳制到开始前 15 分钟
+      let targetAt = at;
+      if (!isWarning && !isNaN(startMs)) {
+        const leadMs = startMs - Date.now();
+        const plannedLead = startMs - at;
+        if (leadMs > 45 * 60_000 && plannedLead > 30 * 60_000) {
+          targetAt = startMs - 15 * 60_000;
+          reason = `纠偏过早通知(原: ${reason}) → 开始前15分钟`;
+        }
+      }
+
+      const atC = clampToWaking(targetAt);
       console.log(`[proactive-judge] ${t.title} → ${new Date(atC).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（${reason}）`);
       notifyScheduled.set(key, setTimeout(() => {
         notifyScheduled.delete(key);
         deliverProactive(key, key, isWarning ? "【神经中枢·行动受阻】" : "【神经中枢·即将开始】", content, level);
       }, Math.max(0, atC - Date.now())));
+    }).catch(() => {
+      clearTimeout(placeholderTimer);
+      notifyScheduled.delete(key);
     });
   }
 }

@@ -222,6 +222,8 @@ export class HarnessSession {
   /** 危险操作硬闸开关：默认关（全自动=真全自动，危险操作只打 ⚠ 标记）；=1 时危险操作强制人工 */
   static readonly DANGER_HOLD = process.env.HG_DANGER_HOLD === "1";
   static readonly DANGER_RE = /rm\s+-rf\s+[/"']|git\s+push[^&|;]*--force|git\s+reset\s+--hard|\bmkfs\b|\bdd\b[^|;]*of=/i;
+  // antigravity 处理 session/cancel 时回吐的 canned 提示（消息块/stderr/作为旧台账残留被 recentIntent 捞到），不是真实回复
+  static readonly CANCELLED_NOISE_RE = /^the request was cancell?ed by the client\.?$/i;
   /** 建会话时就想应用的配置（模型等）：会话就绪后自动下发，失败只记日志不中断 */
   pendingConfigs: Array<{ configId: string; value: string }> = [];
   /** env 占位符的自定义取值（如 HG_OPENCLAW_AGENT），由创建方（向导/圆桌）传入 */
@@ -1012,7 +1014,10 @@ export class HarnessSession {
           ? { type: "text", text: header + (blocks[0].text ?? "") }
           : { type: "text", text: header };
       }
-      const t0 = Date.now();
+    const t0 = Date.now();
+    let res;
+    let stallRetried = false;
+    while (true) {
       const req = this.ctx.request(acp.methods.agent.session.prompt, {
         sessionId: this.acpSessionId,
         prompt: blocks as never,
@@ -1022,28 +1027,54 @@ export class HarnessSession {
 
       // 看门狗（Temporal 式）：静默超时守护
       // 只要 agent 还在吐事件（lastProgressAt 刷新）就不判定超时；
-      // 一旦底层静默超过 90 秒无任何事件，判定底层连接/模型服务挂起，打断并触发自愈
+      // 有在途工具时静默是常态（全盘 grep/构建跑几分钟很正常），阈值放宽到 10 分钟——
+      // 90s 硬掐会把健康的慢工具回合误杀成「连续故障」；
+      // 无在途工具按 240 秒判挂起：实测上游 502 挂起 92~182s 后会自行恢复，90s 比上游先放弃
       let watchdogTimer: NodeJS.Timeout | undefined;
       const watchdog = new Promise<never>((_, reject) => {
         watchdogTimer = setInterval(() => {
           const silentMs = Date.now() - this.lastProgressAt;
-          if (silentMs > 90_000) {
-            clearInterval(watchdogTimer);
-            watchdogTimer = undefined;
-            this.log(`底层静默 ${Math.round(silentMs / 1000)}s 超过阈值 90s，判定连接挂起`);
-            void this.cancelTurn("idle-timeout");
-            reject(new Error("底层 harness 超过 90 秒无任何响应（网络或服务挂起）"));
-          }
+          const toolRunning = this.hasRunningTool();
+          const limit = toolRunning ? 600_000 : 240_000;
+          if (silentMs <= limit) return;
+          clearInterval(watchdogTimer);
+          watchdogTimer = undefined;
+          this.log(
+            `底层静默 ${Math.round(silentMs / 1000)}s 超过阈值 ${limit / 1000}s${toolRunning ? "（有在途工具）" : ""}，判定连接挂起`,
+          );
+          void this.cancelTurn("idle-timeout");
+          reject(new Error(`底层 harness 超过 ${limit / 1000} 秒无任何响应（网络或服务挂起）`));
         }, 5_000);
       });
 
-      let res;
       try {
         res = await Promise.race([req, watchdog]);
+        break;
+      } catch (err) {
+        // 静默超时＝上游间歇故障（502/模型不可达/网络抖动），重建会话治不了根因（实测重建完 90s 又挂）。
+        // 自救一次：① 零产出 → 原样重发同一请求；② 已有产出（干到一半被掐）→ 补发「继续」，
+        // agent 带着已完成的工具进度接着干（等同用户手动敲「继续」）。每回合最多自救一次，
+        // 再挂才抛给外层走失败计数/自愈，保留兜底
+        const isStall = err instanceof Error && /超过 \d+ 秒无任何响应/.test(err.message);
+        if (!stallRetried && isStall && !this.stopRequested && this.status === "ready") {
+          stallRetried = true;
+          const hadOutput = this.transcript.length > marks || this.assistantOpen;
+          if (hadOutput) {
+            this.log("回合中途静默超时（上游抖动）：自动补发「继续」，从已完成进度接着干");
+            blocks.length = 0;
+            blocks.push({ type: "text", text: "继续" });
+          } else {
+            this.log("静默超时且零产出：原地重试一次同一请求（上游故障重建无效）");
+          }
+          await Promise.race([tracked.catch(() => {}), new Promise((r) => setTimeout(r, 10_000))]);
+          continue;
+        }
+        throw err;
       } finally {
         if (watchdogTimer) clearInterval(watchdogTimer);
         if (this.promptInFlight === tracked) this.promptInFlight = undefined;
       }
+    }
       const elapsed = Date.now() - t0;
       const produced = this.transcript.length > marks;
       const usage = (res as { usage?: { outputTokens?: number } }).usage;
@@ -1216,6 +1247,15 @@ export class HarnessSession {
   }
 
   /** 把 ACP 的 session/update 翻译成台账 + 前端事件 */
+  /** 台账里最近的工具调用是否还在跑（agent 干活中）——看门狗据此放宽静默阈值 */
+  private hasRunningTool(): boolean {
+    for (let i = this.transcript.length - 1; i >= 0; i--) {
+      const e = this.transcript[i]!;
+      if (e.kind === "tool") return e.status === "in_progress";
+    }
+    return false;
+  }
+
   private handleUpdate(params: { sessionId?: string; update?: Update }): void {
     const u = params.update;
     if (!u?.sessionUpdate) return;
@@ -1230,6 +1270,9 @@ export class HarnessSession {
     switch (u.sessionUpdate) {
       case "agent_message_chunk": {
         if (u.content?.type === "text" && typeof u.content.text === "string") {
+          // antigravity 处理 session/cancel 时会把 canned 提示当消息块吐回来（与 stderr 同源），
+          // 不是真实回复——只精确滤整句，别误伤正文里引用这句话的场景
+          if (HarnessSession.CANCELLED_NOISE_RE.test(u.content.text.trim())) break;
           this.appendAssistant(u.content.text);
         }
         break;
@@ -1457,7 +1500,9 @@ export class HarnessSession {
   private recentIntent(): string | undefined {
     for (let i = this.transcript.length - 1; i >= Math.max(0, this.transcript.length - 12); i--) {
       const e = this.transcript[i] as { kind?: string; text?: string };
-      if ((e.kind === "thought" || e.kind === "assistant") && e.text?.trim()) {
+      // 跳过取消罐头句——否则旧的 cancelled-by-client 残留会顶着「当前意图」进每条权限的 context
+      if ((e.kind === "thought" || e.kind === "assistant") && e.text?.trim()
+          && !HarnessSession.CANCELLED_NOISE_RE.test(e.text.trim())) {
         return e.text.replace(/\s+/g, " ").trim().slice(0, 300);
       }
     }
