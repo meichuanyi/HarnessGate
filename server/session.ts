@@ -445,6 +445,15 @@ export class HarnessSession {
       if (!fid) return false;
       this.log(`分支已 fork 源上下文: ${srcAcpSessionId} → ${fid}`);
       this.acpSessionId = fid;
+      // fork 会把源会话的会话级配置（含其已下架的模型）一并复制过来，盖掉本会话刚设好的值——
+      // fork 后把本会话 chosen 重放一遍，保持自己的选择生效（chosen 为空则无事发生）
+      for (const [configId, value] of Object.entries(this.chosen)) {
+        try {
+          await this.setConfigOption(configId, value);
+        } catch (err) {
+          this.log(`fork 后重放配置 ${configId}=${value} 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return true;
     } catch (err) {
       this.log(`fork 源上下文不可用（走注入兜底）: ${err instanceof Error ? err.message : String(err)}`);
@@ -753,7 +762,23 @@ export class HarnessSession {
             try {
               await this.setConfigOption(c.configId, c.value);
             } catch (err) {
-              this.log(`预置配置下发失败 ${c.configId}=${c.value}: ${err instanceof Error ? err.message : String(err)}`);
+              const msg = err instanceof Error ? err.message : String(err);
+              // 网关侧模型下架/改名会让保存的 chosen 变僵尸（"model not found"）：下发失败被吞掉后，
+              // harness 会话内部仍存着死模型，之后每次对话都在它那头炸 ProviderModelNotFoundError
+              // （对外只表现为笼统的 "service failure"）。自动落到该配置项当前可用的首选值，
+              // setConfigOption 成功路径会回写 chosen 落盘——一次自愈，此后恢复不再重放死值
+              const opt = this.configOptions?.find((o) => o.id === c.configId) ?? this.fallbackConfigs?.find((o) => o.id === c.configId);
+              const healTo = /not found/i.test(msg)
+                ? [opt?.options?.[0]?.value, opt?.currentValue].find((v) => v && v !== c.value)
+                : undefined;
+              if (healTo) {
+                try {
+                  await this.setConfigOption(c.configId, healTo);
+                  this.log(`${c.configId}=${c.value} 已失效（${msg.slice(0, 100)}），自愈到 ${healTo}`);
+                  continue;
+                } catch { /* 自愈也失败 → 按原样记失败日志 */ }
+              }
+              this.log(`预置配置下发失败 ${c.configId}=${c.value}: ${msg}`);
             }
           }
         }
