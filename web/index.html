@@ -2752,7 +2752,13 @@ function updateChatHeader() {
   const toSched = $("chatToSched");
   if (toSched) toSched.onclick = () => startSchedFromSession(s);
   const gearB = $("gearBtn");
-  if (gearB) gearB.onclick = () => openGearPanel(state.sessionId);
+  if (gearB) gearB.onclick = () => {
+    const p = $("gearPanel");
+    if (p.hidden) openGearPanel(state.sessionId);
+    else p.hidden = true;
+  };
+  const modeSel = $("mode");
+  if (modeSel) modeSel.onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: modeSel.value }); };
   renderModes();
   renderConfig();
   const chatArchive = $("chatArchive");
@@ -2871,7 +2877,8 @@ function renderModes() {
     sel.appendChild(o);
   }
 }
-$("mode").onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: $("mode").value }); };
+/* #mode 在会话头模板里（updateChatHeader 重建），顶层绑定时还不存在——
+   跟着头部重建重绑（此行若留在顶层会崩断整个脚本，hello 快照里 serverVersion 未初始化，首屏数据全挂） */
 
 /* =====================================================================
    台账渲染（Markdown 与工具卡片）
@@ -4095,11 +4102,6 @@ function openGearPanel(push = true) {
   send({ type: "session-gear-get", sessionId: gearSid });
   if (push) pushNav("gearPanel");
 }
-$("gearBtn").onclick = () => {
-  const p = $("gearPanel");
-  if (p.hidden) openGearPanel();
-  else p.hidden = true;
-};
 
 function gearToggle(kind, id, on) {
   if (!gearDraft) return;
