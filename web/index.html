@@ -84,8 +84,12 @@
   select.sm { padding:4px 8px; font-size:12.5px; max-width:230px; }
 
   /* ---------- 布局 ---------- */
-  main { display:grid; grid-template-columns:300px 1fr; flex:1; min-height:0; }
-  aside#side { border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  main { display:grid; grid-template-columns:var(--side-w,300px) 1fr; flex:1; min-height:0; }
+  aside#side { border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; position:relative; }
+  /* 侧栏拖宽手柄：右缘 6px 透明热区，悬停微亮；拖动改 --side-w，宽度记忆在 localStorage（见移动端抽屉控制区 JS） */
+  #sideGrip { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; z-index:5; touch-action:none; }
+  #sideGrip:hover, body.sideResizing #sideGrip { background:var(--accent,#5b9cf8); opacity:.4; }
+  body.sideResizing { cursor:col-resize; user-select:none; -webkit-user-select:none; }
   .sideHead { padding:10px; border-bottom:1px solid var(--line); display:flex; gap:6px; align-items:center; }
   .sideHead input { flex:1; padding:5px 8px; font-size:13px; }
   #tree { flex:1; overflow:auto; padding:6px; -webkit-overflow-scrolling:touch; }
@@ -364,6 +368,11 @@
   .bubble.md th,.bubble.md td { border:1px solid var(--line2); padding:5px 10px; text-align:left; }
   .bubble.md th { background:#161b24; font-weight:600; }
   .bubble.md strong { color:#fff; }
+  /* 侧问抽屉气泡：用户右侧蓝、分身左侧灰（md 排版复用 .bubble.md，只覆盖布局） */
+  #sideDrawer .side-q { margin:10px 0 2px auto; width:fit-content; max-width:86%; padding:7px 11px; border-radius:14px 14px 4px 14px; background:#16233a; border:1px solid #26405f; white-space:pre-wrap; word-break:break-word; }
+  #sideDrawer .side-a { margin:10px auto 2px 0; width:fit-content; max-width:96%; border-radius:4px 14px 14px 14px; }
+  #sideTurn { animation:sideTurnPulse 1.2s ease-in-out infinite; }
+  @keyframes sideTurnPulse { 50% { opacity:.35; } }
   .bubble { white-space:pre-wrap; word-break:break-word; background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:10px 13px; }
   .user { margin-left:auto; }
   .user .who { text-align:right; }
@@ -593,6 +602,7 @@
     }
     aside#side.open { transform:translateX(0); }
     .sideMask { display:block; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(2px); z-index:115; }
+    #sideGrip { display:none; }   /* 移动端侧栏是抽屉覆盖层，宽度定死，不提供拖宽 */
 
     section#main { flex:1; width:100%; min-width:0; height:100%; }
 
@@ -652,6 +662,7 @@
   }
   html.is-mobile aside#side.open { transform:translateX(0); }
   html.is-mobile .sideMask { display:block; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(2px); z-index:115; }
+  html.is-mobile #sideGrip { display:none; }
 
   html.is-mobile section#main { flex:1; width:100%; min-width:0; height:100%; }
 
@@ -1233,6 +1244,39 @@ if (sideMask) {
   sideMask.onclick = closeSide;
 }
 
+/* ---------- 侧栏拖宽（桌面端）：aside 右缘的热区手柄，拖动改 --side-w，宽度记住本设备 ---------- */
+/* 移动端手柄 display:none（CSS），这段逻辑自然不会触发 */
+{
+  const grip = document.createElement("div");
+  grip.id = "sideGrip";
+  grip.title = "拖动调整侧栏宽度";
+  sideEl?.appendChild(grip);
+  const savedW = parseInt(localStorage.getItem("hg_side_w") || "", 10);
+  if (savedW >= 180 && savedW <= Math.round(innerWidth * 0.6)) {
+    document.documentElement.style.setProperty("--side-w", `${savedW}px`);
+  }
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { grip.setPointerCapture(e.pointerId); } catch {}   // 指针恰好已释放时不致命，拖拽照常建立
+    document.body.classList.add("sideResizing");
+    const onMove = (ev) => {
+      const w = Math.max(180, Math.min(ev.clientX, Math.round(innerWidth * 0.6)));
+      document.documentElement.style.setProperty("--side-w", `${w}px`);
+    };
+    const onUp = () => {
+      document.body.classList.remove("sideResizing");
+      const w = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--side-w"));
+      if (w) localStorage.setItem("hg_side_w", String(Math.round(w)));
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+      grip.removeEventListener("pointercancel", onUp);
+    };
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+    grip.addEventListener("pointercancel", onUp);
+  });
+}
+
 /* ---------- 浏览器返回手势：视图层级压进 history 栈 ----------
    单页应用不接管 history 时，手机右滑返回找不到上一级就直接退出页面。
    正向导航 pushState 一份视图快照（URL 带 hash，刷新也能回到原视图）；
@@ -1350,6 +1394,7 @@ function handleServer(msg) {
     case "session": /* 2026-09-19 服务端协议改名 status→session */      if (msg.session) {
         const isNewSession = !sessions.has(msg.session.id);
         sessions.set(msg.session.id, msg.session);
+        if (msg.session.id === sideSessionId) updateSideTurnBadge();   // 侧问分身回合开始/结束：刷新状态条
         if (msg.session.assistant && pendingAssistantCreate) {
           pendingAssistantCreate = false;
           assistantSessionId = msg.session.id;
@@ -1619,6 +1664,7 @@ function handleServer(msg) {
       if (state.sessionId === msg.sessionId) { state.view = "harnesses"; state.sessionId = null; }
       if (sideSessionId === msg.sessionId) {   // 在跑的侧问分身被回收（10 分钟自动/手动清空）：抽屉回到初始态
         sideSessionId = null;
+        updateSideTurnBadge();
         const drawerList = document.querySelector("#sideDrawer #sideList");
         if (drawerList) drawerList.innerHTML = `<div class="meta2">分身已销毁。此刻没有分身——发出第一条问题后才会重新启动（fork 当前上下文），主会话毫无感知。</div>`;
       }
@@ -2562,6 +2608,10 @@ function openSession(id, push = true) {
   const gearWasOpen = !$("gearPanel").hidden;
   for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "gearPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   if (gearWasOpen) openGearPanel(false);
+  // 侧问抽屉是 body 级动态悬浮层，不在上面的 hidden 列表里，得单独摘：它仍绑着上一个会话的分身，
+  // 留着只会误导（在 B 的界面里打字，答的却是 A 的分身）。分身本体不受影响——重开抽屉 side-find 会找回。
+  const sideDrawerEl = $("sideDrawer");
+  if (sideDrawerEl) { sideDrawerEl.remove(); sideSessionId = null; sideSrcId = null; }
   render();
   transcriptTotal = 0;
   if (cached && cached.length) {
@@ -3734,10 +3784,10 @@ function openSideDrawer(srcId) {
   const wrap = document.createElement("div");
   wrap.id = "sideDrawer";
   wrap.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:min(430px,94vw);background:var(--bg,#0b0d12);border-left:1px solid var(--line,#333);z-index:97;display:flex;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.4)";
+  const srcTitle = sessions.get(srcId)?.title || "#" + srcId.slice(0, 6);
   wrap.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line,#2a2d35)">
-      <b style="font-size:13px">❓ 侧问</b>
-      <span class="meta2" style="flex:1">不打断主会话 · 分身闲置 30 分钟自动回收并留痕</span>
+      <b style="font-size:13px;flex:1;min-width:0">❓ 侧问 · ${esc(srcTitle)}</b>
       <button class="mini ghost" id="sideDeliver" title="留痕进主会话并随其下一条消息注入模型（不打断当前回合）">投递</button>
       <button class="mini ghost" id="sideKill" title="立即销毁当前分身（含其对话，不等闲置 30 分钟自动回收）">清空</button>
       <button class="mini ghost" id="sideClose">收起</button>
@@ -3745,6 +3795,7 @@ function openSideDrawer(srcId) {
     <div id="sideList" style="flex:1;overflow:auto;padding:10px 12px;font-size:12.5px;line-height:1.6">
       <div class="meta2">此刻还没有分身——发出第一条问题后才会启动（fork 当前上下文），主会话毫无感知。</div>
     </div>
+    <div id="sideTurn" class="meta2" hidden style="padding:4px 14px 2px;font-size:11.5px">▍生成中…</div>
     <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--line,#2a2d35)">
       <input id="sideInput" placeholder="问点什么…" style="flex:1;padding:6px 9px" />
       <button class="mini primary" id="sideSend">发送</button>
@@ -3755,6 +3806,7 @@ function openSideDrawer(srcId) {
     if (!sideSessionId) return;
     send({ type: "side-destroy", sessionId: sideSessionId });
     sideSessionId = null;
+    updateSideTurnBadge();
     wrap.querySelector("#sideList").innerHTML = `<div class="meta2">分身已销毁。此刻没有分身——发出第一条问题后才会重新启动（fork 当前上下文），主会话毫无感知。</div>`;
   };
   send({ type: "side-find", srcId });   // 重开抽屉时找回仍在跑的分身（切走再回来不丢结果）
@@ -3775,11 +3827,11 @@ function sideSendText(wrap) {
   if (!text) return;
   inp.value = "";
   if (!sideSessionId) {
-    wrap.querySelector("#sideList").innerHTML = `<div class="side-q">🙋 ${esc(text)}</div><div class="meta2" style="margin:4px 0">fork 上下文并思考中…</div>`;
+    wrap.querySelector("#sideList").innerHTML = `<div class="side-q">${esc(text)}</div><div class="meta2" style="margin:4px 0 0 2px">fork 上下文并思考中…</div>`;
     send({ type: "side-question", sessionId: sideSrcId, text });
     return;
   }
-  wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", `<div class="side-q">🙋 ${esc(text)}</div>`);
+  wrap.querySelector("#sideList").insertAdjacentHTML("beforeend", `<div class="side-q">${esc(text)}</div>`);
   send({ type: "prompt", sessionId: sideSessionId, text });
   sideScheduleRefresh();
 }
@@ -3789,24 +3841,44 @@ function renderSideTranscript(entries) {
   if (!wrap) return;
   const list = wrap.querySelector("#sideList");
   const keepInput = wrap.querySelector("#sideInput").value;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;   // 翻历史时不强行拽回底部
   const html = (entries || []).filter((e) => e.kind === "user" || e.kind === "assistant").map((e) =>
     e.kind === "user"
-      ? `<div class="side-q">🙋 ${esc(String(e.text || "").slice(0, 400))}</div>`
-      : `<div class="side-a" style="margin:4px 0;padding:6px 8px;border-left:2px solid var(--accent,#5b9cf8);color:var(--fg)">✦ ${esc(String(e.text || "").slice(0, 1200))}</div>`
+      ? `<div class="side-q">${esc(String(e.text || "").slice(0, 2000))}</div>`
+      : `<div class="side-a bubble md">${mdToHtml(String(e.text || "").slice(0, 16000))}</div>`
   ).join("");
-  list.innerHTML = html || list.innerHTML;
+  if (html) list.innerHTML = html;   // 空台账保留占位提示（fork 中/已销毁等）
   wrap.querySelector("#sideInput").value = keepInput;
-  list.scrollTop = list.scrollHeight;
+  updateSideTurnBadge();
+  if (atBottom) list.scrollTop = list.scrollHeight;
+}
+
+/** 回合状态条：生成中有呼吸动画；翻转为结束的瞬间亮 3 秒「已答完」再收起 */
+let sideTurnDoneTimer = null;
+function updateSideTurnBadge() {
+  const el = document.querySelector("#sideDrawer #sideTurn");
+  if (!el) return;
+  const s = sideSessionId ? sessions.get(sideSessionId) : null;
+  if (s?.inTurn) {
+    if (sideTurnDoneTimer) { clearTimeout(sideTurnDoneTimer); sideTurnDoneTimer = null; }
+    el.textContent = "▍生成中…";
+    el.hidden = false;
+  } else if (!el.hidden && el.textContent.startsWith("▍")) {
+    el.textContent = "✓ 已答完";
+    sideTurnDoneTimer = setTimeout(() => { el.hidden = true; }, 3000);
+  } else if (!sideSessionId) {
+    el.hidden = true;
+  }
 }
 
 let sideRefreshTimer = null;
 function sideScheduleRefresh() {
   if (!sideSessionId) return;
-  if (sideRefreshTimer) return;   // 流式期间去抖：最多 800ms 拉一次台账
+  if (sideRefreshTimer) return;   // 流式期间去抖：最多 350ms 拉一次台账（800ms 时流式观感明显滞后）
   sideRefreshTimer = setTimeout(() => {
     sideRefreshTimer = null;
     if (sideSessionId) send({ type: "transcript", sessionId: sideSessionId, limit: 40 });
-  }, 800);
+  }, 350);
 }
 
 let _archiveReq = null;   // { sessionId, ts }——配对回包，防串台
