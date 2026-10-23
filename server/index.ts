@@ -1425,6 +1425,17 @@ wss.on("connection", (ws, req) => {
           // 分支清除：停机（10s 超时兜底）+ 移除记录 + 广播。失败也强制移除，下次重启收尸进程
           const purgeBranch = (id: string): void => {
             const lb = live.get(id);
+            // 分支是 HG 生成的 fork，harness 本地那份全量拷贝也是尸体——随清除一并删
+            // （侧问分身同款；普通会话的 delete 不走这里，不动 harness 自有历史）
+            const rec = lb?.record() ?? store.get(id);
+            const reapLocal = (): void => {
+              if (!rec?.acpSessionId) return;
+              const n = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
+              if (n > 0) {
+                audit.append({ session: id, harness: rec.harnessId, op: "adopt.reap-local", deleted: n, localId: rec.acpSessionId });
+                console.log(`[adopt] 已清 ${rec.harnessId} 本地分支记录 ${rec.acpSessionId}`);
+              }
+            };
             if (lb) {
               void Promise.race([
                 lb.stop(),
@@ -1432,12 +1443,14 @@ wss.on("connection", (ws, req) => {
               ]).then(() => {
                 live.delete(id);
                 store.remove(id);
+                reapLocal();
                 broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
                 console.log(`[adopt] 分支 ${id} 已清除`);
               });
             } else {
               live.delete(id);
               store.remove(id);
+              reapLocal();
               broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
             }
           };
