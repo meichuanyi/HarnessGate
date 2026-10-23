@@ -191,7 +191,7 @@ class _SessionsPageState extends State<SessionsPage> {
       builder: (_) => AlertDialog(
         title: const Text('删除会话'),
         content: Text(
-            '删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？\n该操作不可撤销，会话记录与台账将一并清除。'),
+            '彻底删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？\n服务器记录、台账与 harness 本地历史一并清除，不可恢复。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),

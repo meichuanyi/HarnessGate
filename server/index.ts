@@ -2458,12 +2458,23 @@ wss.on("connection", (ws, req) => {
         }
 
         case "delete": {
+          // 彻底删除：连 harness 本地原生历史一起清（否则历史同步会把删掉的会话再导回来）。
+          // 协议优先（agent 声明 session/delete 就自清）→ 存储直清兜底；HG 侧归档按 30 天过期自行消化
           const session = live.get(msg.sessionId);
+          const rec = session?.record() ?? store.get(msg.sessionId);
+          let protocolDeleted = false;
+          if (session && rec?.acpSessionId) protocolDeleted = await session.deleteAcpSession();   // 必须在 stop 前发
           if (session) {
             await session.stop();
             live.delete(msg.sessionId);
           }
           store.remove(msg.sessionId);
+          if (rec?.acpSessionId && !protocolDeleted) {
+            const local = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
+            if (local > 0) {
+              audit.append({ session: msg.sessionId, harness: rec.harnessId, op: "session.delete-local", deleted: local, localId: rec.acpSessionId });
+            }
+          }
           audit.append({ session: msg.sessionId, op: "session.delete" });
           broadcast({
             type: "deleted",

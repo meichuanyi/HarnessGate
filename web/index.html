@@ -2191,7 +2191,7 @@ function renderSessionList() {
             renderSessionList(); renderTree();
           }
         }
-        if (act === "del") { if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: id }); }
+        if (act === "del") { if (confirm("彻底删除这条会话？（服务器记录与 harness 本地历史一并移除，不再被历史同步导回）")) send({ type: "delete", sessionId: id }); }
       };
     });
     el.onclick = (ev) => {
@@ -2760,8 +2760,8 @@ function updateChatHeader() {
   };
   const chatDel = $("chatDel");
   if (chatDel) chatDel.onclick = () => {
-    // 与侧栏行内删除同款确认文案；deleted 广播到达后自动退回列表视图
-    if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: s.id });
+    // 彻底删除：连 harness 本地历史一起清；deleted 广播到达后自动退回列表视图
+    if (confirm("彻底删除这条会话？（服务器记录与 harness 本地历史一并移除，不再被历史同步导回）")) send({ type: "delete", sessionId: s.id });
   };
   const modeSel = $("mode");
   if (modeSel) modeSel.onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: modeSel.value }); };

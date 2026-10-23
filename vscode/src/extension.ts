@@ -371,8 +371,8 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       if (!id) return;
       const s = store.getSession(id);
       const pick = await vscode.window.showWarningMessage(
-        `删除会话「${s?.title || "#" + id}」？（服务器上的会话记录会被删除）`,
-        { modal: true },
+        `彻底删除会话「${s?.title || "#" + id}」？`,
+        { modal: true, detail: "服务器记录与 harness 本地历史一并移除，不可恢复（也不会再被历史同步导回）。" },
         "删除",
       );
       if (pick === "删除") client.send({ type: "delete", sessionId: id });

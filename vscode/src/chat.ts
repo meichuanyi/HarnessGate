@@ -437,8 +437,8 @@ export class ChatPanel {
     if (cmd === "del") {
       void (async () => {
         const pick = await vscode.window.showWarningMessage(
-          "删除该会话记录？",
-          { modal: true, detail: "服务器上的会话记录将被删除，不可撤销；harness 本地的历史不受影响。" },
+          "彻底删除该会话？",
+          { modal: true, detail: "服务器记录与 harness 本地历史一并移除，不可恢复（也不会再被历史同步导回）。" },
           "删除",
         );
         if (pick === "删除") this.client.send({ type: "delete", sessionId: this.sessionId });

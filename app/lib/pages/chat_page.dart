@@ -888,7 +888,7 @@ class _ChatPageState extends State<ChatPage> {
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('删除会话'),
-        content: Text('删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？该操作不可撤销。'),
+        content: Text('彻底删除「${s.title?.isNotEmpty == true ? s.title : s.id}」？\n服务器记录与 harness 本地历史一并移除，不可恢复。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
           FilledButton(
