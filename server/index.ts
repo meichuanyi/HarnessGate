@@ -25,7 +25,7 @@ import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
 import { sendNotification, type NotificationConfig } from "./notify.ts";
 import { UtilitySessions } from "./utility-session.ts";
-import { scanAllUtilitySessions, deleteAllUtilitySessions } from "./utility-cleanup.ts";
+import { scanAllUtilitySessions, deleteAllUtilitySessions, deleteHarnessLocalSessions } from "./utility-cleanup.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
@@ -431,8 +431,18 @@ function reapSideSession(sideSession: HarnessSession, reason: "manual" | "idle")
   sideIdleTimers.delete(sideSession.id);
   void (async () => {
     try { await sideSession.stop(); } catch { /* 进程已死不追 */ }
+    const rec = sideSession.record();
     live.delete(sideSession.id);
     store.remove(sideSession.id);
+    // harness 本地存储里的分身尸体一并清（zcode 的 fork 是全量拷贝，24MB/个；此前只停进程删记录，
+    // harness 侧永远留尸——36 份拷贝把库堆到 672MB 就是这么来的）
+    if (rec.acpSessionId) {
+      const local = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
+      if (local > 0) {
+        audit.append({ session: sideSession.id, harness: rec.harnessId, op: "side.reap-local", deleted: local, localId: rec.acpSessionId });
+        console.log(`[side] 已清 ${rec.harnessId} 本地分身记录 ${rec.acpSessionId}`);
+      }
+    }
     if (reason === "idle") deliverSideTrace(sideSession);
     broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
     console.log(`[side] 侧问分身 ${sideSession.id} 已${reason === "idle" ? "闲置回收（问答留痕已投主会话）" : "手动销毁"}`);
@@ -2470,7 +2480,17 @@ wss.on("connection", (ws, req) => {
             audit.append({ op: "utility-cleanup.delete", count: deleted });
             ws.send(JSON.stringify({ type: "utility-cleanup-report", reports: [{ id: "cleanup", label: "", ok: true, found: 0, deleted }] } satisfies ServerMsg));
           } else {
-            const reports = scanAllUtilitySessions().map(({ source, report }) => ({
+            // 孤儿 fork 判定用：所有仍被 HG 引用（活实例/落盘记录）的 harness 侧会话 id。
+            // 必须对撞 acpSessionId（zcode 的 sess_*），拿 HG 会话 id 对会全部误判成孤儿
+            const activeAcpIds = new Set<string>();
+            for (const s of live.values()) {
+              const a = s.record().acpSessionId;
+              if (a) activeAcpIds.add(a);
+            }
+            for (const rec of store.all()) {
+              if (rec.acpSessionId) activeAcpIds.add(rec.acpSessionId);
+            }
+            const reports = scanAllUtilitySessions(activeAcpIds).map(({ source, report }) => ({
               id: source.id,
               label: source.label,
               ok: report.ok,

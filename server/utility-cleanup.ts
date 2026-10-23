@@ -25,7 +25,7 @@ export type CleanupCandidate = {
   sessionId: string;
   title: string;
   path: string;
-  reason: "tool-dir" | "utility-mark";
+  reason: "tool-dir" | "utility-mark" | "orphan-fork";
 };
 
 export type CleanupSource = {
@@ -46,13 +46,20 @@ type CleanupReport = {
 
 /* ---------- SQLite 源（zcode / opencode：session 表同构） ---------- */
 
-function scanSqlite(dbFile: string, sourceId: string): CleanupCandidate[] {
+function scanSqlite(dbFile: string, sourceId: string, activeIds?: Set<string>): CleanupCandidate[] {
   if (!existsSync(dbFile)) return [];
   const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
-    const rows = db.prepare("SELECT id, title, directory, path, time_created FROM session").all() as Array<{
+    // parent_id 列用于孤儿 fork 判定；老库/异构库没有该列时退回基础列（fork 判定跳过）
+    let rows: Array<{
       id: string; title: string | null; directory: string | null; path: string | null; time_created: number | string;
+      parent_id?: string | null;
     }>;
+    try {
+      rows = db.prepare("SELECT id, title, directory, path, time_created, parent_id FROM session").all() as typeof rows;
+    } catch {
+      rows = db.prepare("SELECT id, title, directory, path, time_created FROM session").all() as typeof rows;
+    }
     const out: CleanupCandidate[] = [];
     for (const r of rows) {
       const dir = r.directory || r.path || "";
@@ -73,13 +80,21 @@ function scanSqlite(dbFile: string, sourceId: string): CleanupCandidate[] {
           /* 结构差异则跳过标记判定 */
         }
       }
-      if (inToolDir || marked) {
+      // 孤儿 fork：zcode/opencode 的 fork 是全量拷贝（侧问/分支一次一份 20MB+），HG 侧回收后
+      // harness 本地永远留着尸体。带 parent_id（或 Fork of 标题）且没有任何活跃 HG 实例/记录
+      // 引用（按 record.acpSessionId 对撞，不是 HG 会话 id）→ 纳入定期清理
+      let orphanFork = false;
+      if (!inToolDir && !marked && activeIds) {
+        const isFork = r.parent_id != null || /^Fork of /.test(r.title ?? "");
+        orphanFork = isFork && !activeIds.has(r.id);
+      }
+      if (inToolDir || marked || orphanFork) {
         out.push({
           key: sourceId + ":" + r.id,
           sessionId: r.id,
           title: (r.title ?? "").slice(0, 60),
           path: dir,
-          reason: inToolDir ? "tool-dir" : "utility-mark",
+          reason: inToolDir ? "tool-dir" : marked ? "utility-mark" : "orphan-fork",
         });
       }
     }
@@ -110,11 +125,11 @@ function deleteSqlite(dbFile: string, sourceId: string, keys: string[]): number 
   }
 }
 
-function sqliteSource(id: string, label: string, dbFile: string): CleanupSource {
+function sqliteSource(id: string, label: string, dbFile: string, activeIds?: Set<string>): CleanupSource {
   return {
     id,
     label,
-    scan: () => scanSqlite(dbFile, id),
+    scan: () => scanSqlite(dbFile, id, activeIds),
     del: (keys) => deleteSqlite(dbFile, id, keys),
   };
 }
@@ -184,10 +199,10 @@ function fileSource(id: string, label: string, root: string, fileFilter?: (name:
 
 /* ---------- 源注册 ---------- */
 
-export function cleanupSources(): CleanupSource[] {
+export function cleanupSources(activeIds?: Set<string>): CleanupSource[] {
   return [
-    sqliteSource("zcode", "ZCode", join(homedir(), ".zcode", "cli", "db", "db.sqlite")),
-    sqliteSource("opencode", "OpenCode", join(homedir(), ".local/share/opencode/opencode.db")),
+    sqliteSource("zcode", "ZCode", join(homedir(), ".zcode", "cli", "db", "db.sqlite"), activeIds),
+    sqliteSource("opencode", "OpenCode", join(homedir(), ".local/share/opencode/opencode.db"), activeIds),
     fileSource("claude", "Claude Code", join(homedir(), ".claude", "projects")),
     fileSource("codex", "Codex", join(homedir(), ".codex", "sessions")),
     fileSource("hermes", "Hermes", join(homedir(), ".hermes", "sessions"), (n) => n.startsWith("session_")),
@@ -196,9 +211,11 @@ export function cleanupSources(): CleanupSource[] {
 
 /* ---------- 对外主流程 ---------- */
 
-export function scanAllUtilitySessions(): Array<{ source: CleanupSource; report: CleanupReport }> {
+/** activeIds：当前所有活跃/落盘 HG 会话的 acpSessionId 集合（调用方收集），
+ *  用于孤儿 fork 判定——被引用的 fork 不进候选 */
+export function scanAllUtilitySessions(activeIds?: Set<string>): Array<{ source: CleanupSource; report: CleanupReport }> {
   const out: Array<{ source: CleanupSource; report: CleanupReport }> = [];
-  for (const src of cleanupSources()) {
+  for (const src of cleanupSources(activeIds)) {
     try {
       const candidates = src.scan();
       out.push({ source: src, report: { ok: true, found: candidates.length, deleted: 0, candidates } });
@@ -216,4 +233,42 @@ export function deleteAllUtilitySessions(keys: string[]): number {
     if (mine.length) n += src.del(mine);
   }
   return n;
+}
+
+/* ---------- 分身回收配套：按 acpSessionId 清 harness 本地会话尸体 ---------- */
+
+const FILE_ROOTS: Record<string, string> = {
+  claude: join(homedir(), ".claude", "projects"),
+  codex: join(homedir(), ".codex", "sessions"),
+  hermes: join(homedir(), ".hermes", "sessions"),
+};
+
+/** 侧问/分支分身回收时调用：zcode/opencode 删 session 行（message/part 级联清），
+ *  文件型 harness 删对话文件（文件名即会话 id）。尽力而为——失败只返回 0，绝不阻塞回收主流程。 */
+export function deleteHarnessLocalSessions(harnessId: string, acpSessionIds: string[]): number {
+  if (!acpSessionIds.length) return 0;
+  try {
+    if (harnessId === "zcode" || harnessId === "opencode") {
+      const dbFile = harnessId === "zcode"
+        ? join(homedir(), ".zcode", "cli", "db", "db.sqlite")
+        : join(homedir(), ".local", "share", "opencode", "opencode.db");
+      return deleteSqlite(dbFile, harnessId, acpSessionIds.map((id) => harnessId + ":" + id));
+    }
+    const root = FILE_ROOTS[harnessId];
+    if (!root) return 0;
+    let n = 0;
+    for (const file of walkFiles(root, ".jsonl")) {
+      const base = (file.split("/").pop() ?? "").replace(/\.[^.]+$/, "");
+      if (!acpSessionIds.includes(base)) continue;
+      try {
+        if (existsSync(file)) {
+          unlinkSync(file);
+          n += 1;
+        }
+      } catch { /* 单文件失败不中断 */ }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
 }
