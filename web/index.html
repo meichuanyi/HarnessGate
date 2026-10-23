@@ -2742,7 +2742,8 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatArchive" title="全量归档检索：台账窗口（800条）之外的完整历史也能查">📚 归档</button>
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>
-    <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能">🛠 装备</button>`;
+    <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能">🛠 装备</button>
+    <button id="chatDel" class="mini ghost" title="删除该会话记录（harness 侧的历史不受影响）">🗑</button>`;
   const chatCall = $("chatCall");
   if (chatCall) chatCall.onclick = () => openCallDialog(s.id);
   const chatSrc = $("chatSrc");
@@ -2756,6 +2757,11 @@ function updateChatHeader() {
     const p = $("gearPanel");
     if (p.hidden) openGearPanel(state.sessionId);
     else p.hidden = true;
+  };
+  const chatDel = $("chatDel");
+  if (chatDel) chatDel.onclick = () => {
+    // 与侧栏行内删除同款确认文案；deleted 广播到达后自动退回列表视图
+    if (confirm("删除这条会话记录？（harness 侧的历史不受影响）")) send({ type: "delete", sessionId: s.id });
   };
   const modeSel = $("mode");
   if (modeSel) modeSel.onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: modeSel.value }); };
