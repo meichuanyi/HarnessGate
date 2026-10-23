@@ -17,13 +17,65 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type Entry =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: Array<{ name: string; dataUrl?: string }> }
   | { kind: "assistant"; text: string }
   | { kind: "thought"; text: string }
   | { kind: "tool"; title: string; status: string; toolCallId?: string; detail?: string }
   | { kind: "permission"; title: string; answered?: string; requestId?: string; options?: PermissionOption[]; auto?: boolean }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; action?: "handoff" | "model" }
   | { kind: "log"; text: string };
+
+/** 🧾 决策记录 + 改动文件：session-detail 回包 → QuickPick（选中即复制；对齐网页版会话抽屉） */
+function showSessionDetailPick(sessionId: string, msg: Record<string, unknown>): void {
+  const decisions = (msg.decisions ?? []) as Array<Record<string, unknown>>;
+  const changes = (msg.changes ?? []) as Array<Record<string, unknown>>;
+  const git = msg.git === true;
+  const items: Array<vscode.QuickPickItem & { copy?: string }> = [];
+  items.push({ label: "授权决策", kind: vscode.QuickPickItemKind.Separator });
+  if (!decisions.length) items.push({ label: "（无记录）" });
+  for (const d of decisions) {
+    const bits: string[] = [];
+    if (d.chosen) bits.push(`选择: ${d.chosen}`);
+    if (d.auto) bits.push("自动决策");
+    if (d.held) bits.push("被拦截");
+    if (d.danger) bits.push("⚠ 危险");
+    if (d.permKind) bits.push(`类型: ${d.permKind}`);
+    if (d.task) bits.push(`任务: ${d.task}`);
+    if (d.intent) bits.push(`意图: ${d.intent}`);
+    if (d.input) bits.push(`入参: ${String(d.input).slice(0, 200)}`);
+    items.push({
+      label: `${d.danger ? "⚠" : d.auto ? "🤖" : "🔐"} ${String(d.ts ?? "")} ${String(d.title ?? "")}`,
+      detail: bits.join(" · "),
+      copy: `${d.title ?? ""}\n${bits.join("\n")}`,
+    });
+  }
+  items.push({ label: `改动文件${git ? "（git diff + 台账）" : "（台账）"}`, kind: vscode.QuickPickItemKind.Separator });
+  if (!changes.length) items.push({ label: "（无改动）" });
+  for (const c of changes) {
+    items.push({
+      label: String(c.path ?? ""),
+      description: `${c.size ?? 0} B · ${c.source === "git" ? "git" : "台账"}`,
+      copy: String(c.path ?? ""),
+    });
+  }
+  void vscode.window
+    .showQuickPick(items, { placeHolder: `🧾 会话 #${sessionId} 的决策与改动（选中即复制）`, matchOnDescription: true, matchOnDetail: true })
+    .then((pick) => {
+      if (pick?.copy) void vscode.env.clipboard.writeText(pick.copy).then(() => vscode.window.showInformationMessage("已复制"));
+    });
+}
+
+/** 请求 session-detail 并挂单次监听展示（回包只发给请求方；15s 兜底摘监听） */
+export function requestSessionDetail(client: GateClient, sessionId: string): void {
+  const onDetail = (m: Record<string, unknown>) => {
+    if (m.sessionId !== sessionId) return;
+    client.off("session-detail", onDetail);
+    showSessionDetailPick(sessionId, m);
+  };
+  client.on("session-detail", onDetail);
+  setTimeout(() => client.off("session-detail", onDetail), 15_000);
+  client.send({ type: "session-detail", sessionId });
+}
 
 /**
  * 对话面板（Webview）：流式输出、Markdown、工具时间线、授权按钮、模型/模式下拉。
@@ -32,6 +84,8 @@ type Entry =
 export class ChatPanel {
   static readonly viewType = "harnessgate.chat";
   private static panels = new Map<string, ChatPanel>();
+  /** 扩展安装位置（activate 时注入）：Mermaid 从 media/mermaid 按需加载，不进打包体积 */
+  static extUri: vscode.Uri | undefined;
   /** 渲染回执（webview 处理完 render 后回报），测试/诊断用：卡在「加载中」时它不会出现 */
   static renderInfoOf(sessionId: string): { count: number; start: number; total: number; ms: number } | undefined {
     return ChatPanel.panels.get(sessionId)?.renderInfo;
@@ -216,6 +270,28 @@ export class ChatPanel {
       }
       return;
     }
+    if (kind === "hg_noop_turn") {
+      // 空回合（没产生任何输出）：给「在新会话里接续」按钮——与网页版对齐
+      this.streaming = false;
+      this.post({ type: "streamEnd" });
+      this.entries.push({ kind: "error", message: String(u.message ?? "这一回合没有产生输出"), action: "handoff" });
+      this.upsertEntry(this.entries.length - 1);
+      return;
+    }
+    if (kind === "hg_error") {
+      // 供应商侧故障（provider/upstream/限流/配额）给「换个模型重试」按钮
+      const raw = String(u.message ?? "");
+      const isProvider = /provider|upstream|rate limit|quota|APIError/i.test(raw);
+      this.streaming = false;
+      this.post({ type: "streamEnd" });
+      this.entries.push({
+        kind: "error",
+        message: raw + (isProvider ? "\n\n（看起来是模型供应商侧的故障：可以换个模型重试，或稍后再发一次）" : ""),
+        action: isProvider ? "model" : undefined,
+      });
+      this.upsertEntry(this.entries.length - 1);
+      return;
+    }
     if (this.showLog) {
       this.entries.push({ kind: "log", text: `[${kind}] ${JSON.stringify(u).slice(0, 240)}` });
       this.upsertEntry(this.entries.length - 1);
@@ -245,7 +321,17 @@ export class ChatPanel {
     }
     if (cmd === "send") {
       const text = String(m.text ?? "").trim();
-      if (!text) return;
+      // 附件只收图片（webview 端已限 ≤5MB/个；base64 长度 7M ≈ 原文件 5MB 兜底）
+      const rawAtt = (m.attachments ?? []) as Array<Record<string, unknown>>;
+      const attachments = rawAtt
+        .filter((a) => typeof a.data === "string" && a.data.length > 0 && a.data.length <= 7 * 1024 * 1024)
+        .map((a) => ({
+          name: String(a.name ?? "图片"),
+          mimeType: String(a.mimeType ?? "image/png"),
+          data: String(a.data),
+          dataUrl: typeof a.dataUrl === "string" && a.dataUrl.length <= 2 * 1024 * 1024 ? a.dataUrl : undefined,
+        }));
+      if (!text && !attachments.length) return;
       const s = this.session;
       if (!s) return;
       if (!s.live) {
@@ -253,13 +339,20 @@ export class ChatPanel {
         this.renderAll();
         return;
       }
-      this.entries.push({ kind: "user", text });
+      this.entries.push({ kind: "user", text, attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })) });
       this.transcriptBase = this.entries.length;
       this.streaming = false;
       this.renderAll();
       // 回合进行中 → 服务端会排队（当前回合完整跑完再发），不显示等待横幅；回合结束后服务端会推新回合
       if (!s.inTurn) this.post({ type: "waiting", on: true });
-      this.client.send({ type: "prompt", sessionId: this.sessionId, text });
+      this.client.send({
+        type: "prompt",
+        sessionId: this.sessionId,
+        text,
+        attachments: attachments.length
+          ? attachments.map(({ name, mimeType, data }) => ({ name, mimeType, data }))
+          : undefined,
+      });
       return;
     }
     if (cmd === "permission") {
@@ -294,6 +387,68 @@ export class ChatPanel {
     }
     if (cmd === "interrupt") {
       this.client.send({ type: "interrupt", sessionId: this.sessionId });
+      return;
+    }
+    if (cmd === "branch") {
+      void (async () => {
+        const name = await vscode.window.showInputBox({
+          placeHolder: "分支名（可留空）",
+          title: `⎇ 分支 · 会话 #${this.sessionId}`,
+          validateInput: (v) => (v.length > 20 ? "最长 20 字" : undefined),
+        });
+        if (name === undefined) return;
+        this.client.send({ type: "branch", sessionId: this.sessionId, branchName: name.trim() || undefined });
+      })();
+      return;
+    }
+    if (cmd === "adopt") {
+      void (async () => {
+        const s = this.session;
+        if (!s?.parentId) return;
+        const pick = await vscode.window.showWarningMessage(
+          "⇱ 收编回主线？",
+          { modal: true, detail: "分支的结论会被蒸馏后注入主线，随后本分支删除（完整历史仍在归档）。" },
+          "收编",
+        );
+        if (pick === "收编") this.client.send({ type: "adopt-branch", branchId: this.sessionId, mainId: s.parentId });
+      })();
+      return;
+    }
+    if (cmd === "handoff") {
+      void (async () => {
+        const list = this.store.harnesses;
+        if (!list.length) {
+          vscode.window.showWarningMessage("没有可用的 harness");
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          list.map((h) => ({ label: h.label, description: h.available ? h.version ?? "" : "（不可用）", id: h.id })),
+          { placeHolder: "接续到哪个 harness？最近历史作为背景注入，完整历史落快照文件" },
+        );
+        if (!pick) return;
+        this.client.send({ type: "handoff", sessionId: this.sessionId, targetHarnessId: pick.id });
+      })();
+      return;
+    }
+    if (cmd === "detail") {
+      requestSessionDetail(this.client, this.sessionId);
+      return;
+    }
+    if (cmd === "copyText") {
+      void vscode.env.clipboard.writeText(String(m.text ?? "")).then(() => vscode.window.showInformationMessage("已复制"));
+      return;
+    }
+    if (cmd === "retryModel") {
+      // 与网页版同策略：切到 model 配置里第一个不同的选项，重发由用户决定
+      const s = this.session;
+      const model = (s?.configOptions ?? []).find((o) => (o.category ?? "").toLowerCase() === "model" && o.options?.length);
+      const alt = model ? (model.options ?? []).map((o) => o.value).find((v) => v && v !== model.currentValue) : undefined;
+      if (!model || !alt) {
+        void vscode.window.showInformationMessage(model ? "只有一个模型可选，稍后再发一次吧" : "这个 harness 未上报可切换的模型");
+        return;
+      }
+      this.client.send({ type: "config", sessionId: this.sessionId, configId: model.id, value: alt });
+      void vscode.window.setStatusBarMessage(`已切到模型 ${alt}，重新发送即可`, 5000);
       return;
     }
     if (cmd === "autoApprove") {
@@ -358,6 +513,7 @@ export class ChatPanel {
       live: s.live,
       resumable: s.resumable,
       inTurn: s.inTurn,
+      canAdopt: Boolean(s.parentId),
       error: s.error,
       showLog: this.showLog,
       aaSel,
@@ -396,7 +552,11 @@ export class ChatPanel {
 
   private html(): string {
     const kt = katexInline();
-    const csp = "default-src 'none'; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline';";
+    const csp = `default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:; script-src 'unsafe-inline' ${this.panel.webview.cspSource};`;
+    // Mermaid 懒加载：webview 里出现 mermaid 代码块时才拉这个本地资源（activate 未注入 extUri 时留空=退化为代码块）
+    const mmUri = ChatPanel.extUri
+      ? this.panel.webview.asWebviewUri(vscode.Uri.joinPath(ChatPanel.extUri, "media", "mermaid", "mermaid.min.js")).toString()
+      : "";
     return `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
@@ -455,6 +615,29 @@ export class ChatPanel {
     border:1px solid var(--vscode-input-border); border-radius:5px; font-family:inherit; font-size:inherit; }
   footer button { background:var(--vscode-button-background); color:var(--vscode-button-foreground);
     border:0; border-radius:5px; padding:7px 15px; cursor:pointer; }
+  #chips .chip { display:inline-flex; gap:5px; align-items:center; font-size:11px; color:var(--dim);
+    border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
+  #chips .chip img { width:30px; height:30px; object-fit:cover; border-radius:4px; }
+  #chips .chip b { cursor:pointer; color:var(--vscode-foreground); font-weight:normal; }
+  .msg.user .att { display:inline-flex; align-items:center; gap:4px; font-size:11px; color:var(--dim);
+    border:1px solid var(--line); border-radius:999px; padding:1px 8px; margin:4px 4px 0 0; }
+  .msg.user .att img { width:110px; height:110px; object-fit:cover; border-radius:6px; display:block; margin-top:5px; }
+  .bubble button.errAct { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
+    border:0; border-radius:4px; padding:3px 10px; font-size:11.5px; cursor:pointer; margin-top:8px; }
+  .mmBlock { border:1px solid var(--line); border-radius:8px; margin:8px 0; overflow:hidden; }
+  .mmBar { display:flex; gap:8px; align-items:center; padding:5px 10px; border-bottom:1px solid var(--line); font-size:11px; color:var(--dim); }
+  .mmBar button { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
+    border:0; border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer; }
+  .mmOut { padding:10px; overflow:auto; cursor:zoom-in; }
+  .mmOut svg { max-width:100%; }
+  .mmErr { color:var(--vscode-errorForeground); font-size:12px; }
+  .mmSrc { margin:0; padding:10px; font-size:11.5px; white-space:pre-wrap; font-family:var(--vscode-editor-font-family); }
+  #mmOverlay { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:99; display:flex; flex-direction:column; }
+  #mmOverlay .mmTool { display:flex; gap:8px; padding:8px 12px; }
+  #mmOverlay .mmTool button { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
+    border:0; border-radius:4px; padding:3px 10px; cursor:pointer; }
+  #mmOverlay .mmStage { flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  #mmOverlay .mmStage svg { max-width:none; max-height:none; }
   .empty { color:var(--dim); text-align:center; padding:40px 20px; }
   /* 工具栏：搜索 + 折叠 + 我的发言（与网页版对齐）；wrap 保证窄面板下按钮不丢 */
   .bar { display:flex; gap:5px; align-items:center; padding:5px 10px; border-bottom:1px solid var(--line);
@@ -492,10 +675,16 @@ export class ChatPanel {
 </div>
 <div id="stream"><div class="empty">加载中…</div></div>
 <button id="toBottom" title="回到底部">↓</button>
+<div id="chips" style="display:none;gap:6px;flex-wrap:wrap;padding:6px 12px 0"></div>
 <footer>
+  <button id="attach" title="附件（图片，每个 ≤5MB）" style="padding:7px 10px">📎</button>
   <textarea id="input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
   <button id="send">发送</button>
+  <input type="file" id="fileInput" accept="image/*" multiple style="display:none" />
 </footer>
+<script>
+  window.__MM_URI = ${JSON.stringify(mmUri)};
+</script>
 <script>
   /* 与服务端/插件同一套 Markdown 渲染器（构建时内联；esc/mdToHtml 都来自它，别重复声明） */
   ${RENDERER_SOURCE}
@@ -545,6 +734,12 @@ export class ChatPanel {
       '<span class="meta">' + esc(h.statusLabel || h.status) + (h.error ? ' · ' + esc(h.error) : '') + '</span>' +
       (h.pending ? '<span class="meta" style="color:var(--vscode-charts-orange)">⏳ 待审批：' + esc(h.pending) + '</span>' : '') +
       '<span style="flex:1"></span>' + cfg + modes + (h.aaSel || '') +
+      // 与网页版同规则：分支会话显示「收编」、普通会话显示「分支」（parentId 互换）
+      (h.canAdopt
+        ? '<button data-act="adopt" title="把本分支的结论蒸馏后注入主线，随后分支删除">⇱ 收编</button>'
+        : '<button data-act="branch" title="fork 当前上下文开一个分支会话，互不打扰">⎇ 分支</button>') +
+      '<button data-act="handoff" title="带着最近历史接到新会话（可换 harness），完整历史落快照文件">⇄ 接续</button>' +
+      '<button data-act="detail" title="本会话的授权决策记录与改动文件">🧾 决策</button>' +
       (h.inTurn ? '<button data-act="interrupt" class="primary">⏹ 打断</button>' : '') +
       (h.live ? '<button data-act="stop">停止</button>' : (h.resumable ? '<button class="primary" data-act="resume">恢复</button>' : '')) +
       '<button data-act="toggleLog">' + (h.showLog ? '隐藏日志' : '日志') + '</button>';
@@ -673,6 +868,8 @@ export class ChatPanel {
   stream.addEventListener('click', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
+    const act = t.closest('button[data-eact]');
+    if (act) { vscode.postMessage({ cmd: act.dataset.eact }); return; }   // 错误条上的恢复按钮
     const head = t.closest('.who'), sum = t.closest('.sum');
     const msg = t.closest('.msg');
     if (!msg) return;
@@ -691,6 +888,101 @@ export class ChatPanel {
         b.parentElement.innerHTML = '<span class="meta">已选择：' + esc(b.textContent) + '</span>';
       };
     });
+  }
+
+  /* ---------- Mermaid 图表（与网页版对齐：懒加载 / 语法容错 / 全屏缩放拖拽） ---------- */
+  let mmLoad = null, mmSeq = 0;
+  function normalizeMermaidCode(raw){
+    if (!raw) return '';
+    let code = String(raw).trim();
+    code = code.replace(/^\`\`\`(?:mermaid)?\\s*\\n?/i, '').replace(/\\n?\\s*\`\`\`$/i, '');   // 误裹的围栏
+    code = code.replace(/<==>/g, '<-->');                                            // LLM 高频笔误：双向粗箭头
+    code = code.replace(/　/g, '  ');                                            // 全角空格
+    return code;
+  }
+  function mmInit(){
+    try {
+      mermaid.initialize({ startOnLoad:false, suppressErrorRendering:true, theme:'dark', securityLevel:'loose',
+        flowchart:{ useMaxWidth:true, htmlLabels:true, curve:'basis' },
+        themeVariables:{ darkMode:true, background:'#12151c', primaryColor:'#2a4a7a', primaryTextColor:'#e8ebf1',
+          primaryBorderColor:'#5b9cf8', lineColor:'#8b93a5', secondaryColor:'#171b24', tertiaryColor:'#0b0d12' } });
+      try { mermaid.setParseErrorHandler?.(() => {}); } catch {}
+    } catch (e) { console.warn('mermaid init', e); }
+  }
+  function ensureMermaid(cb){
+    if (window.mermaid) { cb(); return; }
+    if (!window.__MM_URI) return;               // 资源不可用（如测试环境）：代码块保持原样
+    if (mmLoad) { mmLoad.then(cb); return; }
+    mmLoad = new Promise((res) => {
+      const s = document.createElement('script');
+      s.src = window.__MM_URI;
+      s.onload = () => { mmInit(); res(); };
+      s.onerror = () => res();
+      document.head.appendChild(s);
+    });
+    mmLoad.then(cb);
+  }
+  function mmMount(){
+    const blocks = stream.querySelectorAll('pre[data-lang="mermaid"]:not([data-mm])');
+    if (!blocks.length) return;
+    if (!window.mermaid) { ensureMermaid(mmMount); return; }
+    blocks.forEach((pre) => {
+      pre.dataset.mm = '1';
+      const codeEl = pre.querySelector('code');
+      const code = normalizeMermaidCode(codeEl ? codeEl.textContent : '');
+      if (!code) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'mmBlock';
+      wrap.innerHTML = '<div class="mmBar"><span>📐 Mermaid 图表</span><span style="flex:1"></span>' +
+        '<button data-mma="zoom" title="全屏放大与拖拽">🔍 放大</button>' +
+        '<button data-mma="src" title="查看源码">📝 源码</button>' +
+        '<button data-mma="copy" title="复制源码">📋 复制</button></div>' +
+        '<div class="mmOut" title="点击全屏"></div><pre class="mmSrc" style="display:none"><code></code></pre>';
+      wrap.querySelector('.mmSrc code').textContent = code;
+      pre.replaceWith(wrap);
+      const out = wrap.querySelector('.mmOut');
+      mermaid.render('mmd' + (++mmSeq), code).then((r) => {
+        out.innerHTML = r.svg;
+        out.onclick = () => mmModal(r.svg);
+      }, (err) => {
+        out.innerHTML = '<div class="mmErr">⚠️ Mermaid 渲染失败: ' + esc(String((err && err.message) || err)) + '</div>';
+        wrap.querySelector('.mmSrc').style.display = '';   // 渲染失败直接亮源码
+      });
+      wrap.querySelector('[data-mma=zoom]').onclick = () => { const svg = out.querySelector('svg'); if (svg) mmModal(svg.outerHTML); };
+      wrap.querySelector('[data-mma=src]').onclick = () => {
+        const s2 = wrap.querySelector('.mmSrc'); s2.style.display = s2.style.display === 'none' ? '' : 'none';
+      };
+      wrap.querySelector('[data-mma=copy]').onclick = () => vscode.postMessage({ cmd:'copyText', text: code });
+    });
+  }
+  /* DOM 变化统一挂载（render/upsert/append/翻页全覆盖），300ms 去抖 */
+  let mmTimer = null;
+  new MutationObserver(() => { clearTimeout(mmTimer); mmTimer = setTimeout(mmMount, 300); })
+    .observe(stream, { childList: true, subtree: true });
+
+  let mmScale = 1, mmTx = 0, mmTy = 0;
+  function mmModal(svgHtml){
+    let ov = document.getElementById('mmOverlay');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'mmOverlay';
+    ov.innerHTML = '<div class="mmTool"><button data-x="in">＋</button><button data-x="out">－</button>' +
+      '<button data-x="fit">适配</button><button data-x="close">✕ 关闭</button></div><div class="mmStage"></div>';
+    ov.querySelector('.mmStage').innerHTML = svgHtml;
+    document.body.appendChild(ov);
+    const stage = ov.querySelector('.mmStage');
+    const apply = () => { stage.style.transform = 'translate(' + mmTx + 'px,' + mmTy + 'px) scale(' + mmScale + ')'; };
+    mmScale = 1; mmTx = 0; mmTy = 0; apply();
+    ov.querySelector('[data-x=in]').onclick = () => { mmScale = Math.min(6, mmScale * 1.2); apply(); };
+    ov.querySelector('[data-x=out]').onclick = () => { mmScale = Math.max(0.15, mmScale / 1.2); apply(); };
+    ov.querySelector('[data-x=fit]').onclick = () => { mmScale = 1; mmTx = 0; mmTy = 0; apply(); };
+    ov.querySelector('[data-x=close]').onclick = () => ov.remove();
+    ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+    ov.addEventListener('wheel', (e) => { e.preventDefault(); mmScale = Math.min(6, Math.max(0.15, mmScale * (e.deltaY < 0 ? 1.12 : 0.89))); apply(); }, { passive:false });
+    let drag = null;
+    stage.onmousedown = (e) => { drag = { x: e.clientX - mmTx, y: e.clientY - mmTy }; e.preventDefault(); };
+    window.addEventListener('mousemove', (e) => { if (drag) { mmTx = e.clientX - drag.x; mmTy = e.clientY - drag.y; apply(); } });
+    window.addEventListener('mouseup', () => { drag = null; });
   }
 
   window.addEventListener('message', (ev) => {
@@ -760,10 +1052,43 @@ export class ChatPanel {
   });
 
   const input = $('input');
+  /* 附件：图片多选（≤5MB/个），chips 预览可删；与网页版/APP 对齐 */
+  const attach = [];
+  const chipsEl = $('chips');
+  function renderChips(){
+    chipsEl.style.display = attach.length ? 'flex' : 'none';
+    chipsEl.innerHTML = '';
+    attach.forEach((a, i) => {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = (a.dataUrl ? '<img src="' + a.dataUrl + '" alt="">' : '') + '<span>' + esc(a.name) + '</span><b title="移除">✕</b>';
+      c.querySelector('b').onclick = () => { attach.splice(i, 1); renderChips(); };
+      chipsEl.appendChild(c);
+    });
+  }
+  $('attach').onclick = () => $('fileInput').click();
+  $('fileInput').onchange = () => {
+    const files = [...$('fileInput').files];
+    $('fileInput').value = '';
+    let pending = files.length;
+    for (const f of files) {
+      if (f.size > 5 * 1024 * 1024) { pending--; continue; }   // 超限静默跳过（webview 无 alert）
+      const rd = new FileReader();
+      rd.onload = () => {
+        const dataUrl = String(rd.result || '');
+        attach.push({ name: f.name, mime: f.type || 'image/png', dataUrl, data: dataUrl.split(',')[1] || '' });
+        renderChips();
+      };
+      rd.onerror = () => { if (--pending <= 0) renderChips(); };
+      rd.readAsDataURL(f);
+    }
+  };
   function send(){
     const t = input.value.trim();
-    if (!t) return;
-    vscode.postMessage({ cmd:'send', text:t });
+    if (!t && !attach.length) return;
+    vscode.postMessage({ cmd:'send', text:t, attachments: attach.map((a) => ({ name:a.name, mimeType:a.mime, data:a.data, dataUrl:a.dataUrl })) });
+    attach.length = 0;
+    renderChips();
     input.value = '';
   }
   $('send').onclick = send;
@@ -808,7 +1133,7 @@ function mergeToolDetail(prev: string | undefined, kind: string, u: Record<strin
 
 function toEntry(e: TranscriptEntry): Entry {
   switch (e.kind) {
-    case "user": return { kind: "user", text: e.text };
+    case "user": return { kind: "user", text: e.text, attachments: (e.attachments ?? []).map((a) => ({ name: String(a.name ?? "") })) };
     case "assistant": return { kind: "assistant", text: e.text };
     case "thought": return { kind: "thought", text: e.text };
     case "tool": return { kind: "tool", title: e.title, status: e.status, toolCallId: e.toolCallId };
@@ -820,7 +1145,14 @@ function toEntry(e: TranscriptEntry): Entry {
 
 function htmlOf(e: Entry): string {
   switch (e.kind) {
-    case "user": return `<p>${esc(e.text).replace(/\n/g, "<br>")}</p>`;
+    case "user": {
+      const att = (e.attachments ?? []).map((a) =>
+        a.dataUrl
+          ? `<span class="att">📎 ${esc(a.name)}<img src="${a.dataUrl}" alt="${esc(a.name)}"></span>`
+          : `<span class="att">📎 ${esc(a.name)}</span>`,
+      ).join("");
+      return `<p>${esc(e.text).replace(/\n/g, "<br>")}</p>${att}`;
+    }
     case "assistant": return mdToHtmlMath(e.text);
     case "thought": return `<p>${esc(e.text).replace(/\n/g, "<br>")}</p>`;
     case "tool": return `${esc(e.title)} <span style="opacity:.7">[${esc(e.status)}]</span>` +
@@ -832,7 +1164,12 @@ function htmlOf(e: Entry): string {
         .join("");
       return `${esc(e.title)}<div class="permOpts">${opts}</div>`;
     }
-    case "error": return esc(e.message);
+    case "error": {
+      let h = esc(e.message);
+      if (e.action === "handoff") h += `<br><button class="errAct" data-eact="handoff">⇄ 在新会话里接续</button>`;
+      if (e.action === "model") h += `<br><button class="errAct" data-eact="retryModel">🔄 换个模型重试</button>`;
+      return h;
+    }
     case "log": return esc(e.text);
   }
 }

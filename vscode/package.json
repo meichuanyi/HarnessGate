@@ -2,7 +2,7 @@
   "name": "harnessgate",
   "displayName": "HarnessGate",
   "description": "HarnessGate 的 VS Code 客户端（瘦客户端，本机无需装任何 agent CLI）。需要先在服务器上安装并运行后端 HarnessGate：git clone 后 npm install && npm start（监听 9830），插件里填 ws://<服务器IP>:9830/ws 即可远程驱动 OpenCode/Claude Code/Codex/ZCode 等多个编码 agent",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "publisher": "meichuan",
   "license": "MIT",
   "engines": {
@@ -156,6 +156,26 @@
       {
         "command": "harnessgate.harnessManage",
         "title": "HarnessGate: ⬆ Harness 安装/升级"
+      },
+      {
+        "command": "harnessgate.branchSession",
+        "title": "HarnessGate: ⎇ 分支（fork 当前会话）"
+      },
+      {
+        "command": "harnessgate.adoptBranch",
+        "title": "HarnessGate: ⇱ 收编回主线（分支会话）"
+      },
+      {
+        "command": "harnessgate.handoffSession",
+        "title": "HarnessGate: ⇄ 接续到新会话"
+      },
+      {
+        "command": "harnessgate.sessionDetail",
+        "title": "HarnessGate: 🧾 决策与改动"
+      },
+      {
+        "command": "harnessgate.skillsMcp",
+        "title": "HarnessGate: 🧰 技能与 MCP"
       }
     ],
     "menus": {
@@ -214,6 +234,11 @@
           "command": "harnessgate.expandAll",
           "when": "view == harnessgate.harnesses",
           "group": "navigation@11"
+        },
+        {
+          "command": "harnessgate.skillsMcp",
+          "when": "view == harnessgate.harnesses",
+          "group": "navigation@12"
         }
       ],
       "view/item/context": [
@@ -261,6 +286,26 @@
           "command": "harnessgate.harnessManage",
           "when": "view == harnessgate.harnesses && viewItem =~ /harness/",
           "group": "1_harness@1"
+        },
+        {
+          "command": "harnessgate.branchSession",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "3_more@1"
+        },
+        {
+          "command": "harnessgate.adoptBranch",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "3_more@2"
+        },
+        {
+          "command": "harnessgate.handoffSession",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "3_more@3"
+        },
+        {
+          "command": "harnessgate.sessionDetail",
+          "when": "view == harnessgate.harnesses && viewItem =~ /session/",
+          "group": "3_more@4"
         }
       ]
     },

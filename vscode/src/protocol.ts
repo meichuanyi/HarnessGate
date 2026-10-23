@@ -88,8 +88,28 @@ export type HarnessAvailability = {
 
 export type PermissionOption = { optionId: string; name: string; kind?: string };
 
+/** 受管 MCP 服务器（mcp.json；type=stdio 走 command，http/sse 走 url） */
+export type McpServerInfo = {
+  id: string;
+  name: string;
+  type: "stdio" | "http" | "sse";
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  note?: string;
+};
+
+export type SkillMetaView = { name: string; description?: string; tokens?: number; mountedOn?: string[] };
+export type SkillsSnapshotView = {
+  library: SkillMetaView[];
+  mounts: Array<{ harnessId: string; skills: Array<{ name: string; native: boolean; tokens: number }>; totalTokens: number }>;
+};
+
 export type TranscriptEntry =
-  | { kind: "user"; text: string; ts: string }
+  | { kind: "user"; text: string; ts: string; attachments?: Array<{ name: string; mimeType?: string }> }
   | { kind: "assistant"; text: string; ts: string }
   | { kind: "thought"; text: string; ts: string }
   | { kind: "tool"; title: string; status: string; ts: string; toolCallId?: string }
@@ -240,6 +260,23 @@ export type ClientMsg =
   | { type: "session-gear-save"; sessionId: string; mcpServerIds: string[] }
   | { type: "archive"; sessionId: string; q?: string }
   | { type: "side-question"; sessionId: string; text: string }
+  /** 找回在跑的侧问分身（按源会话查 live）——切走再回来不丢分身，追问复用同一个 */
+  | { type: "side-find"; srcId: string }
+  /** ⎇ 分支：fork 当前会话上下文开新会话（回 branch-created，与网页版/APP 对齐） */
+  | { type: "branch"; sessionId: string; branchName?: string }
+  /** ⇱ 收编：把分支结论蒸馏后注入主线并删除分支（广播 branch-adopted） */
+  | { type: "adopt-branch"; branchId: string; mainId: string }
+  /** 🧾 决策记录 + 改动文件（回 session-detail） */
+  | { type: "session-detail"; sessionId: string }
+  /** 技能与 MCP 管理（对齐网页版设置抽屉）：MCP 增删改 + 技能增删改/挂载/读全文 */
+  | { type: "mcp-list" }
+  | { type: "mcp-save"; server: McpServerInfo }
+  | { type: "mcp-delete"; id: string }
+  | { type: "skills" }
+  | { type: "skills-save"; skill: { name: string; description: string; body: string; renameFrom?: string } }
+  | { type: "skills-delete"; name: string }
+  | { type: "skills-mount"; name: string; harnessId: string; on: boolean }
+  | { type: "skills-read"; reqId: string; name: string; nativeHarness?: string }
   | { type: "harness-manage"; harnessId: string; action: "install" | "update" }
   | { type: "resume"; sessionId: string }
   | { type: "mode"; sessionId: string; modeId: string }
@@ -248,7 +285,7 @@ export type ClientMsg =
   | { type: "crew-detail"; roomId: string }
   | { type: "crew-merge"; roomId: string }
   | { type: "config"; sessionId: string; configId: string; value: string }
-  | { type: "prompt"; sessionId: string; text: string }
+  | { type: "prompt"; sessionId: string; text: string; attachments?: Array<{ name: string; mimeType: string; data: string }> }
   | { type: "permission"; sessionId: string; requestId: string; optionId: string }
   | { type: "close"; sessionId: string }
   /** 打断当前回合（session/cancel），会话保持可用；不同于 close（停整个会话进程） */
@@ -257,6 +294,7 @@ export type ClientMsg =
   | { type: "star"; sessionId: string; starred: boolean }
   | { type: "archive-content"; sessionId: string; total: number; lines: string[] }
   | { type: "side-created"; sessionId: string; srcId: string }
+  | { type: "side-found"; srcId: string; sessionId: string | null }
   | { type: "harness-managed"; harnessId: string; action: "install" | "update"; ok: boolean; from?: string; to?: string; output?: string }
   | { type: "set-tags"; sessionId: string; tags: string[] }
   /** 确保助理会话存在（无则服务端用默认 harness 创建） */
@@ -273,7 +311,8 @@ export type ClientMsg =
   /** 工作区归因（只读） */
   | { type: "workspace"; cwd?: string }
   | { type: "ping" }
-  | { type: "handoff"; sessionId: string; keep?: number }
+  /** ⇄ 接续：带着最近历史接到新会话（可换 harness/模型），完整历史落快照文件（回 handoff_done） */
+  | { type: "handoff"; sessionId: string; targetHarnessId?: string; model?: string }
   | { type: "sync-history"; harnessId?: string; force?: boolean }
   | { type: "transcript"; sessionId: string }
   | { type: "dirs"; reqId: string; input: string; base?: string }
@@ -348,6 +387,7 @@ export type ServerMsg =
       /** 常驻助理会话 id（null = 尚未创建） */
       assistantSessionId?: string | null;
       mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>;
+      skills?: SkillsSnapshotView;
       goals?: Goal[];
       lifeTasks?: MindwtrTaskView[];
     }
@@ -362,6 +402,12 @@ export type ServerMsg =
   | { type: "history"; providers: Array<{ id: string; label: string }>; summaries?: Array<{ label: string; imported: number; updated: number; skipped: number }> }
   | { type: "log"; sessionId: string; line: string }
   | { type: "deleted"; sessionId: string }
+  | { type: "branch-created"; from: string; to: string }
+  | { type: "branch-adopted"; branchId: string; mainId: string; summary: string }
+  | { type: "handoff_done"; from: string; to: string }
+  | { type: "mcp"; servers: McpServerInfo[] }
+  | { type: "skills"; library?: SkillMetaView[]; mounts?: SkillsSnapshotView["mounts"]; reqId?: string }
+  | { type: "skills-content"; reqId: string; name: string; content: string }
   | { type: "settings"; settings: Record<string, unknown> }
   | { type: "schedules"; schedules: Schedule[] }
   | { type: "goals"; goals: GoalView[]; lifeTasks?: MindwtrTaskView[] }

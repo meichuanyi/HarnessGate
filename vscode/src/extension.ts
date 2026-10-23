@@ -2,9 +2,10 @@ import * as vscode from "vscode";
 import { GateClient } from "./client.ts";
 import { Store } from "./store.ts";
 import { HarnessTreeProvider } from "./tree.ts";
-import { ChatPanel } from "./chat.ts";
+import { ChatPanel, requestSessionDetail } from "./chat.ts";
 import { RoomPanel } from "./room-panel.ts";
 import { SchedulesPanel, WorkspacePanel, setSchedulesData, setWorkspaceData } from "./schedules-panel.ts";
+import { SkillsPanel } from "./skills-panel.ts";
 import { GoalsPanel, setGoalsData } from "./goals-panel.ts";
 import { promptCwd } from "./cwd-input.ts";
 import type { GoalView, HarnessAvailability, MindwtrTaskView, Room, SessionInfo } from "./protocol.ts";
@@ -28,6 +29,7 @@ export type HarnessGateApi = {
 };
 
 export function activate(context: vscode.ExtensionContext): HarnessGateApi {
+  ChatPanel.extUri = context.extensionUri;   // Mermaid 等本地资源经 asWebviewUri 按需加载
   output = vscode.window.createOutputChannel("HarnessGate");
   const cfg = () => vscode.workspace.getConfiguration("harnessgate");
   client = new GateClient(
@@ -149,6 +151,29 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
         title: "❓ 侧问 · 会话 #" + id,
       });
       if (!text?.trim()) return;
+      // 先按源找回在跑的分身：有则直接追问（复用同一个，不另开）；没有才 fork 新的
+      const existing = await new Promise<string | null>((resolve) => {
+        const onFound = (m: { srcId?: string; sessionId?: string | null }) => {
+          if (m.srcId !== id) return;
+          cleanup();
+          resolve(m.sessionId ?? null);
+        };
+        const cleanup = () => {
+          clearTimeout(timer);
+          client.off("side-found", onFound);
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          resolve(null);
+        }, 3000);
+        client.on("side-found", onFound);
+        client.send({ type: "side-find", srcId: id });
+      });
+      if (existing) {
+        client.send({ type: "prompt", sessionId: existing, text: text.trim() });
+        vscode.commands.executeCommand("harnessgate.openChat", existing);
+        return;
+      }
       let sideId: string | null = null;
       const onSide = (m: any) => {
         if (m.srcId === id) {
@@ -161,6 +186,60 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
       client.on("side-created", onSide);
       client.send({ type: "side-question", sessionId: id, text: text.trim() });
       setTimeout(() => client.off("side-created", onSide), 120_000);
+    }),
+
+    // ⎇ 分支（fork 当前上下文开新会话，建好直接进入）
+    vscode.commands.registerCommand("harnessgate.branchSession", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const name = await vscode.window.showInputBox({
+        placeHolder: "分支名（可留空）",
+        title: `⎇ 分支 · 会话 #${id}`,
+        validateInput: (v) => (v.length > 20 ? "最长 20 字" : undefined),
+      });
+      if (name === undefined) return;
+      client.send({ type: "branch", sessionId: id, branchName: name.trim() || undefined });
+    }),
+
+    // ⇱ 收编回主线（仅分支会话：结论蒸馏注入主线后分支删除）
+    vscode.commands.registerCommand("harnessgate.adoptBranch", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const parentId = node?.session?.parentId ?? store.getSession(id)?.parentId;
+      if (!parentId) {
+        vscode.window.showInformationMessage("这个会话不是分支（没有父会话），无需收编");
+        return;
+      }
+      const pick = await vscode.window.showWarningMessage(
+        "⇱ 收编回主线？",
+        { modal: true, detail: "分支的结论会被蒸馏后注入主线，随后本分支删除（完整历史仍在归档）。" },
+        "收编",
+      );
+      if (pick === "收编") client.send({ type: "adopt-branch", branchId: id, mainId: parentId });
+    }),
+
+    // ⇄ 接续（带最近历史接到新会话，完整历史落快照文件）
+    vscode.commands.registerCommand("harnessgate.handoffSession", async (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      const list = store.harnesses;
+      if (!list.length) {
+        vscode.window.showWarningMessage("没有可用的 harness");
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        list.map((h) => ({ label: h.label, description: h.available ? h.version ?? "" : "（不可用）", id: h.id })),
+        { placeHolder: "接续到哪个 harness？最近历史作为背景注入，完整历史落快照文件" },
+      );
+      if (!pick) return;
+      client.send({ type: "handoff", sessionId: id, targetHarnessId: pick.id });
+    }),
+
+    // 🧾 决策与改动（授权决策记录 + 改动文件）
+    vscode.commands.registerCommand("harnessgate.sessionDetail", (node?: { session?: SessionInfo; id?: string }) => {
+      const id = node?.session?.id ?? node?.id;
+      if (!id) return;
+      requestSessionDetail(client, id);
     }),
 
     // Harness 版本管理（安装/升级）
@@ -270,6 +349,9 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     vscode.commands.registerCommand("harnessgate.rooms", () => {
       RoomPanel.show(client, store, (l) => output.appendLine(l));
     }),
+    vscode.commands.registerCommand("harnessgate.skillsMcp", () => {
+      SkillsPanel.show(client, store, (l) => output.appendLine(l));
+    }),
     vscode.commands.registerCommand("harnessgate.openChat", (arg?: string | { session?: SessionInfo; id?: string }) => {
       // 树行点击传的是 id 字符串；内联按钮/右键菜单（view/item/context）传的是树节点对象——两种都要接
       const id = typeof arg === "string" ? arg : (arg?.session?.id ?? arg?.id);
@@ -322,9 +404,10 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
     rooms?: Room[];
     schedules?: import("./protocol.ts").Schedule[];
     assistantSessionId?: string | null;
-    mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>;
+    mcpServers?: import("./protocol.ts").McpServerInfo[];
+    skills?: import("./protocol.ts").SkillsSnapshotView;
   }) => {
-    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms, msg.schedules, msg.assistantSessionId, msg.mcpServers);
+    store.setHello(msg.harnesses ?? [], msg.sessions ?? [], msg.defaultCwd ?? "", msg.rooms, msg.schedules, msg.assistantSessionId, msg.mcpServers, msg.skills);
     if (msg.schedules) setSchedulesData(msg.schedules);
     output.appendLine(
       `已同步：${msg.harnesses?.length ?? 0} 个 harness，${msg.sessions?.length ?? 0} 个会话，${msg.rooms?.length ?? 0} 个圆桌，${msg.schedules?.length ?? 0} 个定时任务`,
@@ -359,6 +442,23 @@ export function activate(context: vscode.ExtensionContext): HarnessGateApi {
   });
   client.on("deleted", (msg: { sessionId: string }) => {
     if (msg.sessionId) store.removeSession(msg.sessionId);
+  });
+  // 分支建好直接进新分支（只发给请求方）；收编完成提示蒸馏摘要（广播）；接续完成跳新会话（只发给请求方）
+  client.on("branch-created", (msg: { from: string; to: string }) => {
+    if (msg.to) void vscode.commands.executeCommand("harnessgate.openChat", msg.to);
+  });
+  client.on("branch-adopted", (msg: { branchId: string; mainId: string; summary?: string }) => {
+    void vscode.window.showInformationMessage(`⇱ 已收编回主线：${(msg.summary ?? "").slice(0, 200) || "（无摘要）"}`);
+  });
+  client.on("handoff_done", (msg: { from: string; to: string }) => {
+    if (msg.to) void vscode.commands.executeCommand("harnessgate.openChat", msg.to);
+  });
+  // MCP/技能全量推送（保存/删除/挂载后服务端广播）：入库并让管理面板即时刷新
+  client.on("mcp", (msg: { servers?: import("./protocol.ts").McpServerInfo[] }) => {
+    if (msg.servers) store.setMcpServers(msg.servers);
+  });
+  client.on("skills", (msg: { library?: import("./protocol.ts").SkillMetaView[]; mounts?: import("./protocol.ts").SkillsSnapshotView["mounts"] }) => {
+    if (msg.library) store.setSkills({ library: msg.library, mounts: msg.mounts ?? [] });
   });
   client.on("error", (msg: { message?: string }) => {
     if (msg.message) void vscode.window.showErrorMessage(`HarnessGate: ${msg.message}`);

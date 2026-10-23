@@ -171,6 +171,9 @@ export class RoomPanel {
         topic: String(m.topic ?? ""),
         rounds: isCrew ? 0 : Number(m.rounds ?? 1) || 1,
         mode: m.mode === "sequential" ? "sequential" : "parallel",
+        // 表单里的共识即停/评分锦标赛此前收了没转发，服务端收 undefined 即静默关闭
+        converge: isCrew ? false : m.converge !== false,
+        tournament: isCrew ? false : m.tournament === true,
         writeAllowed: isCrew ? true : m.writeAllowed === true,
         crew: isCrew ? { maxAttempts: 2, mergeMode: m.mergeMode === "auto" ? "auto" : "manual" } : undefined,
         host: hostId

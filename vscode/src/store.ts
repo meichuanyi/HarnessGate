@@ -1,4 +1,14 @@
-import type { GoalView, HarnessAvailability, MindwtrTaskView, Room, Schedule, SessionInfo, WorkspaceReport } from "./protocol.ts";
+import type {
+  GoalView,
+  HarnessAvailability,
+  McpServerInfo,
+  MindwtrTaskView,
+  Room,
+  Schedule,
+  SessionInfo,
+  SkillsSnapshotView,
+  WorkspaceReport,
+} from "./protocol.ts";
 
 /**
  * 全局状态：服务端推来的 harness 列表、会话列表与圆桌列表。
@@ -8,8 +18,10 @@ export class Store {
   harnesses: HarnessAvailability[] = [];
   sessions = new Map<string, SessionInfo>();
   rooms = new Map<string, Room>();
-  /** 服务端配置的 MCP 服务器（hello 下发，新建会话勾选用） */
-  mcpServers: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; args?: string[]; url?: string }> = [];
+  /** 服务端配置的 MCP 服务器（hello/mcp 消息维护，新建会话勾选与装备抽屉用） */
+  mcpServers: McpServerInfo[] = [];
+  /** 技能库与挂载视图（hello/skills 消息维护） */
+  skills: SkillsSnapshotView = { library: [], mounts: [] };
   defaultCwd = "";
   /** 定时任务（schedules 消息维护） */
   schedules: Schedule[] = [];
@@ -40,7 +52,8 @@ export class Store {
     rooms?: Room[],
     schedules?: Schedule[],
     assistantSessionId?: string | null,
-    mcpServers?: Array<{ id: string; name: string; type: string; enabled?: boolean; command?: string; url?: string }>,
+    mcpServers?: McpServerInfo[],
+    skills?: SkillsSnapshotView,
   ): void {
     this.harnesses = harnesses;
     this.sessions = new Map(sessions.map((s) => [s.id, s]));
@@ -48,6 +61,19 @@ export class Store {
     if (schedules) this.schedules = schedules;
     this.assistantSessionId = assistantSessionId ?? null;
     if (defaultCwd) this.defaultCwd = defaultCwd;
+    // 此前只收参数不落地：新建会话的 MCP 多选永远拿到空列表
+    if (mcpServers) this.mcpServers = mcpServers;
+    if (skills) this.skills = skills;
+    this.fire();
+  }
+
+  setMcpServers(servers: McpServerInfo[]): void {
+    this.mcpServers = servers;
+    this.fire();
+  }
+
+  setSkills(snap: SkillsSnapshotView): void {
+    this.skills = snap;
     this.fire();
   }
 
