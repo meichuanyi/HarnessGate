@@ -280,6 +280,9 @@ class Entry {
 
   /// 附件名（user 消息带图时显示气泡缩略提示）
   final String? attachmentName;
+
+  /// 错误恢复动作（error 用）：handoff=空回合可接续到新会话；model=供应商侧故障可换模型重试
+  final String? errorAction;
   Entry({
     required this.kind,
     this.text,
@@ -293,6 +296,7 @@ class Entry {
     this.detail,
     this.output,
     this.attachmentName,
+    this.errorAction,
   });
   Entry copyWith(
           {String? title, String? status, String? detail, String? output}) =>
@@ -309,6 +313,7 @@ class Entry {
         detail: detail ?? this.detail,
         output: output ?? this.output,
         attachmentName: attachmentName,
+        errorAction: errorAction,
       );
 }
 
@@ -1118,3 +1123,15 @@ Map<String, dynamic> msgGoalTaskReschedule(String taskId, {String? dueDate, Stri
       if (dueDate != null) 'dueDate': dueDate,
       if (startTime != null) 'startTime': startTime,
     };
+
+/// 会话装备：拉取/保存会话级 MCP 与技能挂载（服务端回 session-gear）
+Map<String, dynamic> msgSessionGearGet(String sessionId) => {'type': 'session-gear-get', 'sessionId': sessionId};
+Map<String, dynamic> msgSessionGearSave(String sessionId, List<String> mcpServerIds, List<String> skillIds) =>
+    {'type': 'session-gear-save', 'sessionId': sessionId, 'mcpServerIds': mcpServerIds, 'skillIds': skillIds};
+
+/// 圆桌交互：断点续跑 / 追加议题 / 切换下一轮发言方式 / 工作队合并到主目录
+Map<String, dynamic> msgRoomRun(String roomId) => {'type': 'room-run', 'roomId': roomId};
+Map<String, dynamic> msgRoomTopic(String roomId, String topic, {int rounds = 1}) =>
+    {'type': 'room-topic', 'roomId': roomId, 'topic': topic, 'rounds': rounds};
+Map<String, dynamic> msgRoomMode(String roomId, String mode) => {'type': 'room-mode', 'roomId': roomId, 'mode': mode};
+Map<String, dynamic> msgCrewMerge(String roomId) => {'type': 'crew-merge', 'roomId': roomId};

@@ -497,11 +497,59 @@ class _ChatPageState extends State<ChatPage> {
           }
           _autoFollow();
           break;
-        case 'hg_error':
-          _entries.add(Entry(kind: 'error', message: u['message'] as String? ?? ''));
+        case 'hg_error': {
+          // 供应商侧故障（provider/upstream/限流/配额）给「换个模型重试」按钮——与网页版同策略
+          final msg = u['message'] as String? ?? '';
+          final isProvider =
+              RegExp(r'provider|upstream|rate limit|quota|APIError', caseSensitive: false).hasMatch(msg);
+          _streaming = false;
+          _entries.add(Entry(
+            kind: 'error',
+            message: msg + (isProvider ? '\n\n（看起来是模型供应商侧的故障：可以换个模型重试，或稍后再发一次）' : ''),
+            errorAction: isProvider ? 'model' : null,
+          ));
+          break;
+        }
+        case 'hg_noop_turn':
+          // 空回合（没产生任何输出）：可接续到新会话带着历史重来
+          _streaming = false;
+          _entries.add(Entry(
+            kind: 'error',
+            message: u['message'] as String? ?? '这一回合没有产生输出',
+            errorAction: 'handoff',
+          ));
           break;
       }
     });
+  }
+
+  /// 供应商侧故障一键换模型：切到 model 配置里第一个不同的选项（与网页版同策略，重发仍由用户决定）
+  void _retryWithModel() {
+    final s = _session;
+    ConfigOption? model;
+    for (final c in s?.configOptions ?? const <ConfigOption>[]) {
+      if ((c.category ?? '').toLowerCase() == 'model' && c.options.isNotEmpty) {
+        model = c;
+        break;
+      }
+    }
+    if (model == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('这个 harness 未上报可切换的模型')));
+      return;
+    }
+    var alt = '';
+    for (final o in model.options) {
+      if (o.value != model.currentValue) {
+        alt = o.value;
+        break;
+      }
+    }
+    if (alt.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('只有一个模型可选，稍后再发一次吧')));
+      return;
+    }
+    widget.client.send(msgConfig(widget.sessionId, model.id, alt));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已切到模型 $alt，重新发送即可')));
   }
 
   /// 流式追加：同 kind 的最后一条未收尾则续写
@@ -1150,6 +1198,15 @@ class _ChatPageState extends State<ChatPage> {
               builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId),
             ),
           ),
+          IconButton(
+            tooltip: '🛠 会话装备：本会话启用的 MCP 服务与领域技能',
+            icon: const Icon(Icons.construction_outlined, size: 20),
+            onPressed: () => showModalBottomSheet(
+              context: context,
+              isScrollControlled: true,
+              builder: (_) => GearSheet(client: widget.client, sessionId: widget.sessionId),
+            ),
+          ),
           if (inTurn)
             IconButton(
               tooltip: '打断当前回合',
@@ -1543,7 +1600,31 @@ class _ChatPageState extends State<ChatPage> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0xFFF85149).withValues(alpha: 0.5)),
             ),
-            child: SelectableText('✕ ${e.message ?? ''}', style: const TextStyle(fontSize: 12.5, color: Color(0xFFF85149))),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText('✕ ${e.message ?? ''}', style: const TextStyle(fontSize: 12.5, color: Color(0xFFF85149))),
+                if (e.errorAction != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: e.errorAction == 'handoff'
+                        ? TextButton.icon(
+                            onPressed: () => widget.client.send(msgHandoff(widget.sessionId)),
+                            icon: const Icon(Icons.alt_route, size: 16),
+                            label: const Text('在新会话里接续'),
+                            style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 10), visualDensity: VisualDensity.compact),
+                          )
+                        : TextButton.icon(
+                            onPressed: _retryWithModel,
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('换个模型重试'),
+                            style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 10), visualDensity: VisualDensity.compact),
+                          ),
+                  ),
+              ],
+            ),
           ),
         );
       default:

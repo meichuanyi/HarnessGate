@@ -20,6 +20,8 @@ class RoomDetailPage extends StatefulWidget {
 class _RoomDetailPageState extends State<RoomDetailPage> {
   StreamSubscription? _sub;
   final _scroll = ScrollController();
+  final _topicInput = TextEditingController();
+  int _topicRounds = 1;
 
   RoomInfo? get _room => widget.client.rooms[widget.roomId];
 
@@ -37,6 +39,7 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
   void dispose() {
     _sub?.cancel();
     _scroll.dispose();
+    _topicInput.dispose();
     super.dispose();
   }
 
@@ -71,6 +74,30 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
     if (ok == true) widget.client.send(msgRoomStop(widget.roomId));
   }
 
+  Future<void> _confirmMerge() async {
+    final r = _room;
+    if (r == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('🔗 合并到主目录'),
+        content: const Text('把工作队各任务的产物合并回主工作目录（完成后圆桌标记为已合并）。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('合并')),
+        ],
+      ),
+    );
+    if (ok == true) widget.client.send(msgCrewMerge(widget.roomId));
+  }
+
+  void _addTopic() {
+    final t = _topicInput.text.trim();
+    if (t.isEmpty) return;
+    _topicInput.clear();
+    widget.client.send(msgRoomTopic(widget.roomId, t, rounds: _topicRounds));
+  }
+
   @override
   Widget build(BuildContext context) {
     final r = _room;
@@ -100,6 +127,21 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
           ],
         ),
         actions: [
+          // 切换并行/串行：作用于下一轮发言方式
+          if (r.status != 'running')
+            IconButton(
+              tooltip: r.mode == 'parallel' ? '当前并行 · 切为串行（下一轮生效）' : '当前串行 · 切为并行（下一轮生效）',
+              icon: Icon(r.mode == 'parallel' ? Icons.call_split : Icons.linear_scale, size: 20),
+              onPressed: () =>
+                  widget.client.send(msgRoomMode(widget.roomId, r.mode == 'parallel' ? 'sequential' : 'parallel')),
+            ),
+          // 断点续跑：停止/出错且未到终态（讨论从第一个未完成轮继续；工作队保留任务板）
+          if (r.status == 'stopped' || r.status == 'error')
+            IconButton(
+              tooltip: r.isCrew ? '保留任务板继续：被打断的任务退回待办' : '从第一个未完成的轮继续（残缺发言会重说）',
+              icon: const Icon(Icons.play_circle_outline, color: Color(0xFF3FB950)),
+              onPressed: () => widget.client.send(msgRoomRun(widget.roomId)),
+            ),
           if (r.status == 'running')
             IconButton(
               tooltip: '停止圆桌',
@@ -148,6 +190,43 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                     itemBuilder: (_, i) => _turnCard(r.turns[i]),
                   ),
           ),
+          // 底部操作条：讨论圆桌=追加议题；工作队=合并到主目录（讨论进行中服务端会拒绝追加）
+          const Divider(height: 1),
+          if (r.isCrew)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: r.status == 'running' ? null : _confirmMerge,
+                  icon: const Icon(Icons.merge_type, size: 18),
+                  label: const Text('🔗 合并到主目录'),
+                ),
+              ),
+            )
+          else if (r.status != 'running')
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _topicInput,
+                    onSubmitted: (_) => _addTopic(),
+                    decoration: const InputDecoration(
+                        isDense: true, hintText: '追加议题…（同一批成员继续讨论）'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                DropdownButton<int>(
+                  value: _topicRounds,
+                  underline: const SizedBox.shrink(),
+                  items: [for (var n = 1; n <= 5; n++) DropdownMenuItem(value: n, child: Text('$n 轮'))],
+                  onChanged: (v) => setState(() => _topicRounds = v ?? 1),
+                ),
+                const SizedBox(width: 4),
+                IconButton(onPressed: _addTopic, icon: const Icon(Icons.send, size: 20)),
+              ]),
+            ),
         ],
       ),
     );
