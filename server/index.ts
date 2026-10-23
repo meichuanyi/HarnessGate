@@ -1621,8 +1621,15 @@ wss.on("connection", (ws, req) => {
             break;
           }
           if (victim) { reapSideSession(victim, "manual"); break; }
-          // 仅存档残留（不在运行）：直接摘除
+          // 仅存档残留（不在运行，如 server 重启后的分身）：摘除记录 + 清 harness 本地 fork 拷贝（与在跑路径一致）
           store.remove(msg.sessionId);
+          if (vrec.acpSessionId) {
+            const local = deleteHarnessLocalSessions(vrec.harnessId, [vrec.acpSessionId]);
+            if (local > 0) {
+              audit.append({ session: msg.sessionId, harness: vrec.harnessId, op: "side.reap-local", deleted: local, localId: vrec.acpSessionId });
+              console.log(`[side] 已清 ${vrec.harnessId} 本地分身记录 ${vrec.acpSessionId}（存档残留）`);
+            }
+          }
           broadcast({ type: "deleted", sessionId: msg.sessionId } as unknown as ServerMsg);
           break;
         }
