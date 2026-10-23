@@ -108,6 +108,7 @@ function deleteSqlite(dbFile: string, sourceId: string, keys: string[]): number 
   if (!existsSync(dbFile)) return 0;
   const db = new DatabaseSync(dbFile);
   try {
+    db.exec("PRAGMA foreign_keys = ON");   // node:sqlite 默认已开；显式声明，防运行时行为变更导致级联失效留无主行
     db.exec("BEGIN");
     const del = db.prepare("DELETE FROM session WHERE id = ?");
     let n = 0;
