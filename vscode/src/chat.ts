@@ -755,7 +755,7 @@ export class ChatPanel {
       (h.inTurn ? '<button data-act="interrupt" class="primary">⏹ 打断</button>' : '') +
       (h.live ? '<button data-act="stop">停止</button>' : (h.resumable ? '<button class="primary" data-act="resume">恢复</button>' : '')) +
       '<button data-act="toggleLog">' + (h.showLog ? '隐藏日志' : '日志') + '</button>' +
-      '<button data-act="del" title="删除该会话记录（harness 侧的历史不受影响）" style="color:var(--vscode-errorForeground)">🗑</button>';
+      '<button data-act="del" title="彻底删除该会话：服务器记录与 harness 本地历史一并移除，不可恢复" style="color:var(--vscode-errorForeground)">🗑 删除</button>';
     const aa = $('head').querySelector('select[data-aa]');
     if (aa) aa.onchange = () => vscode.postMessage({ cmd:'autoApprove', level: aa.value });
     $('head').querySelectorAll('select[data-cfg]').forEach((s) => {

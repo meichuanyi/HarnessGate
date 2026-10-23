@@ -2743,7 +2743,7 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>
     <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能">🛠 装备</button>
-    <button id="chatDel" class="mini ghost" title="删除该会话记录（harness 侧的历史不受影响）">🗑</button>`;
+    <button id="chatDel" class="mini ghost" title="彻底删除该会话：服务器记录与 harness 本地历史一并移除，不可恢复">🗑 删除</button>`;
   const chatCall = $("chatCall");
   if (chatCall) chatCall.onclick = () => openCallDialog(s.id);
   const chatSrc = $("chatSrc");
