@@ -25,7 +25,7 @@ import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
 import { AutoTagger, projectTagOf } from "./auto-tagger.ts";
 import { sendNotification, type NotificationConfig } from "./notify.ts";
 import { UtilitySessions } from "./utility-session.ts";
-import { scanAllUtilitySessions, deleteAllUtilitySessions, deleteHarnessLocalSessions } from "./utility-cleanup.ts";
+import { scanAllUtilitySessions, deleteAllUtilitySessions, deleteHarnessLocalSessions, isUtilityDir } from "./utility-cleanup.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
 import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
@@ -2498,7 +2498,18 @@ wss.on("connection", (ws, req) => {
 
         case "utility-cleanup": {
           if (msg.ids) {
-            const deleted = deleteAllUtilitySessions(msg.ids);
+            // hgstore: 前缀 = HG 自己的存量记录（v0.6.28 跳过逻辑之前被同步导入的工具区会话），
+            // 其余 = harness 侧存储行。正在跑的工具会话不删
+            const hgKeys = msg.ids.filter((k) => typeof k === "string" && k.startsWith("hgstore:"));
+            const harnessKeys = msg.ids.filter((k) => !String(k ?? "").startsWith("hgstore:"));
+            let deleted = harnessKeys.length ? deleteAllUtilitySessions(harnessKeys) : 0;
+            for (const k of hgKeys) {
+              const id = String(k).slice("hgstore:".length);
+              if (live.has(id)) continue;
+              store.remove(id);
+              broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
+              deleted += 1;
+            }
             audit.append({ op: "utility-cleanup.delete", count: deleted });
             ws.send(JSON.stringify({ type: "utility-cleanup-report", reports: [{ id: "cleanup", label: "", ok: true, found: 0, deleted }] } satisfies ServerMsg));
           } else {
@@ -2521,6 +2532,26 @@ wss.on("connection", (ws, req) => {
               candidates: report.candidates,
               error: report.error,
             }));
+            // HG 侧存量：工作目录在工具区的落盘记录（harness 侧行已清、HG 记录还躺在列表里——
+            // 历史同步的 [HG-UTILITY: 跳过只防新增不清存量）
+            const hgTool = store.all().filter((r) => isUtilityDir(r.cwd) && !live.has(r.id));
+            if (hgTool.length) {
+              reports.push({
+                id: "hg-store",
+                label: "HG 会话记录（工具区存量）",
+                ok: true,
+                found: hgTool.length,
+                deleted: 0,
+                error: undefined,
+                candidates: hgTool.map((r) => ({
+                  key: "hgstore:" + r.id,
+                  sessionId: r.id,
+                  title: (r.title ?? "").slice(0, 60),
+                  path: r.cwd,
+                  reason: "tool-dir" as const,
+                })),
+              });
+            }
             ws.send(JSON.stringify({ type: "utility-cleanup-report", reports } satisfies ServerMsg));
           }
           break;

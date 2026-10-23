@@ -19,6 +19,12 @@ import { DatabaseSync } from "node:sqlite";
 const MARKER = "[HG-UTILITY";
 const TOOL_DIRS = [join(homedir(), ".harnessgate", "utility"), join(homedir(), ".harnessgate", "tagger")];
 
+/** 工作目录是否在 HG 工具区（utility/auto-tagger、utility/adopt-branch、tagger…）——
+ *  harness 侧扫描与 HG 侧存量清理共用同一判定 */
+export function isUtilityDir(cwd: string): boolean {
+  return TOOL_DIRS.some((d) => cwd === d || cwd.startsWith(d + "/"));
+}
+
 export type CleanupCandidate = {
   /** 全局唯一删除键（源前缀:源内键） */
   key: string;
@@ -63,7 +69,7 @@ function scanSqlite(dbFile: string, sourceId: string, activeIds?: Set<string>): 
     const out: CleanupCandidate[] = [];
     for (const r of rows) {
       const dir = r.directory || r.path || "";
-      const inToolDir = TOOL_DIRS.some((d) => dir === d || dir.startsWith(d + "/"));
+      const inToolDir = isUtilityDir(dir);
       let marked = false;
       if (!inToolDir) {
         try {
