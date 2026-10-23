@@ -4098,12 +4098,14 @@ $("wsBtn").onclick = () => {
 let gearSid = null;      // 装备面板当前会话 id
 let gearDraft = null;    // { mcpServerIds, skillIds, allMcps, allSkills }（复选框草稿）
 let gearTab = "mcp";
+let gearSearch = "";     // 装备面板过滤词（MCP/技能共用：名称+备注/描述，不区分大小写；只影响显示，勾选状态不动）
 
 function openGearPanel(push = true) {
   if (!state.sessionId) { showToast("先选一个会话，再配置装备", 2500); return; }
   const p = $("gearPanel");
   p.hidden = false;
   gearSid = state.sessionId;
+  gearSearch = "";   // 每次打开重置过滤
   p.innerHTML = '<div class="empty">加载中…</div>';
   send({ type: "session-gear-get", sessionId: gearSid });
   if (push) pushNav("gearPanel");
@@ -4117,13 +4119,19 @@ function gearToggle(kind, id, on) {
   if (!on && i >= 0) arr.splice(i, 1);
 }
 
-function renderGearPanel() {
-  const p = $("gearPanel");
-  if (p.hidden || !gearDraft) return;
-  const s = sessions.get(gearSid);
-  const mcps = gearDraft.allMcps.map((m) => {
-    const on = gearDraft.mcpServerIds.includes(m.id);
-    return `
+/** 当前 Tab 的列表 HTML（含过滤：q 为空全量；无命中给空态，有过滤给 显示n/total 提示） */
+function gearListHtml() {
+  const q = gearSearch.trim().toLowerCase();
+  const hit = (...xs) => !q || xs.some((x) => String(x ?? "").toLowerCase().includes(q));
+  const head = (n, total) => (q ? `<div class="meta2" style="margin:0 0 6px">显示 ${n}/${total}，未显示项的勾选保持不变</div>` : "");
+  if (gearTab === "mcp") {
+    const all = gearDraft.allMcps;
+    if (!all.length) return '<div class="empty">还没有全局 MCP 服务。到 mcp.json 里添加。</div>';
+    const shown = all.filter((m) => hit(m.name, m.note, m.type));
+    if (!shown.length) return `<div class="empty">没有匹配「${esc(q)}」的 MCP 服务</div>`;
+    return head(shown.length, all.length) + shown.map((m) => {
+      const on = gearDraft.mcpServerIds.includes(m.id);
+      return `
       <label class="gearRow" style="${on ? "" : "opacity:.62"}">
         <input type="checkbox" data-gearcheck="mcp" value="${esc(m.id)}"${on ? " checked" : ""} style="width:auto">
         <span style="flex:1;min-width:0">
@@ -4132,8 +4140,13 @@ function renderGearPanel() {
           ${m.note ? `<div class="meta2" style="margin-top:2px">${esc(m.note)}</div>` : ""}
         </span>
       </label>`;
-  }).join("");
-  const skills = (gearDraft.allSkills.library || []).map((sk) => {
+    }).join("");
+  }
+  const all = gearDraft.allSkills.library || [];
+  if (!all.length) return '<div class="empty">技能库是空的。到「设置 → 技能」里创建。</div>';
+  const shown = all.filter((sk) => hit(sk.name, sk.description));
+  if (!shown.length) return `<div class="empty">没有匹配「${esc(q)}」的技能</div>`;
+  return head(shown.length, all.length) + shown.map((sk) => {
     const on = gearDraft.skillIds.includes(sk.name);
     return `
       <label class="gearRow" style="${on ? "" : "opacity:.62"}">
@@ -4145,24 +4158,51 @@ function renderGearPanel() {
         </span>
       </label>`;
   }).join("");
+}
+
+/** 只重画列表区（搜索输入框不动，打字时焦点/光标不丢） */
+function renderGearList() {
+  const box = $("gearList");
+  if (!box) return;
+  box.innerHTML = gearListHtml();
+  box.querySelectorAll("[data-gearcheck]").forEach((cb) => {
+    cb.onchange = () => gearToggle(cb.dataset.gearcheck, cb.value, cb.checked);
+  });
+}
+
+function renderGearPanel() {
+  const p = $("gearPanel");
+  if (p.hidden || !gearDraft) return;
+  const s = sessions.get(gearSid);
   p.innerHTML = `
     <div class="hd"><b>🛠 会话装备</b><span class="meta2">${esc(s?.title || "#" + gearSid)}</span><button class="mini ghost" onclick="document.getElementById('gearPanel').hidden=true">关闭</button></div>
     <div style="display:flex;gap:6px;margin:10px 0">
       <button class="mini ${gearTab === "mcp" ? "primary" : "ghost"}" id="gearTabMcp">🔌 MCP 服务 (${gearDraft.mcpServerIds.length} 已选)</button>
       <button class="mini ${gearTab === "skill" ? "primary" : "ghost"}" id="gearTabSkill">🎯 领域技能 (${gearDraft.skillIds.length} 已选)</button>
     </div>
-    <div style="max-height:55vh;overflow:auto">
-      ${gearTab === "mcp"
-        ? (mcps || '<div class="empty">还没有全局 MCP 服务。到 mcp.json 里添加。</div>')
-        : (skills || '<div class="empty">技能库是空的。到「设置 → 技能」里创建。</div>')}
+    <div style="display:flex;gap:6px;margin:0 0 8px">
+      <input type="text" id="gearSearchInput" placeholder="${gearTab === "mcp" ? "🔍 过滤 MCP（名称/备注）" : "🔍 过滤技能（名称/描述）"}" value="${esc(gearSearch)}" autocomplete="off" style="flex:1">
+      <button class="mini ghost" id="gearSearchClear" title="清空过滤"${gearSearch ? "" : " hidden"}>✕</button>
     </div>
+    <div id="gearList" style="max-height:52vh;overflow:auto"></div>
     <div class="meta2" style="margin:10px 0 6px">💾 MCP 注入在会话下次恢复/重启时生效；技能挂载是 harness 级（同 harness 的会话共享），保存即差分挂载。</div>
     <button class="btn primary" id="gearSave" style="width:100%">保存装备</button>`;
   $("gearTabMcp").onclick = () => { gearTab = "mcp"; renderGearPanel(); };
   $("gearTabSkill").onclick = () => { gearTab = "skill"; renderGearPanel(); };
-  p.querySelectorAll("[data-gearcheck]").forEach((cb) => {
-    cb.onchange = () => gearToggle(cb.dataset.gearcheck, cb.value, cb.checked);
-  });
+  $("gearSearchInput").oninput = (e) => {
+    gearSearch = e.target.value;
+    $("gearSearchClear").hidden = !gearSearch;
+    renderGearList();
+  };
+  $("gearSearchClear").onclick = () => {
+    gearSearch = "";
+    const inp = $("gearSearchInput");
+    inp.value = "";
+    $("gearSearchClear").hidden = true;
+    renderGearList();
+    inp.focus();
+  };
+  renderGearList();
   $("gearSave").onclick = () => {
     send({ type: "session-gear-save", sessionId: gearSid, mcpServerIds: [...gearDraft.mcpServerIds], skillIds: [...gearDraft.skillIds] });
     showToast("🛠 装备已保存", 2500);
