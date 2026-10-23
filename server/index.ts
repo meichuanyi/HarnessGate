@@ -430,13 +430,15 @@ function scheduleSideIdleReap(sideSession: HarnessSession): void {
 function reapSideSession(sideSession: HarnessSession, reason: "manual" | "idle"): void {
   sideIdleTimers.delete(sideSession.id);
   void (async () => {
-    try { await sideSession.stop(); } catch { /* 进程已死不追 */ }
     const rec = sideSession.record();
+    // 协议优先：agent 声明 session/delete 就让它自清（必须在 stop 前发，连接一断就发不出去）
+    const protocolDeleted = rec.acpSessionId ? await sideSession.deleteAcpSession() : false;
+    try { await sideSession.stop(); } catch { /* 进程已死不追 */ }
     live.delete(sideSession.id);
     store.remove(sideSession.id);
     // harness 本地存储里的分身尸体一并清（zcode 的 fork 是全量拷贝，24MB/个；此前只停进程删记录，
-    // harness 侧永远留尸——36 份拷贝把库堆到 672MB 就是这么来的）
-    if (rec.acpSessionId) {
+    // harness 侧永远留尸——36 份拷贝把库堆到 672MB 就是这么来的）。协议已删则跳过
+    if (rec.acpSessionId && !protocolDeleted) {
       const local = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
       if (local > 0) {
         audit.append({ session: sideSession.id, harness: rec.harnessId, op: "side.reap-local", deleted: local, localId: rec.acpSessionId });
@@ -1437,16 +1439,16 @@ wss.on("connection", (ws, req) => {
               }
             };
             if (lb) {
-              void Promise.race([
-                lb.stop(),
-                new Promise((r) => setTimeout(r, 10_000)),
-              ]).then(() => {
+              void (async () => {
+                // 协议优先（同侧问回收）：趁连接还在先 session/delete，没能力/失败退存储兜底
+                const ok = await lb.deleteAcpSession().catch(() => false);
+                await Promise.race([lb.stop(), new Promise((r) => setTimeout(r, 10_000))]);
                 live.delete(id);
                 store.remove(id);
-                reapLocal();
+                if (!ok) reapLocal();
                 broadcast({ type: "deleted", sessionId: id } as unknown as ServerMsg);
                 console.log(`[adopt] 分支 ${id} 已清除`);
-              });
+              })();
             } else {
               live.delete(id);
               store.remove(id);

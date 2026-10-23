@@ -186,6 +186,8 @@ export class HarnessSession {
   resumable = false;
   /** agent 是否声明 loadSession 能力——只决定恢复三选一里的 load 这条路，与 resumable 分离 */
   private canLoadSession = false;
+  /** agent 声明 sessionCapabilities.delete（ACP v2 会话删除）——回收分身时协议优先，未声明走存储兜底 */
+  private sessionDeleteSupported = false;
   /** agent 是否声明支持音频 prompt（promptCapabilities.audio）——通话「直传音频」模式的前提 */
   private promptAudioSupported = false;
   acpSessionId?: string;
@@ -432,6 +434,21 @@ export class HarnessSession {
   /** 收藏/取消收藏：落盘并广播（列表据 starred 置顶） */
   /** 设置标签（整体替换；空数组=清空）。manual=用户手动编辑（自动打标此后永不覆盖）；
    *  semantic=标记语义标签已打过（防重复触发）。落盘并广播。 */
+  /** 协议优先的会话删除：agent 声明 sessionCapabilities.delete（ACP v2）时发 session/delete，
+   *  由 harness 自己清掉它存储里的会话——跨 harness 通用、不用按源适配存储格式。
+   *  必须在 stop() 之前调（连接一断就发不出去了）；未声明/失败返回 false，调用方退回直清存储兜底 */
+  async deleteAcpSession(): Promise<boolean> {
+    if (!this.sessionDeleteSupported || !this.ctx || !this.acpSessionId) return false;
+    try {
+      await this.ctx.request(acp.methods.agent.session.delete, { sessionId: this.acpSessionId });
+      this.log(`session/delete 成功: ${this.acpSessionId}（harness 已自清本地记录）`);
+      return true;
+    } catch (err) {
+      this.log(`session/delete 失败（退回存储兜底）: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   /** 分支收编用：进程内尝试从源 acpSessionId fork 出上下文（成功=true，调用方跳过注入兜底） */
   async tryForkFrom(srcAcpSessionId?: string): Promise<boolean> {
     if (!srcAcpSessionId || !this.ctx) return false;
@@ -640,8 +657,13 @@ export class HarnessSession {
         );
         this.canLoadSession = Boolean(init.agentCapabilities?.loadSession);
         this.promptAudioSupported = Boolean(init.agentCapabilities?.promptCapabilities?.audio);
+        this.sessionDeleteSupported = Boolean(
+          (init.agentCapabilities?.sessionCapabilities as { delete?: unknown } | undefined)?.delete,
+        );
         this.resumable = Boolean(this.acpSessionId) || this.canLoadSession;
-        this.log(`会话可恢复=${this.resumable}（loadSession=${this.canLoadSession}） 音频prompt=${this.promptAudioSupported}`);
+        this.log(
+          `会话可恢复=${this.resumable}（loadSession=${this.canLoadSession}） 音频prompt=${this.promptAudioSupported} session/delete=${this.sessionDeleteSupported}`,
+        );
         if (init.authMethods?.length) {
           const ids = init.authMethods.map((m: { id: string }) => m.id);
           this.log(`agent 声明了认证方式: ${ids.join(", ")}`);
