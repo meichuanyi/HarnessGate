@@ -345,6 +345,8 @@ class _GearSheetState extends State<GearSheet> {
   List<String> _skills = [];
   List<Map<String, dynamic>> _allMcps = [];
   List<Map<String, dynamic>> _allSkills = [];
+  final _searchCtrl = TextEditingController();
+  String _q = ''; // 过滤词：只影响显示，勾选状态不动（与 web 端一致）
   StreamSubscription<Map<String, dynamic>>? _sub;
 
   @override
@@ -370,8 +372,19 @@ class _GearSheetState extends State<GearSheet> {
   @override
   void dispose() {
     _sub?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
+
+  /// 当前 Tab 过滤后的列表（MCP 按名称/类型/备注，技能按名称/描述；不区分大小写）
+  List<Map<String, dynamic>> get _shown => _tabMcp
+      ? _allMcps
+          .where((m) => _hit([m['name'], m['type'], m['note']]))
+          .toList()
+      : _allSkills.where((sk) => _hit([sk['name'], sk['description']])).toList();
+
+  bool _hit(List<dynamic> fields) =>
+      _q.isEmpty || fields.any((f) => (f ?? '').toString().toLowerCase().contains(_q));
 
   void _toggle(bool mcp, String id, bool on) {
     setState(() {
@@ -433,62 +446,90 @@ class _GearSheetState extends State<GearSheet> {
               ]),
             ),
             const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _q = v.trim()),
+                style: const TextStyle(fontSize: 12.5),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: _tabMcp ? '🔍 过滤 MCP（名称/备注）' : '🔍 过滤技能（名称/描述）',
+                  hintStyle: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                  suffixIcon: _q.isEmpty
+                      ? null
+                      : GestureDetector(
+                          onTap: () {
+                            _searchCtrl.clear();
+                            setState(() => _q = '');
+                          },
+                          child: const Icon(Icons.close, size: 15, color: Colors.grey)),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                ),
+              ),
+            ),
+            if (_q.isNotEmpty && !_loading && _shown.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                child: Text('显示 ${_shown.length}/${(_tabMcp ? _allMcps : _allSkills).length}，未显示项的勾选保持不变',
+                    style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
+              ),
             Expanded(
               child: _loading
                   ? const Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)))
-                  : _tabMcp
-                      ? _allMcps.isEmpty
-                          ? const Center(
-                              child: Text('还没有全局 MCP 服务，到 MCP 管理页添加',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey)))
-                          : ListView.builder(
-                              itemCount: _allMcps.length,
-                              itemBuilder: (_, i) {
-                                final m = _allMcps[i];
-                                final id = (m['id'] ?? '').toString();
-                                return CheckboxListTile(
-                                  dense: true,
-                                  value: _mcps.contains(id),
-                                  onChanged: (v) => _toggle(true, id, v ?? false),
-                                  title: Text('${m['name'] ?? id}',
-                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-                                  subtitle: Text(
-                                      '${m['type'] ?? ''}${m['note'] != null && (m['note'] as String).isNotEmpty ? ' · ${m['note']}' : ''}',
-                                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                                );
-                              },
-                            )
-                      : _allSkills.isEmpty
-                          ? const Center(
-                              child: Text('技能库是空的，到技能页创建',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey)))
-                          : ListView.builder(
-                              itemCount: _allSkills.length,
-                              itemBuilder: (_, i) {
-                                final sk = _allSkills[i];
-                                final name = (sk['name'] ?? '').toString();
-                                return CheckboxListTile(
-                                  dense: true,
-                                  value: _skills.contains(name),
-                                  onChanged: (v) => _toggle(false, name, v ?? false),
-                                  title: Text(name,
-                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-                                  subtitle: Text(
-                                      '~${sk['tokens'] ?? '?'} tok${sk['description'] != null && (sk['description'] as String).isNotEmpty ? ' · ${sk['description']}' : ''}',
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                                );
-                              },
-                            ),
+                  : (_tabMcp ? _allMcps : _allSkills).isEmpty
+                      ? Center(
+                          child: Text(_tabMcp ? '还没有全局 MCP 服务，到 MCP 管理页添加' : '技能库是空的，到技能页创建',
+                              style: const TextStyle(fontSize: 12, color: Colors.grey)))
+                      : _shown.isEmpty
+                          ? Center(
+                              child: Text('没有匹配「$_q」的${_tabMcp ? ' MCP 服务' : '技能'}',
+                                  style: const TextStyle(fontSize: 12, color: Colors.grey)))
+                          : _tabMcp
+                              ? ListView.builder(
+                                  itemCount: _shown.length,
+                                  itemBuilder: (_, i) {
+                                    final m = _shown[i];
+                                    final id = (m['id'] ?? '').toString();
+                                    return CheckboxListTile(
+                                      dense: true,
+                                      value: _mcps.contains(id),
+                                      onChanged: (v) => _toggle(true, id, v ?? false),
+                                      title: Text('${m['name'] ?? id}',
+                                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                                      subtitle: Text(
+                                          '${m['type'] ?? ''}${m['note'] != null && (m['note'] as String).isNotEmpty ? ' · ${m['note']}' : ''}',
+                                          style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    );
+                                  },
+                                )
+                              : ListView.builder(
+                                  itemCount: _shown.length,
+                                  itemBuilder: (_, i) {
+                                    final sk = _shown[i];
+                                    final name = (sk['name'] ?? '').toString();
+                                    return CheckboxListTile(
+                                      dense: true,
+                                      value: _skills.contains(name),
+                                      onChanged: (v) => _toggle(false, name, v ?? false),
+                                      title: Text(name,
+                                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                                      subtitle: Text(
+                                          '~${sk['tokens'] ?? '?'} tok${sk['description'] != null && (sk['description'] as String).isNotEmpty ? ' · ${sk['description']}' : ''}',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    );
+                                  },
+                                ),
             ),
             const Divider(height: 1),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Text(
+                const Text(
                     'MCP 注入在会话下次恢复/重启时生效；技能挂载是 harness 级（同 harness 的会话共享），保存即差分挂载。',
-                    style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
+                    style: TextStyle(fontSize: 10.5, color: Colors.grey)),
                 const SizedBox(height: 8),
                 FilledButton(onPressed: _loading ? null : _save, child: const Text('保存装备')),
               ]),

@@ -1084,7 +1084,7 @@ class _ChatPageState extends State<ChatPage> {
     if (output == null || output.isEmpty) return const [];
     final paths = <String>[];
     for (final m in _imgPathRe.allMatches(output)) {
-      final p = m[0];
+      final p = m[0]!;   // 匹配到的第 0 组必然存在（95511bd0 起漏了 ! 导致编译错误）
       if (!paths.contains(p)) paths.add(p);
       if (paths.length >= 4) break;
     }

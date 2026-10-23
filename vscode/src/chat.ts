@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { GateClient } from "./client.ts";
 import type { Store } from "./store.ts";
-import type { PermissionOption, SessionInfo, TranscriptEntry } from "./protocol.ts";
+import type { McpServerInfo, PermissionOption, SessionInfo, SkillsSnapshotView, TranscriptEntry } from "./protocol.ts";
 import { mdToHtml, mdToHtmlMath, esc } from "./markdown.ts";
 import { RENDERER_SOURCE } from "./generated/renderer-source.ts";
 import { MATH_MOUNT_SOURCE, katexInline } from "./math-mount.ts";
@@ -232,6 +232,16 @@ export class ChatPanel {
       this.panel.dispose();
       return;
     }
+    if (type === "session-gear" && msg.sessionId === this.sessionId) {
+      this.post({
+        cmd: "gear",
+        mcpServerIds: (msg.mcpServerIds as string[]) ?? [],
+        skillIds: (msg.skillIds as string[]) ?? [],
+        allMcps: (msg.allMcps as McpServerInfo[]) ?? [],
+        allSkills: (msg.allSkills as SkillsSnapshotView) ?? { library: [], mounts: [] },
+      });
+      return;
+    }
     if (type === "error" && (!msg.sessionId || msg.sessionId === this.sessionId)) {
       this.entries.push({ kind: "error", message: String(msg.message ?? "未知错误") });
       this.upsertEntry(this.entries.length - 1);
@@ -432,6 +442,21 @@ export class ChatPanel {
     }
     if (cmd === "detail") {
       requestSessionDetail(this.client, this.sessionId);
+      return;
+    }
+    if (cmd === "gear") {
+      // 拉装备 → 服务端回 session-gear → onServer 转 webview 开抽屉
+      this.client.send({ type: "session-gear-get", sessionId: this.sessionId });
+      return;
+    }
+    if (cmd === "gearSave") {
+      this.client.send({
+        type: "session-gear-save",
+        sessionId: this.sessionId,
+        mcpServerIds: (m.mcpServerIds as string[]) ?? [],
+        skillIds: (m.skillIds as string[]) ?? [],
+      });
+      void vscode.window.setStatusBarMessage("🛠 装备已保存（MCP 下次恢复/重启注入；技能挂载立即生效）", 5000);
       return;
     }
     if (cmd === "del") {
@@ -648,6 +673,31 @@ export class ChatPanel {
   #mmOverlay .mmTool { display:flex; gap:8px; padding:8px 12px; }
   #mmOverlay .mmTool button { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
     border:0; border-radius:4px; padding:3px 10px; cursor:pointer; }
+
+  /* ---------- 🛠 会话装备抽屉（对齐网页版装备面板） ---------- */
+  #gearOv { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:110; display:flex; align-items:center; justify-content:center; }
+  #gearBox { width:min(560px,94vw); max-height:82vh; display:flex; flex-direction:column;
+    background:var(--vscode-editor-background); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  #gearBox .ghd { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; }
+  #gearBox .ghd .sub { color:var(--dim); font-weight:400; font-size:11.5px; }
+  #gearBox .gtabs { display:flex; gap:6px; margin:10px 0 8px; }
+  #gearBox .gtabs button, #gearBox .gact { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
+    border:0; border-radius:4px; padding:3px 12px; font-size:12px; cursor:pointer; }
+  #gearBox .gtabs button.on { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+  #gearBox .gsearch { display:flex; gap:6px; align-items:center; margin-bottom:6px; }
+  #gearBox .gsearch input { flex:1; background:var(--vscode-input-background); color:var(--vscode-input-foreground);
+    border:1px solid var(--vscode-input-border); border-radius:4px; padding:4px 8px; font-size:12px; }
+  #gearBox .glist { overflow:auto; min-height:120px; border:1px solid var(--line); border-radius:6px; padding:4px; }
+  #gearBox .grow { display:flex; align-items:flex-start; gap:8px; padding:5px 6px; border-radius:5px; cursor:pointer; }
+  #gearBox .grow:hover { background:var(--vscode-list-hoverBackground); }
+  #gearBox .grow.off { opacity:.6; }
+  #gearBox .grow b { font-size:12.5px; }
+  #gearBox .grow .sub { color:var(--dim); font-size:11px; margin-top:1px; word-break:break-all; }
+  #gearBox .ghint { color:var(--dim); font-size:10.5px; margin:8px 0; }
+  #gearBox .gfoot { display:flex; gap:8px; align-items:center; margin-top:4px; }
+  #gearBox .gact.primary { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+  #gearBox .gcnt { color:var(--dim); font-size:10.5px; margin:0 0 6px 2px; }
+  #gearBox .gempty { color:var(--dim); font-size:12px; padding:18px 6px; text-align:center; }
   #mmOverlay .mmStage { flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; }
   #mmOverlay .mmStage svg { max-width:none; max-height:none; }
   .empty { color:var(--dim); text-align:center; padding:40px 20px; }
@@ -751,6 +801,7 @@ export class ChatPanel {
         ? '<button data-act="adopt" title="把本分支的结论蒸馏后注入主线，随后分支删除">⇱ 收编</button>'
         : '<button data-act="branch" title="fork 当前上下文开一个分支会话，互不打扰">⎇ 分支</button>') +
       '<button data-act="handoff" title="带着最近历史接到新会话（可换 harness），完整历史落快照文件">⇄ 接续</button>' +
+      '<button data-act="gear" title="本会话启用的 MCP 服务与领域技能（MCP 下次恢复/重启时注入；技能挂载 harness 级、保存即生效）">🛠 装备</button>' +
       '<button data-act="detail" title="本会话的授权决策记录与改动文件">🧾 决策</button>' +
       (h.inTurn ? '<button data-act="interrupt" class="primary">⏹ 打断</button>' : '') +
       (h.live ? '<button data-act="stop">停止</button>' : (h.resumable ? '<button class="primary" data-act="resume">恢复</button>' : '')) +
@@ -998,8 +1049,98 @@ export class ChatPanel {
     window.addEventListener('mouseup', () => { drag = null; });
   }
 
+  /* ---------- 🛠 会话装备抽屉（对齐网页版：过滤只影响显示，勾选状态不动） ---------- */
+  let gear = null;   // {tab:'mcp'|'skill', q, mcpIds, skillIds, allMcps, allSkills}
+  const gearHit = (fields, q) => !q || fields.some((f) => String(f ?? '').toLowerCase().includes(q));
+  function gearListHtml() {
+    const isMcp = gear.tab !== 'skill';
+    const q = (gear.q || '').trim().toLowerCase();
+    const all = isMcp ? gear.allMcps : gear.allSkills;
+    const shown = all.filter((x) => gearHit(isMcp ? [x.name, x.type, x.note] : [x.name, x.description], q));
+    if (!all.length) return '<div class="gempty">' + (isMcp ? '还没有全局 MCP 服务。到技能与 MCP 面板添加。' : '技能库是空的。到技能与 MCP 面板创建。') + '</div>';
+    if (!shown.length) return '<div class="gempty">没有匹配「' + esc(q) + '」的' + (isMcp ? ' MCP 服务' : '技能') + '</div>';
+    const row = (on, key, name, sub) =>
+      '<label class="grow' + (on ? '' : ' off') + '"><input type="checkbox" data-g="' + (isMcp ? 'm' : 's') + '" data-k="' + esc(String(key)) + '"' + (on ? ' checked' : '') + ' style="width:auto">' +
+      '<span style="flex:1;min-width:0"><b>' + esc(String(name)) + '</b>' + (sub ? '<div class="sub">' + esc(String(sub)) + '</div>' : '') + '</span></label>';
+    return shown.map((x) => isMcp
+      ? row(gear.mcpIds.includes(x.id), x.id, x.name, [x.type, x.note].filter(Boolean).join(' · '))
+      : row(gear.skillIds.includes(x.name), x.name, x.name, ['~' + (x.tokens ?? '?') + ' tok', x.description].filter(Boolean).join(' · '))
+    ).join('');
+  }
+  function gearBindList() {
+    const box = document.getElementById('gearBox'); if (!box || !gear) return;
+    box.querySelectorAll('.glist input[data-g]').forEach((cb) => {
+      cb.onchange = () => {
+        const arr = cb.dataset.g === 'm' ? gear.mcpIds : gear.skillIds;
+        const i = arr.indexOf(cb.dataset.k);
+        if (cb.checked && i < 0) arr.push(cb.dataset.k);
+        if (!cb.checked && i >= 0) arr.splice(i, 1);
+        cb.closest('.grow').classList.toggle('off', !cb.checked);
+      };
+    });
+  }
+  /** 只重画列表区（搜索输入不动，打字时焦点/光标不丢） */
+  function gearRefreshList() {
+    const box = document.getElementById('gearBox'); if (!box || !gear) return;
+    const isMcp = gear.tab !== 'skill';
+    const q = (gear.q || '').trim().toLowerCase();
+    const all = isMcp ? gear.allMcps : gear.allSkills;
+    const shown = all.filter((x) => gearHit(isMcp ? [x.name, x.type, x.note] : [x.name, x.description], q));
+    box.querySelector('.glist').innerHTML = gearListHtml();
+    const cnt = box.querySelector('.gcnt');
+    cnt.textContent = q && (shown.length || all.length) ? '显示 ' + shown.length + '/' + all.length + '，未显示项的勾选保持不变' : '';
+    gearBindList();
+  }
+  function gearRender() {
+    let ov = document.getElementById('gearOv');
+    if (!gear) { if (ov) ov.remove(); return; }
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'gearOv';
+      ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+      document.body.appendChild(ov);
+    }
+    ov.innerHTML = '<div id="gearBox"></div>';
+    const box = ov.querySelector('#gearBox');
+    const isMcp = gear.tab !== 'skill';
+    box.innerHTML =
+      '<div class="ghd">🛠 会话装备<span class="sub">本会话启用的 MCP 与技能</span><span style="flex:1"></span>' +
+      '<button class="gact" data-gx="close">关闭</button></div>' +
+      '<div class="gtabs">' +
+      '<button data-gt="mcp" class="' + (isMcp ? 'on' : '') + '">🔌 MCP 服务 (' + gear.mcpIds.length + ' 已选)</button>' +
+      '<button data-gt="skill" class="' + (!isMcp ? 'on' : '') + '">🎯 领域技能 (' + gear.skillIds.length + ' 已选)</button></div>' +
+      '<div class="gsearch"><input type="text" id="gearQ" placeholder="' + (isMcp ? '🔍 过滤 MCP（名称/备注）' : '🔍 过滤技能（名称/描述）') + '" value="' + esc(gear.q || '') + '" autocomplete="off">' +
+      '<button class="gact" data-gx="clear" title="清空过滤">✕</button></div>' +
+      '<div class="gcnt"></div>' +
+      '<div class="glist" style="flex:1">' + gearListHtml() + '</div>' +
+      '<div class="ghint">💾 MCP 注入在会话下次恢复/重启时生效；技能挂载是 harness 级（同 harness 的会话共享），保存即差分挂载。</div>' +
+      '<div class="gfoot"><button class="gact primary" data-gx="save">保存装备</button><span class="sub" style="color:var(--dim);font-size:11px">保存后本抽屉自动关闭</span></div>';
+    box.style.maxHeight = '82vh';
+    box.querySelector('[data-gt=mcp]').onclick = () => { gear.tab = 'mcp'; gearRender(); };
+    box.querySelector('[data-gt=skill]').onclick = () => { gear.tab = 'skill'; gearRender(); };
+    box.querySelector('[data-gx=close]').onclick = () => ov.remove();
+    box.querySelector('[data-gx=clear]').onclick = () => { gear.q = ''; gearRender(); box.querySelector('#gearQ').focus(); };
+    box.querySelector('[data-gx=save]').onclick = () => {
+      vscode.postMessage({ cmd: 'gearSave', mcpServerIds: gear.mcpIds, skillIds: gear.skillIds });
+      ov.remove();
+    };
+    const qEl = box.querySelector('#gearQ');
+    qEl.oninput = () => { gear.q = qEl.value; gearRefreshList(); };
+    qEl.onkeydown = (e) => { if (e.key === 'Escape') { gear.q = ''; gearRender(); } };
+    gearBindList();
+  }
+
   window.addEventListener('message', (ev) => {
     const m = ev.data || {};
+    if (m.cmd === 'gear') {
+      // 装备数据到达：开抽屉（保留上次的 Tab 选择，过滤词重开时清空）
+      gear = {
+        tab: (gear && gear.tab) || 'mcp', q: '',
+        mcpIds: (m.mcpServerIds || []).map(String), skillIds: (m.skillIds || []).map(String),
+        allMcps: m.allMcps || [], allSkills: (m.allSkills && m.allSkills.library) || [],
+      };
+      gearRender();
+      return;
+    }
     if (m.type === 'header') { renderHeader(m); return; }
     if (m.type === 'render') { render(m); return; }
     if (m.type === 'upsert') {

@@ -257,7 +257,10 @@ export type GoalView = Goal & {
 
 export type ClientMsg =
   | { type: "create"; harnessId: string; cwd?: string; isolate?: boolean; mcpServerIds?: string[] }
-  | { type: "session-gear-save"; sessionId: string; mcpServerIds: string[] }
+  /** 🛠 会话装备：拉取本会话的 MCP/技能选择（回 session-gear） */
+  | { type: "session-gear-get"; sessionId: string }
+  /** 🛠 会话装备保存：两项都要带全——服务端对缺失字段按空数组处理（漏 skillIds 会卸载全部技能） */
+  | { type: "session-gear-save"; sessionId: string; mcpServerIds: string[]; skillIds: string[] }
   | { type: "archive"; sessionId: string; q?: string }
   | { type: "side-question"; sessionId: string; text: string }
   /** 找回在跑的侧问分身（按源会话查 live）——切走再回来不丢分身，追问复用同一个 */
@@ -406,6 +409,7 @@ export type ServerMsg =
   | { type: "branch-adopted"; branchId: string; mainId: string; summary: string }
   | { type: "handoff_done"; from: string; to: string }
   | { type: "mcp"; servers: McpServerInfo[] }
+  | { type: "session-gear"; sessionId: string; mcpServerIds: string[]; skillIds: string[]; allMcps: McpServerInfo[]; allSkills: SkillsSnapshotView }
   | { type: "skills"; library?: SkillMetaView[]; mounts?: SkillsSnapshotView["mounts"]; reqId?: string }
   | { type: "skills-content"; reqId: string; name: string; content: string }
   | { type: "settings"; settings: Record<string, unknown> }
