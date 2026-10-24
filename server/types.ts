@@ -544,7 +544,7 @@ export type ServerMsg =
         name?: string;
         prompt?: string;
         outputFile?: string;
-        cadence?: { type: "daily"; at: string } | { type: "weekly"; days: number[]; at: string } | { type: "interval"; everyMinutes: number };
+        cadence?: { type: "daily"; at: string } | { type: "weekly"; days: number[]; at: string } | { type: "interval"; everyMinutes: number } | { type: "once"; at?: string; delayMinutes?: number };
         reason?: string;
       };
     }

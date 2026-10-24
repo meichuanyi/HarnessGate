@@ -4788,6 +4788,11 @@ function cadenceDescWeb(c) {
   if (c.type === "daily") return "每天 " + c.at;
   if (c.type === "interval") return "每 " + c.everyMinutes + " 分钟";
   if (c.type === "weekly") return "每周" + wd(c.days) + " " + c.at;
+  if (c.type === "once") {
+    const d = new Date(c.at);
+    if (isNaN(d)) return "单次（时间无效）";
+    return "单次 " + d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
   if (c.type === "cron") return "cron: " + c.expr;
   return "?";
 }
@@ -5028,6 +5033,7 @@ function renderSchedEditor(e) {
             <option value="daily"${ct === "daily" ? " selected" : ""}>每天</option>
             <option value="interval"${ct === "interval" ? " selected" : ""}>每隔 N 分钟</option>
             <option value="weekly"${ct === "weekly" ? " selected" : ""}>每周某几天</option>
+            <option value="once"${ct === "once" ? " selected" : ""}>单次（倒计时/指定时刻）</option>
             <option value="cron"${ct === "cron" ? " selected" : ""}>cron 表达式（高级）</option>
           </select>
           <span id="seCadDyn"></span>
@@ -5068,6 +5074,12 @@ function renderSchedEditor(e) {
     if (t === "daily") box.innerHTML = '每天 <input type="time" id="seAt" value="' + esc((ct === "daily" && cur.at) || "09:00") + '" />';
     else if (t === "interval") box.innerHTML = '每 <input type="number" id="seEvery" min="1" value="' + esc(String((ct === "interval" && cur.everyMinutes) || 60)) + '" style="width:70px" /> 分钟（窗口外自动顺延）';
     else if (t === "weekly") box.innerHTML = '每周 ' + wdBoxes + ' <input type="time" id="seAt" value="' + esc((ct === "weekly" && cur.at) || "09:00") + '" />';
+    else if (t === "once") {
+      const d = ct === "once" && cur.at ? new Date(cur.at) : null;
+      const p = (n) => String(n).padStart(2, "0");
+      const local = d && !isNaN(d) ? d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes()) : "";
+      box.innerHTML = '<input type="number" id="seDelay" min="1" value="' + esc(String((ct === "once" && cur.delayMinutes) || 30)) + '" style="width:70px" /> 分钟后（或指定时刻 <input type="datetime-local" id="seAtOnce" value="' + esc(local) + '" style="width:200px" />，二选一，填了时刻则优先）';
+    }
     else box.innerHTML = '<input type="text" id="seExpr" value="' + esc((ct === "cron" && cur.expr) || "0 9 * * 1-5") + '" placeholder="分 时 日 月 周" style="width:180px" />';
   };
   $("seCadType").onchange = dyn;
@@ -5088,6 +5100,10 @@ function renderSchedEditor(e) {
     try {
       if (t === "daily") cadence = { type: "daily", at: $("seAt").value || "09:00" };
       else if (t === "interval") cadence = { type: "interval", everyMinutes: Number($("seEvery").value) || 60 };
+      else if (t === "once") {
+        const dt = $("seAtOnce").value;
+        cadence = dt ? { type: "once", at: new Date(dt).toISOString() } : { type: "once", delayMinutes: Number($("seDelay").value) || 30 };
+      }
       else if (t === "weekly") {
         const days = [...root.querySelectorAll(".seWd:checked")].map((x) => Number(x.value));
         if (!days.length) { alertLike2("每周频率至少选一天"); return; }

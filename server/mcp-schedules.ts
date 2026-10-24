@@ -21,6 +21,7 @@ type Cadence =
   | { type: "daily"; at: string }
   | { type: "interval"; everyMinutes: number }
   | { type: "weekly"; days: number[]; at: string }
+  | { type: "once"; at: string }
   | { type: "cron"; expr: string };
 
 type Schedule = {
@@ -60,6 +61,12 @@ function cadenceDesc(c: Cadence): string {
   if (c.type === "daily") return `每天 ${c.at}`;
   if (c.type === "interval") return `每 ${c.everyMinutes} 分钟`;
   if (c.type === "weekly") return `每周${(c.days ?? []).map((d) => WD[d] ?? d).join("/")} ${c.at}`;
+  if (c.type === "once") {
+    const d = new Date(c.at);
+    if (Number.isNaN(d.getTime())) return "单次（时间无效）";
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `单次 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
   return `cron: ${c.expr}`;
 }
 

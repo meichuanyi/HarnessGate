@@ -12,6 +12,7 @@ export type Cadence =
   | { type: "daily"; at: string }                       // "HH:MM"
   | { type: "interval"; everyMinutes: number }
   | { type: "weekly"; days: number[]; at: string }      // days: 0-6（0=周日）
+  | { type: "once"; at: string }                        // 单次倒计时：ISO 绝对时刻（delayMinutes 由 save 时物化成 at），触发跑完自动停用
   | { type: "cron"; expr: string };                     // 高级逃生舱：原生 5 段表达式
 
 export type ScheduleWindow = { from?: string; to?: string; weekdays?: number[] };
@@ -60,6 +61,7 @@ export function newScheduleId(): string {
 
 /** 频率 → cron 表达式（窗口不编译进来，作为运行时过滤，支持跨午夜与顺延） */
 export function compileCron(c: Cadence): string {
+  if (c.type === "once") throw new Error("once 任务不编译为 cron（nextFire 直接按 at 求值）");
   const hm = (at: string): [number, number] => {
     const parts = at.split(":").map((x) => Number(x));
     const H = parts[0] ?? 0, M = parts[1] ?? 0;
@@ -107,6 +109,11 @@ export function inWindow(d: Date, w?: ScheduleWindow): boolean {
 
 /** 下一次触发时刻：cron 求值 + 窗口过滤（窗口外顺延，最多迭代 400 次防死循环） */
 export function nextFire(c: Cadence, window: ScheduleWindow | undefined, from = new Date()): Date | undefined {
+  // 单次任务：不经 cron/窗口，直接取 at；已过期也原样返回（迟到仍触发——服务器宕机错过就补跑，不静默吞掉）
+  if (c.type === "once") {
+    const d = new Date(c.at);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  }
   const cron = new Cron(compileCron(c), { timezone: "Asia/Shanghai" });
   let d: Date | undefined = from;
   for (let i = 0; i < 400; i++) {
@@ -122,6 +129,12 @@ export function cadenceDesc(c: Cadence): string {
   if (c.type === "daily") return `每天 ${c.at}`;
   if (c.type === "interval") return `每 ${c.everyMinutes} 分钟`;
   if (c.type === "weekly") return `每周 ${c.days.map((d) => WD_CN[d] ?? d).join("/")} ${c.at}`;
+  if (c.type === "once") {
+    const d = new Date(c.at);
+    if (Number.isNaN(d.getTime())) return "单次（时间无效）";
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `单次 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
   return c.expr;
 }
 

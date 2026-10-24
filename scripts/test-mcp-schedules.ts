@@ -103,6 +103,41 @@ async function main() {
   console.log("\n=== [7/8] 错误路径：enable / run 不存在的任务 ===");
   await expectError("enable 不存在", () => client.callTool({ name: "schedules_enable", arguments: { id: "no-such-id", enabled: true } }));
   await expectError("run 不存在", () => client.callTool({ name: "schedules_run", arguments: { id: "no-such-id" } }));
+  await expectError("once 缺 at/delay 被拒", () =>
+    client.callTool({ name: "schedules_save", arguments: { name: "x", harnessId: "zcode", cadence: { type: "once" }, promptTemplate: "p" } }),
+  );
+
+  console.log("\n=== [7.5] once 单次倒计时（旧主进程会拒绝 → 跳过） ===");
+  const onceId = `mcp-once-${Math.random().toString(36).slice(2, 8)}`;
+  const onceRes = await client.callTool({
+    name: "schedules_save",
+    arguments: {
+      id: onceId, name: "MCP once 测试", harnessId: "zcode",
+      cadence: { type: "once", delayMinutes: 1 },
+      promptTemplate: "只输出两个字：正常。不要做任何其他事情。",
+      autoApprove: "all",
+    },
+  });
+  if ((onceRes as { isError?: boolean }).isError) {
+    console.log(`↩️ 主进程尚不支持 once（${text(onceRes).slice(0, 70)}），跳过——重启 harnessgate 后重跑本脚本可完整验证`);
+  } else {
+    const saved = JSON.parse(text(onceRes)).schedule as { cadence?: string };
+    if (!String(saved.cadence ?? "").startsWith("单次")) throw new Error(`delayMinutes 未物化成单次 cadence: ${JSON.stringify(saved)}`);
+    console.log(`✅ 创建成功，cadence 已物化为绝对时刻（${saved.cadence}）`);
+    let fired = false;
+    for (let i = 0; i < 36; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const l = JSON.parse(text(await client.callTool({ name: "schedules_list", arguments: {} })));
+      const s = (l.schedules as Array<Record<string, unknown>>).find((x) => x.id === onceId);
+      if (s && s.enabled === false && (s.lastStatus === "ok" || s.lastStatus === "error")) {
+        fired = true;
+        console.log(`✅ 单次触发完毕并自动停用（lastStatus=${s.lastStatus}，任务保留可查）`);
+        break;
+      }
+    }
+    await client.callTool({ name: "schedules_delete", arguments: { id: onceId } });
+    if (!fired) throw new Error("once 任务未在 3 分钟内触发并自动停用");
+  }
 
   console.log("\n=== [8/8] schedules_delete 清理 ===");
   const del = JSON.parse(text(await client.callTool({ name: "schedules_delete", arguments: { id: TEST_ID } })));

@@ -2890,7 +2890,19 @@ wss.on("connection", (ws, req) => {
             break;
           }
           try {
-            compileCronCheck(incoming.cadence);
+            if ((incoming.cadence as { type?: string }).type === "once") {
+              // 单次倒计时：delayMinutes 必须由主进程物化成绝对 at——相对值若原样落盘，每次重启 boot 重算 nextFireAt 都会顺延，永远到不了点
+              const c = incoming.cadence as { at?: string; delayMinutes?: number };
+              if (c.delayMinutes !== undefined) {
+                const dm = Number(c.delayMinutes);
+                if (!(dm >= 1)) throw new Error("once 频率的 delayMinutes 应为 ≥ 1 的分钟数");
+                c.at = new Date(Date.now() + dm * 60_000).toISOString();
+                delete c.delayMinutes;
+              }
+              if (!c.at || Number.isNaN(new Date(c.at).getTime())) throw new Error("once 频率需要合法的 at（ISO 时间）或 delayMinutes ≥ 1");
+            } else {
+              compileCronCheck(incoming.cadence);
+            }
           } catch (err) {
             ws.send(JSON.stringify({ type: "error", message: `频率配置有误: ${err instanceof Error ? err.message : String(err)}` } satisfies ServerMsg));
             break;
@@ -3004,7 +3016,7 @@ ${users.join("\n")}`;
   "name": "任务名（12 字内）",
   "prompt": "自包含的任务指令：脱离本对话也能独立执行。包含必要背景与步骤；引用文件用相对路径；需要日期的地方写 {{date}} 占位符（运行时自动替换为当天）；规定固定输出格式",
   "outputFile": "每次运行的产物文件路径（含 {{date}} 占位符；没有固定产物填 null）",
-  "cadence": {"type": "daily", "at": "HH:MM"} 或 {"type": "weekly", "days": [1,2,3,4,5], "at": "HH:MM"} 或 {"type": "interval", "everyMinutes": 数字},
+  "cadence": {"type": "daily", "at": "HH:MM"} 或 {"type": "weekly", "days": [1,2,3,4,5], "at": "HH:MM"} 或 {"type": "interval", "everyMinutes": 数字} 或 {"type": "once", "delayMinutes": 数字}（一次性倒计时）,
   "reason": "建议该频率的一句理由"
 }`;
           void (async () => {
@@ -3027,7 +3039,9 @@ ${users.join("\n")}`;
                   ? { type: "interval" as const, everyMinutes: Number(c.everyMinutes) || 60 }
                   : c.type === "weekly"
                     ? { type: "weekly" as const, days: Array.isArray(c.days) ? c.days.map(Number) : [1, 2, 3, 4, 5], at: String(c.at || "09:00") }
-                    : { type: "daily" as const, at: String(c.at || "09:00") })
+                    : c.type === "once"
+                      ? { type: "once" as const, ...(c.at ? { at: String(c.at) } : {}), delayMinutes: Number(c.delayMinutes) || 60 }
+                      : { type: "daily" as const, at: String(c.at || "09:00") })
               : undefined;
             const spec = {
               name: typeof parsed.name === "string" ? parsed.name : undefined,
@@ -3768,7 +3782,15 @@ async function runSchedule(s: Schedule): Promise<void> {
   } finally {
     s.state.running = false;
     s.state.lastRunAt = new Date().toISOString();
-    s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
+    if (s.cadence.type === "once") {
+      // 单次任务：触发完毕即停用——保留任务记录可查 lastStatus/lastSessionId，但绝不复响
+      s.enabled = false;
+      s.state.nextFireAt = undefined;
+      audit.append({ op: "schedule.disable", schedule: s.id, reason: "once-fired" });
+      console.log(`[schedule] ${s.name || s.id}: 单次任务已触发完毕，自动停用`);
+    } else {
+      s.state.nextFireAt = nextFire(s.cadence, s.window)?.toISOString();
+    }
     saveAndBroadcastSchedules();
   }
 }

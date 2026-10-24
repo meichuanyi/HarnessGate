@@ -510,7 +510,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "schedules_save",
       description:
         "创建或更新定时任务（增/改）：到点自动驱动一个 agent 会话执行 promptTemplate。" +
-        "频率支持 daily/weekly/interval/cron 四种；带 id 即为更新，不带即新建。" +
+        "频率支持 daily/weekly/interval/cron/once 五种（once=单次倒计时，触发跑完自动停用）；带 id 即为更新，不带即新建。" +
         "连续失败 3 次会被自动暂停，修复后用 schedules_enable 重新启用。" +
         "仅支持 agent 任务；直接执行脚本的 exec 模式只能在网页端创建",
       inputSchema: {
@@ -532,7 +532,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           cadence: {
             type: "object",
             description:
-              "频率：{type:'daily',at:'HH:MM'} | {type:'weekly',days:[0-6],at:'HH:MM'}（0=周日） | {type:'interval',everyMinutes:N} | {type:'cron',expr:'5段表达式'}",
+              "频率：{type:'daily',at:'HH:MM'} | {type:'weekly',days:[0-6],at:'HH:MM'}（0=周日） | {type:'interval',everyMinutes:N} | {type:'once',delayMinutes:N}（N 分钟后触发一次，跑完自动停用；也可直接给 at:'ISO时间'） | {type:'cron',expr:'5段表达式'}",
           },
           promptTemplate: {
             type: "string",
@@ -1472,6 +1472,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (c?.type === "daily") return `每天 ${c.at}`;
         if (c?.type === "weekly") return `每周${((c.days as Array<number>) ?? []).map((d) => WD[d] ?? d).join("/")} ${c.at}`;
         if (c?.type === "interval") return `每 ${c.everyMinutes} 分钟`;
+        if (c?.type === "once") {
+          const d = new Date(String(c.at ?? ""));
+          if (Number.isNaN(d.getTime())) return "单次（时间无效）";
+          const p = (n: number) => String(n).padStart(2, "0");
+          return `单次 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        }
         return `cron: ${c?.expr ?? ""}`;
       };
       const fmtSchedule = (s: Record<string, unknown>) => {
@@ -1546,6 +1552,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         if (cadence.type === "weekly" && !Array.isArray(cadence.days)) throw new Error("weekly 频率需要 days 数组（0=周日）");
         if (cadence.type === "interval" && !(Number(cadence.everyMinutes) >= 1)) throw new Error("interval 频率需要 everyMinutes ≥ 1");
+        if (cadence.type === "once") {
+          const okAt = typeof cadence.at === "string" && !Number.isNaN(new Date(cadence.at).getTime());
+          if (!okAt && !(Number(cadence.delayMinutes) >= 1)) throw new Error("once 频率需要 at（ISO 时间）或 delayMinutes ≥ 1（倒计时分钟数）");
+        }
         if (cadence.type === "cron" && !String(cadence.expr ?? "").trim()) throw new Error("cron 频率需要 expr（5 段表达式）");
 
         const id = typeof args.id === "string" && args.id.trim() ? args.id.trim() : Math.random().toString(36).slice(2, 10);
