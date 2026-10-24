@@ -16,7 +16,18 @@
     "cordis",
     "harnessgate"
   ],
+  "author": "meichuan",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meichuanyi/HarnessGate.git",
+    "directory": "dsh"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
   }

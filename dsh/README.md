@@ -2,13 +2,22 @@
 
 [HarnessGate](../README.md) 的 **DeepSeek Harness (dsh) 桌面插件**——把「跨 harness 统一管理会话」递进 dsh：在 dsh 里一条命令看所有网关会话，一个路由打开完整管理面板。
 
+## 拿安装包
+
+| 通道 | 地址 | 状态 |
+|---|---|---|
+| alist `/shares` | `http://192.168.6.108:5244/p/shares/dsh-harnessgate-0.1.1.tgz?sign=7R227KLZdEG86YlXKbjHnNLYiQmSS_rguVky8EnEE9o=:0`（`:0` 结尾=永久签名；仅内网可达） | ✅ 可用 |
+| GitHub Release | tag `dsh-v0.1.1` + 资产已建好（`releases/download/dsh-v0.1.1/dsh-harnessgate-0.1.1.tgz`） | ⛔ 暂不可用：meichuanyi 账号 2026-10-24 被 GitHub 风控整体隐藏（匿名访问用户主页/仓库/Release 全 404，owner 自己看一切正常），需申诉解封后自动恢复 |
+
 ## 装进 profile
 
 ```bash
+# 0) 非本机先从上面通道下载 tarball
 # 1) 装 包（本地 tarball；发布 npm 后换成包名）
 cd ~/.dsh/profiles/web
-pnpm add file:/root/projects/HarnessGate/dsh/dsh-harnessgate-<版本>.tgz
+pnpm add file:/path/to/dsh-harnessgate-<版本>.tgz
 # （换版本重装时先 pnpm remove dsh-harnessgate——file: 依赖同名不刷新）
+# （别用 pnpm add git+https://… 装：pnpm 对 git 依赖做全量 clone，代理/慢网下 7 分钟都跑不完，tarball 秒级）
 
 # 2) 挂 行（二选一）
 #    a. 作为 bundle：编辑 profile 的 package.json
