@@ -4932,6 +4932,9 @@ function renderSchedules() {
   const rows = schedulesArr.map((s) => {
     const st = s.state || {};
     const h = harnesses.get(s.harnessId);
+    const who = s.mode === "exec"
+      ? '<span class="pill saved">脚本</span> <span class="meta2" style="font-family:var(--vscode-editor-font-family,monospace)" title="' + esc(s.execCommand || "") + '">' + esc((s.execCommand || "").slice(0, 70)) + ((s.execCommand || "").length > 70 ? "…" : "") + "</span>"
+      : '<span class="meta2">' + esc(h?.label || s.harnessId || "") + "</span>";
     const statusPill = !s.enabled
       ? '<span class="pill saved">已停用</span>'
       : st.lastStatus === "ok" ? '<span class="pill done">✓ 上次成功</span>'
@@ -4943,7 +4946,7 @@ function renderSchedules() {
       <div class="wsRow" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
         ${statusPill}
         <div style="flex:1;min-width:220px">
-          <div style="font-weight:600;font-size:13.5px">${esc(s.name || s.id)} <span class="meta2">${esc(h?.label || s.harnessId)}</span></div>
+          <div style="font-weight:600;font-size:13.5px">${esc(s.name || s.id)} ${who}</div>
           <div class="meta2">${esc(cadenceDescWeb(s.cadence))} · 下次: ${esc(next)}${st.lastRunAt ? " · 上次: " + esc(new Date(st.lastRunAt).toLocaleString()) + " " + (LAST_STATUS[st.lastStatus || ""] || "") : ""}${st.consecutiveFailures ? " · 连续失败 " + st.consecutiveFailures : ""}</div>
         </div>
         <button class="mini primary" data-run="${esc(s.id)}">▶ 立即运行</button>
@@ -4955,7 +4958,7 @@ function renderSchedules() {
   root.innerHTML = `
     <div class="rtWrap">
       <div class="rtHead"><span class="ttl">定时任务</span>
-        <span class="meta2">到点自动驱动 agent 执行 prompt；会话即产物，全程审计</span>
+        <span class="meta2">到点驱动 agent 执行 prompt，或直接跑脚本（零 token）；全程审计</span>
         <span style="flex:1"></span>
         <button class="mini primary" id="schedNew">＋ 新建定时任务</button></div>
       <div class="rtCard">${rows || '<div class="empty">还没有定时任务。点右上「新建」。</div>'}</div>
@@ -4963,9 +4966,9 @@ function renderSchedules() {
   $("schedNew").onclick = () => {
     const first = [...harnesses.values()].find((h) => !h.blocked);
     schedEdit = {
-      name: "", enabled: true, harnessId: first?.id || "", cwd: "", autoApprove: "all",
+      name: "", enabled: true, mode: "agent", harnessId: first?.id || "", cwd: "", autoApprove: "all",
       cadence: { type: "daily", at: "09:00" }, window: {}, overlap: "skip", sessionMode: "fresh",
-      promptTemplate: "", contract: {}
+      promptTemplate: "", execCommand: "", contract: {}
     };
     renderSchedules();
   };
@@ -5001,6 +5004,13 @@ function renderSchedEditor(e) {
       <div class="rtHead"><span class="ttl">定时任务</span><span class="meta2">频率 + 运行窗口 → cron 求值（croner）</span></div>
       <div class="rtCard">
         <div class="row"><label>名称 *</label><input type="text" id="seName" value="${esc(e.name || "")}" style="flex:1;min-width:220px" /></div>
+        <div class="row"><label>执行方式</label>
+          <select id="seMode" title="agent：起真实会话跑 prompt，能力全但烧 token；脚本：bash -c 直接执行，零 token，退出码非 0 记失败">
+            <option value="agent"${e.mode !== "exec" ? " selected" : ""}>agent 会话（能力全，烧 token）</option>
+            <option value="exec"${e.mode === "exec" ? " selected" : ""}>直接执行脚本（bash -c，零 token）</option>
+          </select>
+        </div>
+        <div id="seAgentOnly">
         <div class="row"><label>Harness *</label><select id="seHarness" style="max-width:240px">${hOpts}</select>
           <label>自动决策</label><select id="seAA" title="定时任务无人值守：写操作没人批准会挂到看门狗超时，默认全自动（危险操作有 ⚠ 审计）">
             <option value="all"${!e.autoApprove || e.autoApprove === "all" ? " selected" : ""}>全自动（推荐）</option>
@@ -5030,6 +5040,12 @@ function renderSchedEditor(e) {
         <div class="row" style="margin-top:10px"><label>Prompt 模板 *</label></div>
         <textarea id="sePrompt" style="width:100%;min-height:88px;box-sizing:border-box;font-family:var(--vscode-editor-font-family,monospace);padding:8px">${esc(e.promptTemplate || "")}</textarea>
         <div class="meta2" style="margin:4px 0 10px">占位符：{{date}} {{time}} {{weekday}} 会替换为运行时的实际值；要调用的脚本放在工作目录里，用相对路径引用。</div>
+        </div>
+        <div id="seExecOnly" style="display:none">
+          <div class="row" style="margin-top:10px"><label>命令 *</label></div>
+          <textarea id="seCommand" style="width:100%;min-height:72px;box-sizing:border-box;font-family:var(--vscode-editor-font-family,monospace);padding:8px">${esc(e.execCommand || "")}</textarea>
+          <div class="meta2" style="margin:4px 0 10px">以 bash -c 在工作目录里执行（不经模型，零 token），退出码非 0 记失败；占位符 {{date}} {{time}} {{weekday}} 可用；超时默认 10 分钟（HG_SCHEDULE_EXEC_TIMEOUT_MS 可调）。</div>
+        </div>
         <div class="row">
           <label>产出契约：前置文件</label><input type="text" id="seRequires" value="${esc((e.contract?.requires || []).join(", "))}" placeholder="scripts/fetch.py, score.py（逗号分隔，可空）" style="flex:1;min-width:200px" />
         </div>
@@ -5057,6 +5073,14 @@ function renderSchedEditor(e) {
   $("seCadType").onchange = dyn;
   dyn();
 
+  const modeSync = () => {
+    const isExec = $("seMode").value === "exec";
+    $("seAgentOnly").style.display = isExec ? "none" : "";
+    $("seExecOnly").style.display = isExec ? "" : "none";
+  };
+  $("seMode").onchange = modeSync;
+  modeSync();
+
   $("seCancel").onclick = () => { schedEdit = null; renderSchedules(); };
   $("seSave").onclick = () => {
     const t = $("seCadType").value;
@@ -5073,15 +5097,24 @@ function renderSchedEditor(e) {
     const winFrom = $("seWinFrom").value, winTo = $("seWinTo").value;
     const weekdays = [...root.querySelectorAll(".seWd:checked")].map((x) => Number(x.value));
     const window = (winFrom || winTo || weekdays.length) ? { from: winFrom || undefined, to: winTo || undefined, weekdays: weekdays.length ? weekdays : undefined } : undefined;
+    const mode = $("seMode").value;
     const spec = {
       id: e.id, name: $("seName").value.trim(), enabled: $("seEnabled").checked,
-      harnessId: $("seHarness").value, cwd: $("seCwd").value.trim(),
-      autoApprove: $("seAA").value, sessionMode: $("seSessionMode").value,
+      mode, cwd: $("seCwd").value.trim(),
       cadence, window, overlap: "skip",
-      promptTemplate: $("sePrompt").value,
       contract: { requires: $("seRequires").value.split(",").map((x) => x.trim()).filter(Boolean), outputFile: $("seOutput").value.trim() || undefined },
     };
     if (!spec.name) { alertLike2("先起个名字"); return; }
+    if (mode === "agent") {
+      spec.harnessId = $("seHarness").value;
+      if (!spec.harnessId) { alertLike2("没有可用的 harness，可改用「直接执行脚本」模式"); return; }
+      spec.autoApprove = $("seAA").value;
+      spec.sessionMode = $("seSessionMode").value;
+      spec.promptTemplate = $("sePrompt").value;
+    } else {
+      spec.execCommand = $("seCommand").value;
+      if (!spec.execCommand.trim()) { alertLike2("先写要执行的命令"); return; }
+    }
     send({ type: "schedule-save", schedule: spec });
     schedEdit = null;
   };

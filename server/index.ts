@@ -2880,8 +2880,13 @@ wss.on("connection", (ws, req) => {
 
         case "schedule-save": {
           const incoming = (msg as unknown as { schedule: Partial<Schedule> }).schedule;
-          if (!incoming?.name || !incoming?.harnessId || !incoming?.cadence || !incoming?.promptTemplate) {
-            ws.send(JSON.stringify({ type: "error", message: "定时任务缺少必填字段（名称/harness/频率/prompt 模板）" } satisfies ServerMsg));
+          const isExec = incoming?.mode === "exec";
+          if (!incoming?.name || !incoming?.cadence || (isExec
+            ? !String(incoming.execCommand ?? "").trim()
+            : !incoming.harnessId || !incoming.promptTemplate)) {
+            ws.send(JSON.stringify({ type: "error", message: isExec
+              ? "定时任务缺少必填字段（名称/频率/命令）"
+              : "定时任务缺少必填字段（名称/harness/频率/prompt 模板）" } satisfies ServerMsg));
             break;
           }
           try {
@@ -3661,6 +3666,20 @@ function fillTemplate(tpl: string): string {
 
 const compileCronCheck = compileCron;
 const SCHEDULE_MAX_SILENCE_MS = Number(process.env.HG_SCHEDULE_TURN_TIMEOUT_MS ?? 30 * 60_000);
+const SCHEDULE_EXEC_TIMEOUT_MS = Number(process.env.HG_SCHEDULE_EXEC_TIMEOUT_MS ?? 10 * 60_000);
+
+/** exec 模式执行器：bash -c 跑一条命令，拿退出码与输出（stdout/stderr 各截断到 64KB 防爆内存） */
+function runExecCommand(cmd: string, cwd: string): Promise<{ code: number | null; signal?: string | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const p = spawn("bash", ["-c", cmd], { cwd, timeout: SCHEDULE_EXEC_TIMEOUT_MS });
+    const cap = 64 * 1024;
+    let stdout = "", stderr = "";
+    p.stdout.on("data", (d: Buffer) => { if (stdout.length < cap) stdout += d.toString(); });
+    p.stderr.on("data", (d: Buffer) => { if (stderr.length < cap) stderr += d.toString(); });
+    p.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+    p.on("error", (err) => resolve({ code: -1, stdout, stderr: `${stderr}\n${err.message}` }));
+  });
+}
 
 async function runSchedule(s: Schedule): Promise<void> {
   if (s.state.running) { s.state.lastStatus = "skipped-running"; return; }
@@ -3676,13 +3695,24 @@ async function runSchedule(s: Schedule): Promise<void> {
       const p = join(cwd, req);
       if (!existsSync(p) || statSync(p).size === 0) throw new Error(`缺少前置文件: ${req}`);
     }
+    let okChars = 0;
+    if (s.mode === "exec") {
+      // 脚本模式：不经模型，直接 bash -c；退出码非 0 即失败
+      const cmd = vars(s.execCommand ?? "");
+      const r = await runExecCommand(cmd, cwd);
+      if (r.code !== 0) {
+        const why = r.code === null ? `被终止（${r.signal ?? "unknown"}，超时上限 ${Math.round(SCHEDULE_EXEC_TIMEOUT_MS / 1000)}s）` : `退出码 ${r.code}`;
+        throw new Error(`脚本失败（${why}）${r.stderr ? `：${r.stderr.slice(-400).trim()}` : ""}`);
+      }
+      okChars = r.stdout.length;
+    } else {
     // 会话：dedicated → 复用/复活；fresh → 新建
     if (s.sessionMode === "dedicated" && s.state.lastSessionId) {
       if (!live.has(s.state.lastSessionId)) reviveSession(s.state.lastSessionId);
       session = live.get(s.state.lastSessionId);
     }
     if (!session) {
-      const spec = specOf(s.harnessId);
+      const spec = specOf(s.harnessId ?? "");
       if (!spec) throw new Error(`未知 harness: ${s.harnessId}`);
       const record = HarnessSession.newRecord(spec, cwd);
       session = new HarnessSession(spec, record, audit, makeHooks(), hub);
@@ -3705,17 +3735,24 @@ async function runSchedule(s: Schedule): Promise<void> {
       const lastErr = session.transcriptEntries().slice().reverse().find((e) => e.kind === "error") as { message?: string } | undefined;
       throw new Error(lastErr?.message || r.text || "回合执行失败 (agent turn failed)");
     }
+    okChars = r.text.length;
+    }
     // 产物验收：契约声明的输出文件必须存在且非空
     if (s.contract?.outputFile) {
       const out = vars(s.contract.outputFile);
       const p = join(cwd, out);
       if (!existsSync(p) || statSync(p).size === 0) throw new Error(`契约未满足：产物 ${out} 未生成`);
     }
+    if (s.mode === "exec") {
+      audit.append({ op: "schedule.run", schedule: s.id, mode: "exec", status: "ok", chars: okChars, cwd });
+      console.log(`[schedule] ${s.name || s.id}: 脚本完成（exit 0，输出 ${okChars} 字节）`);
+    } else {
+      audit.append({ op: "schedule.run", schedule: s.id, status: "ok", session: session?.id, chars: okChars });
+      console.log(`[schedule] ${s.name || s.id}: 完成（${okChars} 字）`);
+    }
     s.state.lastStatus = "ok";
     s.state.consecutiveFailures = 0;
     s.state.lastError = undefined;
-    audit.append({ op: "schedule.run", schedule: s.id, status: "ok", session: session.id, chars: r.text.length });
-    console.log(`[schedule] ${s.name || s.id}: 完成（${r.text.length} 字）`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     s.state.lastStatus = "error";

@@ -32,7 +32,10 @@ export type Schedule = {
   id: string;
   name: string;
   enabled: boolean;
-  harnessId: string;
+  /** 执行方式：agent（默认）= 驱动 harness 会话跑 prompt；exec = 直接 bash -c 跑脚本，不建会话不烧 token */
+  mode?: "agent" | "exec";
+  /** agent 模式必填 */
+  harnessId?: string;
   /** 空 = 使用自动工作区 DATA_DIR/schedules/<id>/（自动建 + git init） */
   cwd?: string;
   autoApprove?: "off" | "readonly" | "all";
@@ -40,7 +43,10 @@ export type Schedule = {
   window?: ScheduleWindow;
   overlap: "skip";
   sessionMode: "fresh" | "dedicated";
+  /** agent 模式必填 */
   promptTemplate: string;
+  /** exec 模式必填：支持 {{date}}/{{time}}/{{weekday}} 占位符 */
+  execCommand?: string;
   contract?: ScheduleContract;
   createdAt: string;
   state: ScheduleState;
@@ -127,9 +133,12 @@ export function loadSchedules(file: string): Schedule[] {
     const out: Schedule[] = [];
     for (const s of raw.schedules ?? []) {
       // 校验必填字段：agent 绕道直写本文件时可能写坏格式——坏条目跳过并告警，不拖垮整库
-      if (!s || typeof s.id !== "string" || typeof s.name !== "string" ||
-          typeof s.harnessId !== "string" || !s.cadence || typeof s.promptTemplate !== "string") {
-        console.error(`[schedules] 跳过坏条目（缺 id/name/harnessId/cadence/promptTemplate）: ${JSON.stringify(s).slice(0, 120)}`);
+      const isExec = s?.mode === "exec";
+      const modeFieldsOk = !!s && (isExec
+        ? typeof s.execCommand === "string" && !!s.execCommand.trim()
+        : typeof s.harnessId === "string" && typeof s.promptTemplate === "string");
+      if (!s || typeof s.id !== "string" || typeof s.name !== "string" || !s.cadence || !modeFieldsOk) {
+        console.error(`[schedules] 跳过坏条目（缺 id/name/cadence/${isExec ? "execCommand" : "harnessId/promptTemplate"}）: ${JSON.stringify(s).slice(0, 120)}`);
         continue;
       }
       out.push(s);

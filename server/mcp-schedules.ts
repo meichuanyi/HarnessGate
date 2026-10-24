@@ -27,6 +27,7 @@ type Schedule = {
   id: string;
   name: string;
   enabled: boolean;
+  mode?: string;
   harnessId: string;
   cwd?: string;
   autoApprove?: string;
@@ -128,7 +129,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         id: s.id,
         name: s.name,
         enabled: s.enabled,
-        harnessId: s.harnessId,
+        mode: s.mode === "exec" ? "exec" : "agent",
+        harnessId: s.harnessId ?? (s.mode === "exec" ? "(脚本)" : ""),
         cadence: cadenceDesc(s.cadence),
         nextFireAt: (s.state as Record<string, unknown>)?.nextFireAt ?? null,
         lastStatus: (s.state as Record<string, unknown>)?.lastStatus ?? null,
@@ -139,6 +141,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     if (name === "schedules_create") {
       const a = args as Record<string, unknown>;
+      // 安全闸：exec 模式=到点免审批跑任意 shell，只允许人在网页端创建；agent 一律拒绝
+      if (a.mode === "exec" || a.execCommand !== undefined) {
+        throw new Error("脚本（exec）模式仅支持在 HarnessGate 网页端创建，MCP 侧只能创建 agent 任务");
+      }
       const required = ["name", "harnessId", "cadence", "promptTemplate"] as const;
       for (const k of required) {
         if (!a[k]) throw new Error(`缺少必填字段: ${k}`);
