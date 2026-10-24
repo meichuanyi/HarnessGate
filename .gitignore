@@ -8,6 +8,7 @@ vscode/dist/
 vscode/out-test/
 vscode/.vscode-test/
 *.vsix
+dsh/*.tgz
 vscode/src/generated/
 .sessions/
 

@@ -1,0 +1,23 @@
+{
+  "name": "dsh-harnessgate",
+  "version": "0.1.1",
+  "description": "HarnessGate plugin for DeepSeek Harness: /harnessgate commands + embedded panel for cross-harness session management",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "harnessgate"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}
