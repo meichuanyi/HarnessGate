@@ -34,6 +34,14 @@ import WebSocket from "ws";
  *
  * 4. 统一通知与报警推送 (Notification)
  *    - notification_send: 主动向外部通道（飞书机器人/NAS统一推送网关/Webhook）发送即时卡片通知与警报
+ *
+ * 5. 定时任务 (Schedules)
+ *    - schedules_list: 列出全部定时任务（频率/下次触发/上次运行状态）
+ *    - schedules_save: 创建或更新定时任务（到点自动驱动 agent 会话执行 promptTemplate）
+ *    - schedules_delete: 删除定时任务
+ *    - schedules_enable: 启用/停用（含被连续失败自动暂停后的重新启用）
+ *    - schedules_run: 立即触发一次（异步执行，结果看 lastStatus）
+ *    全部经由主进程 WS 通道（9830/ws），不直写 schedules.json，保证审计与内存态一致。
  */
 
 const HG_WS_URL = process.env.HG_WS_URL || "ws://127.0.0.1:9830/ws";
@@ -484,6 +492,124 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           metadata: {
             type: "object",
             description: "可选的附加元数据键值对",
+          },
+        },
+      },
+    },
+
+    // ---------- 组 C：定时任务 (Schedules) ----------
+    {
+      name: "schedules_list",
+      description: "列出 HarnessGate 里的全部定时任务（名称/频率/下次触发/上次运行状态），增删改查中的『查』",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      name: "schedules_save",
+      description:
+        "创建或更新定时任务（增/改）：到点自动驱动一个 agent 会话执行 promptTemplate。" +
+        "频率支持 daily/weekly/interval/cron 四种；带 id 即为更新，不带即新建。" +
+        "连续失败 3 次会被自动暂停，修复后用 schedules_enable 重新启用。" +
+        "仅支持 agent 任务；直接执行脚本的 exec 模式只能在网页端创建",
+      inputSchema: {
+        type: "object",
+        required: ["name", "harnessId", "cadence", "promptTemplate"],
+        properties: {
+          id: {
+            type: "string",
+            description: "任务 id（更新时传入；不传 = 新建）",
+          },
+          name: {
+            type: "string",
+            description: "任务名（简短）",
+          },
+          harnessId: {
+            type: "string",
+            description: "执行用的 harness id（如 zcode / codex / claude）",
+          },
+          cadence: {
+            type: "object",
+            description:
+              "频率：{type:'daily',at:'HH:MM'} | {type:'weekly',days:[0-6],at:'HH:MM'}（0=周日） | {type:'interval',everyMinutes:N} | {type:'cron',expr:'5段表达式'}",
+          },
+          promptTemplate: {
+            type: "string",
+            description: "每次触发执行的完整 prompt",
+          },
+          cwd: {
+            type: "string",
+            description: "工作目录（绝对路径）；不填 = 自动工作区（自动创建并 git init）",
+          },
+          autoApprove: {
+            type: "string",
+            enum: ["off", "readonly", "all"],
+            description: "权限自动审批档位，默认 all",
+          },
+          enabled: {
+            type: "boolean",
+            description: "是否启用，默认 true",
+          },
+          window: {
+            type: "object",
+            description: "可选运行窗口过滤：{from:'HH:MM',to:'HH:MM',weekdays:[0-6]}；from>to 视为跨午夜",
+          },
+          sessionMode: {
+            type: "string",
+            enum: ["fresh", "dedicated"],
+            description: "每次新开会话（默认 fresh）或复用专属会话",
+          },
+          contract: {
+            type: "object",
+            description: "可选验收契约：{requires:['文件',...], outputFile:'产物路径'}；产物缺失判为运行失败",
+          },
+        },
+      },
+    },
+    {
+      name: "schedules_delete",
+      description: "删除一个定时任务",
+      inputSchema: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: {
+            type: "string",
+            description: "任务 id",
+          },
+        },
+      },
+    },
+    {
+      name: "schedules_enable",
+      description: "启用/停用一个定时任务（不改动其他字段）",
+      inputSchema: {
+        type: "object",
+        required: ["id", "enabled"],
+        properties: {
+          id: {
+            type: "string",
+            description: "任务 id",
+          },
+          enabled: {
+            type: "boolean",
+            description: "true=启用，false=停用",
+          },
+        },
+      },
+    },
+    {
+      name: "schedules_run",
+      description:
+        "立即触发运行一个定时任务（不等下一次到点）。执行是异步的：返回成功仅代表已触发，结果稍后用 schedules_list 查看 lastStatus / lastSessionId",
+      inputSchema: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: {
+            type: "string",
+            description: "任务 id",
           },
         },
       },
@@ -1335,6 +1461,234 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
     }
 
+    // ----------------------------------------------------
+    // 组 C：定时任务 (Schedules)
+    // 全部经由主进程 WS 消息（schedules-list / schedule-save / schedule-delete / schedule-run），
+    // 由主进程统一做校验、审计、持久化与广播，MCP 侧不直写 schedules.json。
+    // ----------------------------------------------------
+    if (name === "schedules_list" || name === "schedules_save" || name === "schedules_delete" || name === "schedules_enable" || name === "schedules_run") {
+      const WD = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+      const cadenceDesc = (c: Record<string, unknown>): string => {
+        if (c?.type === "daily") return `每天 ${c.at}`;
+        if (c?.type === "weekly") return `每周${((c.days as Array<number>) ?? []).map((d) => WD[d] ?? d).join("/")} ${c.at}`;
+        if (c?.type === "interval") return `每 ${c.everyMinutes} 分钟`;
+        return `cron: ${c?.expr ?? ""}`;
+      };
+      const fmtSchedule = (s: Record<string, unknown>) => {
+        const st = (s.state ?? {}) as Record<string, unknown>;
+        const isExec = s.mode === "exec";
+        return {
+          id: s.id,
+          name: s.name,
+          enabled: s.enabled !== false,
+          mode: isExec ? "exec" : "agent",
+          harnessId: isExec ? "（脚本）" : s.harnessId,
+          cwd: s.cwd || "（自动工作区）",
+          cadence: cadenceDesc((s.cadence ?? {}) as Record<string, unknown>),
+          ...(isExec
+            ? { commandPreview: String(s.execCommand ?? "").slice(0, 80) }
+            : { promptPreview: String(s.promptTemplate ?? "").slice(0, 80) }),
+          running: Boolean(st.running),
+          nextFireAt: st.nextFireAt ?? null,
+          lastRunAt: st.lastRunAt ?? null,
+          lastStatus: st.lastStatus ?? null,
+          lastError: st.lastError ?? null,
+        };
+      };
+      // 等主进程下一条指定类型的消息；type:"error" 一律视为失败并抛出
+      const awaitMsg = (types: Array<string>, timeoutMs: number): Promise<Record<string, unknown>> =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`HarnessGate 应答超时（等待 ${types.join("/")}，${timeoutMs}ms）`)), timeoutMs);
+          const onMsg = (raw: WebSocket.Data) => {
+            let msg: Record<string, unknown>;
+            try {
+              msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+            } catch {
+              return;
+            }
+            const t = String(msg.type ?? "");
+            if (t === "error" || types.includes(t)) {
+              clearTimeout(timer);
+              client.ws.off("message", onMsg);
+              if (t === "error") reject(new Error(String(msg.message ?? "主进程返回错误")));
+              else resolve(msg);
+            }
+          };
+          client.ws.on("message", onMsg);
+        });
+      const fetchSchedules = async (): Promise<Array<Record<string, unknown>>> => {
+        const p = awaitMsg(["schedules"], 6000);
+        client.ws.send(JSON.stringify({ type: "schedules-list" }));
+        const msg = await p;
+        return (msg.schedules as Array<Record<string, unknown>>) ?? [];
+      };
+
+      if (name === "schedules_list") {
+        const list = await fetchSchedules();
+        client.close();
+        return {
+          content: [{ type: "text", text: JSON.stringify({ count: list.length, schedules: list.map(fmtSchedule) }, null, 2) }],
+        };
+      }
+
+      if (name === "schedules_save") {
+        // 安全闸：exec 模式=到点免审批跑任意 shell，只允许人在网页端创建；agent 一律拒绝
+        if (args.mode === "exec" || args.execCommand !== undefined) {
+          throw new Error("脚本（exec）模式仅支持在 HarnessGate 网页端创建，MCP 侧只能配置 agent 任务");
+        }
+        for (const k of ["name", "harnessId", "cadence", "promptTemplate"]) {
+          if (!args[k]) throw new Error(`缺少必填字段: ${k}`);
+        }
+        const cadence = args.cadence as Record<string, unknown>;
+        if (!cadence || typeof cadence !== "object") throw new Error("cadence 必须为对象");
+        if (cadence.type === "daily" || cadence.type === "weekly") {
+          if (!/^\d{1,2}:\d{2}$/.test(String(cadence.at ?? ""))) throw new Error("daily/weekly 频率的 at 应为 HH:MM（24 小时制）");
+        }
+        if (cadence.type === "weekly" && !Array.isArray(cadence.days)) throw new Error("weekly 频率需要 days 数组（0=周日）");
+        if (cadence.type === "interval" && !(Number(cadence.everyMinutes) >= 1)) throw new Error("interval 频率需要 everyMinutes ≥ 1");
+        if (cadence.type === "cron" && !String(cadence.expr ?? "").trim()) throw new Error("cron 频率需要 expr（5 段表达式）");
+
+        const id = typeof args.id === "string" && args.id.trim() ? args.id.trim() : Math.random().toString(36).slice(2, 10);
+        const saveMsg = awaitMsg(["schedules"], 6000);
+        client.ws.send(
+          JSON.stringify({
+            type: "schedule-save",
+            schedule: {
+              id,
+              name: String(args.name).slice(0, 40),
+              harnessId: String(args.harnessId),
+              cadence,
+              promptTemplate: String(args.promptTemplate),
+              ...(typeof args.cwd === "string" && args.cwd.trim() ? { cwd: args.cwd.trim() } : {}),
+              ...(args.autoApprove !== undefined ? { autoApprove: args.autoApprove } : {}),
+              ...(args.enabled !== undefined ? { enabled: args.enabled === true } : {}),
+              ...(args.window !== undefined ? { window: args.window } : {}),
+              ...(args.sessionMode !== undefined ? { sessionMode: args.sessionMode } : {}),
+              ...(args.contract !== undefined ? { contract: args.contract } : {}),
+            },
+          }),
+        );
+        const msg = await saveMsg;
+        const list = (msg.schedules as Array<Record<string, unknown>>) ?? [];
+        const rec = list.find((s) => s.id === id);
+        client.close();
+        if (!rec) throw new Error("保存未生效（主进程任务列表中未找到该任务）");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  action: typeof args.id === "string" ? "updated" : "created",
+                  schedule: fmtSchedule(rec),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      if (name === "schedules_delete") {
+        const id = String(args.id ?? "");
+        if (!id) throw new Error("id 必填");
+        client.ws.send(JSON.stringify({ type: "schedule-delete", id }));
+        // schedule-delete 无应答，删除成功会广播最新列表；补发一次 list 请求确保有消息可等
+        const msg = await awaitMsg(["schedules"], 6000).catch(async () => {
+          const retry = awaitMsg(["schedules"], 6000);
+          client.ws.send(JSON.stringify({ type: "schedules-list" }));
+          return await retry;
+        });
+        const list = (msg.schedules as Array<Record<string, unknown>>) ?? [];
+        client.close();
+        if (list.some((s) => s.id === id)) throw new Error("删除未生效（任务仍在列表中）");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ success: true, message: `定时任务 ${id} 已删除。` }, null, 2),
+            },
+          ],
+        };
+      }
+
+      if (name === "schedules_enable") {
+        const id = String(args.id ?? "");
+        if (!id) throw new Error("id 必填");
+        const enable = args.enabled === true;
+        const list = await fetchSchedules();
+        const rec = list.find((s) => s.id === id);
+        if (!rec) throw new Error(`找不到任务 ${id}`);
+        // 主进程 save 是字段级合并：仅翻转 enabled，其余字段原样回传（state 交由主进程重算）
+        const { state: _state, ...rest } = rec;
+        client.ws.send(JSON.stringify({ type: "schedule-save", schedule: { ...rest, enabled: enable } }));
+        const msg = await awaitMsg(["schedules"], 6000);
+        const after = ((msg.schedules as Array<Record<string, unknown>>) ?? []).find((s) => s.id === id);
+        client.close();
+        if (!after || after.enabled !== enable) throw new Error("启停未生效");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { success: true, message: `定时任务 ${id}（${String(rec.name)}）已${enable ? "启用" : "停用"}。`, schedule: fmtSchedule(after) },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      if (name === "schedules_run") {
+        const id = String(args.id ?? "");
+        if (!id) throw new Error("id 必填");
+        const list = await fetchSchedules();
+        const rec = list.find((s) => s.id === id);
+        if (!rec) throw new Error(`找不到任务 ${id}`);
+        // schedule-run 成功触发时主进程不回包（仅任务不存在时回 error），短等 error 无消息即视为已触发
+        client.ws.send(JSON.stringify({ type: "schedule-run", id }));
+        const raced = await Promise.race([
+          awaitMsg(["error"], 2500).then(
+            () => "error" as const,
+            () => "fired" as const,
+          ),
+          new Promise<"fired">((resolve) => setTimeout(() => resolve("fired"), 2500)),
+        ]);
+        if (raced === "error") throw new Error("触发失败（主进程返回错误）");
+        // 触发确认：不能只凭「没等到 error」就报成功——轮询看主进程侧 running 置位
+        //（agent 任务会一直挂着）或 lastStatus 已翻转（exec 快任务可能瞬间跑完）。确认不了就报错，绝不静默假成功。
+        const stBefore = ((rec.state ?? {}) as Record<string, unknown>).lastStatus ?? null;
+        let confirmed = false;
+        for (let i = 0; i < 6 && !confirmed; i++) {
+          await new Promise((r) => setTimeout(r, 600));
+          const now = (await fetchSchedules()).find((s) => s.id === id);
+          if (!now) break; // 触发后被并发删除，无从确认，按已触发处理
+          const st = (now.state ?? {}) as Record<string, unknown>;
+          confirmed = Boolean(st.running) || st.lastStatus !== stBefore;
+        }
+        client.close();
+        if (!confirmed) throw new Error("触发未确认（主进程侧未见 running 置位，任务可能未被执行）");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  message: `定时任务 ${id}（${String(rec.name)}）已触发，正在异步执行；结果稍后用 schedules_list 查看 lastStatus / lastSessionId。`,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+    }
+
     client.close();
     return { content: [{ type: "text", text: `未知工具调用: ${name}` }] };
   } catch (err) {
@@ -1352,3 +1706,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+// 父进程（harness 会话）退出后 stdin 会 EOF——必须跟着退，否则孤儿进程越积越多
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("error", () => process.exit(0));
