@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, createReadStream, renameSync, rmSync, unlinkSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -3543,6 +3543,17 @@ setInterval(() => void (async () => {
           console.log(`[archive] 过期清理: ${f}（${process.env.HG_ARCHIVE_RETENTION_DAYS ?? 30} 天未更新）`);
         }
       }
+      // zcode-cli 迁移备份清扫：每次拉起会话它都会备份 546MB 的库且从不清理——
+      // 只留最新 1 份兜底，其余删除（否则磁盘 2~3 天写满一次，就是本次磁盘危机的元凶）
+      try {
+        const mb = "/root/.zcode/server/migration-backups";
+        const dirs = readdirSync(mb).map((d) => join(mb, d)).filter((p) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+        if (dirs.length > 1) {
+          dirs.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+          for (const old of dirs.slice(1)) rmSync(old, { recursive: true, force: true });
+          console.log(`[archive] 迁移备份清扫: 保留 1 份，清除 ${dirs.length - 1} 个`);
+        }
+      } catch {}
     }
   } catch (err) {
     console.warn(`[life-heartbeat] 扫描失败: ${err instanceof Error ? err.message : err}`);
