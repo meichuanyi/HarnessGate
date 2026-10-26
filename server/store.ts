@@ -107,10 +107,12 @@ export class SessionStore {
 
   private schedule(): void {
     if (this.timer) return;
+    // 5s 合并窗口：全量快照写放大随会话总数线性增长，400ms 在 190+ 会话下造成
+    // ~46MB/次 × 高频 = 数百 GB/天 的磁盘写。崩溃丢 5s 台账可从 JSONL 归档重建。
     this.timer = setTimeout(() => {
       this.timer = null;
       this.flush();
-    }, 400);
+    }, 5000);
     this.timer.unref?.();
   }
 

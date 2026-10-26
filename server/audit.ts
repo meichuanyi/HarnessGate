@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync, watch, type FSWatcher } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, renameSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 /**
@@ -6,13 +6,23 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
  * "共同工作区/圆桌" 的改动归因基础。
  */
 export class AuditLog {
+  private bytes = 0;
+  private readonly maxBytes = 64 * 1024 * 1024;   // 消费方只读尾部 512KB，老数据轮转丢弃
+
   constructor(private readonly file: string) {
     mkdirSync(dirname(file), { recursive: true });
+    try { this.bytes = statSync(file).size; } catch {}
   }
 
   append(entry: Record<string, unknown>): void {
     try {
-      appendFileSync(this.file, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
+      const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
+      if (this.bytes >= this.maxBytes) {
+        try { renameSync(this.file, `${this.file}.1`); } catch {}
+        this.bytes = 0;
+      }
+      appendFileSync(this.file, line);
+      this.bytes += line.length;
     } catch {
       /* 台账失败不能影响主流程 */
     }
