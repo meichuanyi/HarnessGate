@@ -807,6 +807,7 @@
   <aside id="side">
     <div class="sideHead">
       <input type="text" id="filter" placeholder="过滤 harness / 会话…" />
+      <button class="mini ghost" id="treeViewBtn" title="切换分组视图">🧩</button>
       <button class="mini ghost" id="collapseAll" title="全部折叠">▾</button>
     </div>
     <div id="tree"></div>
@@ -939,6 +940,9 @@ let showLog = false;
 let pendingRoomStart = false;
 let pendingCreate = false;   // 新建会话后等服务端回包，自动进入对话
 const collapsedHarnesses = new Set();
+/* 左侧树分组视图：harness（按 harness 分组，默认）| project（按工作目录分组）。偏好持久化 */
+let treeView = localStorage.getItem("hg_treeview") === "project" ? "project" : "harness";
+const collapsedProjects = new Set();   // 项目视图下折叠的目录（key=cwd）
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[c]);
@@ -1832,10 +1836,30 @@ function navRoomList() {
    ===================================================================== */
 $("filter").oninput = (e) => { state.filter = e.target.value.toLowerCase().trim(); renderTree(); };
 $("collapseAll").onclick = () => {
-  if (collapsedHarnesses.size === harnesses.size) collapsedHarnesses.clear();
-  else for (const id of harnesses.keys()) collapsedHarnesses.add(id);
+  if (treeView === "project") {
+    const all = new Set([...sessions.values()].map((s) => s.cwd || "(未知目录)"));
+    if (collapsedProjects.size === all.size) collapsedProjects.clear();
+    else { collapsedProjects.clear(); for (const c of all) collapsedProjects.add(c); }
+  } else {
+    if (collapsedHarnesses.size === harnesses.size) collapsedHarnesses.clear();
+    else for (const id of harnesses.keys()) collapsedHarnesses.add(id);
+  }
   renderTree();
 };
+const treeViewBtnSync = () => {
+  const b = $("treeViewBtn");
+  b.textContent = treeView === "harness" ? "🧩" : "📁";
+  b.title = treeView === "harness"
+    ? "当前：按 harness 分组，点按切换为按项目（工作目录）分组"
+    : "当前：按项目（工作目录）分组，点按切换为按 harness 分组";
+};
+$("treeViewBtn").onclick = () => {
+  treeView = treeView === "harness" ? "project" : "harness";
+  localStorage.setItem("hg_treeview", treeView);
+  treeViewBtnSync();
+  renderTree();
+};
+treeViewBtnSync();
 
 function renderTree() {
   const tree = $("tree");
@@ -1853,6 +1877,71 @@ function renderTree() {
         <button class="mini ghost" data-asst-swap="1" title="更换助理的 harness（换芯重建：记忆和台账保留）" style="margin-left:6px;padding:0 4px">⇄</button>
       </div>
     </div>`;
+  if (treeView === "project") {
+    /* 项目视图：全部会话按工作目录分组（跨 harness 归拢同一个项目）；组间按最近活跃排 */
+    const shortCwd = (p) => {
+      let t = p.startsWith("/root/") ? "~/" + p.slice(6) : p;
+      if (t.length > 30) t = "…" + t.slice(-28);
+      return t;
+    };
+    const rowHtml = (s, indent) => `
+      <div class="sRow ${state.sessionId === s.id ? "active" : ""}" data-sid="${s.id}" style="${indent ? "padding-left:20px" : ""}">
+        <span style="display:inline-flex">${pillOf(s, STATUS_TAG)}</span>
+        ${s.parentId ? `<span title="分支${s.branchName ? "：" + esc(s.branchName) : ""}" style="font-size:10px;opacity:.75">⎇</span>` : ""}
+        ${s.assistant ? '<span title="常驻助理" style="font-size:11px">✨</span>' : ""}
+        ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
+        <span class="tag" title="${esc(harnesses.get(s.harnessId)?.label || s.harnessId)}" style="opacity:.75">${esc(s.harnessId)}</span>
+        ${(s.tags || []).slice(0, 2).map((t) => `<span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}
+        <span class="t" title="${esc(s.cwd)}">${esc(s.title || (s.cwd || "").split("/").pop() || "#" + s.id)}</span>
+      </div>`;
+    const byCwd = new Map();
+    for (const s of sessions.values()) {
+      const key = s.cwd || "(未知目录)";
+      (byCwd.get(key) ?? byCwd.set(key, []).get(key)).push(s);
+    }
+    const groups = [...byCwd.entries()].map(([cwd, all]) => {
+      // 分支紧跟主干（同 harness 视图逻辑，范围限定在本目录组内）
+      const roots = all.filter((s) => !s.parentId || !sessions.has(s.parentId));
+      roots.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+      const childrenOf = new Map();
+      for (const s of all) {
+        if (s.parentId && sessions.has(s.parentId)) {
+          const arr = childrenOf.get(s.parentId) ?? [];
+          arr.push(s);
+          childrenOf.set(s.parentId, arr);
+        }
+      }
+      for (const arr of childrenOf.values()) arr.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+      const list = [];
+      const seen = new Set();
+      for (const r of roots) {
+        list.push(r); seen.add(r.id);
+        for (const c of childrenOf.get(r.id) ?? []) { if (!seen.has(c.id)) { list.push(c); seen.add(c.id); } }
+      }
+      for (const s of all) if (!seen.has(s.id)) list.push(s);
+      return { cwd, list, liveCount: all.filter((s) => s.live).length, latest: all.map((s) => s.lastActiveAt || s.createdAt || "").sort().pop() || "" };
+    }).sort((a, b) => b.latest.localeCompare(a.latest));
+    for (const g of groups) {
+      const matchG = !filter || g.cwd.toLowerCase().includes(filter);
+      const matched = g.list.filter((s) =>
+        s.harnessId.includes(filter) || (harnesses.get(s.harnessId)?.label || "").toLowerCase().includes(filter)
+        || (s.title && s.title.toLowerCase().includes(filter)) || s.id.includes(filter)
+        || (s.tags || []).some((t) => t.toLowerCase().includes(filter))
+      );
+      if (filter && !matchG && !matched.length) continue;
+      const collapsed = collapsedProjects.has(g.cwd) && !filter;
+      html += `
+        <div class="hNode">
+          <div class="hRow" data-pcwd="${esc(g.cwd)}" title="${esc(g.cwd)}">
+            <span class="caret">${collapsed ? "▸" : "▾"}</span>
+            <span class="dot ${g.liveCount ? "on" : ""}"></span>
+            <span class="nm">${esc(shortCwd(g.cwd))}</span>
+            <span class="ct">${g.list.length}</span>
+          </div>
+          ${!collapsed ? `<div class="sList">${matched.map((s) => rowHtml(s, Boolean(s.parentId && sessions.has(s.parentId)))).join("")}</div>` : ""}
+        </div>`;
+    }
+  } else
   for (const h of harnesses.values()) {
     const all = [...sessions.values()].filter((s) => s.harnessId === h.id);
     const liveCount = all.filter((s) => s.live).length;
@@ -1943,6 +2032,14 @@ function renderTree() {
       if (el.dataset.asst) {
         if (assistantSessionId) openSession(assistantSessionId);
         else { send({ type: "assistant-ensure" }); pendingAssistantCreate = true; }
+        return;
+      }
+      if (el.dataset.pcwd !== undefined) {
+        // 项目视图组头：整行点按即折叠/展开（组没有可导航的目标页）
+        const cwd = el.dataset.pcwd;
+        if (collapsedProjects.has(cwd)) collapsedProjects.delete(cwd);
+        else collapsedProjects.add(cwd);
+        renderTree();
         return;
       }
       if (e.target.dataset.toggle) {
