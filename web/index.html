@@ -5748,6 +5748,7 @@ function renderSentinelEditor(e) {
   };
 }
 
+const roomFetchAt = {};   // 房间全量拉取节流（rooms 广播会把条目重置为摘要态，避免整列表广播后反复拉）
 function renderRoundtable() {
   const root = $("viewRoot");
   const room = state.roomId ? roomById(state.roomId) : null;
@@ -5755,6 +5756,11 @@ function renderRoundtable() {
     root.innerHTML = roomWizardHtml();
     bindRoomWizard();
     return;
+  }
+  // hello 只带房间摘要（turns===undefined）：先渲染骨架，同时拉全量——room 广播到达后本函数会被重触发补全
+  if (room.turns === undefined && Date.now() - (roomFetchAt[room.id] || 0) > 3000) {
+    roomFetchAt[room.id] = Date.now();
+    send({ type: "room-get", id: room.id });
   }
   if (root.querySelector("#rtBlocks") && root.dataset.roomId === room.id) {
     syncRoomBlocks(room);
@@ -5986,7 +5992,7 @@ function roomHistoryHtml() {
         <span class="pill ${r.status === "done" ? "done" : r.status === "running" ? "running" : r.status === "error" ? "error" : "saved"}">${ROOM_STATUS[r.status] || r.status}</span>
         <div style="flex:1;min-width:180px">
           <div class="t1" style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.topic)}</div>
-          <div class="meta2">#${r.id} · ${(r.members || []).length} 位成员 · ${(r.turns || []).length} 次发言${r.cwd ? " · " + esc(r.cwd) : ""}</div>
+          <div class="meta2">#${r.id} · ${(r.members || []).length} 位成员 · ${(r.turnCount ?? (r.turns || []).length)} 次发言${r.cwd ? " · " + esc(r.cwd) : ""}</div>
         </div>
         <button class="mini primary" data-open="${r.id}">打开</button>
         <button class="mini ghost" data-del="${r.id}">删除</button>
@@ -6144,7 +6150,7 @@ function roomDetailHtml(room) {
 
       ${topics.length > 1 ? `<div class="rtCard"><h3>此前的议题（${topics.length - 1}）</h3>
         ${topics.slice(0, -1).map((t, i) => `<div class="rtPastTopic"><b>议题 ${i + 1}：${esc(t.topic)}</b>
-          <span class="rtBadge">${t.turns.length} 次发言 · ${ROOM_STATUS[t.status] || t.status}</span>
+          <span class="rtBadge">${(t.turnCount ?? (t.turns || []).length)} 次发言 · ${ROOM_STATUS[t.status] || t.status}</span>
           <details><summary>展开</summary>${topicBlocksHtml(room, t)}</details></div>`).join("")}
       </div>` : ""}
 

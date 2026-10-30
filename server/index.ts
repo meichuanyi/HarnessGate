@@ -28,7 +28,7 @@ import { UtilitySessions } from "./utility-session.ts";
 import { scanAllUtilitySessions, deleteAllUtilitySessions, deleteHarnessLocalSessions, isUtilityDir } from "./utility-cleanup.ts";
 import { createWorktree, ensureCrewRepo, repoRoot } from "./worktree.ts";
 import { WorkspaceHub } from "./workspace.ts";
-import { RoomManager, type HostConfig, type RoomMember, type CrewState } from "./room.ts";
+import { RoomManager, type HostConfig, type RoomMember, type CrewState, type Room } from "./room.ts";
 import { headOf, branchCommits, changedFiles, currentBranch, mergeBaseWith } from "./crew.ts";
 import { isInside } from "./audit.ts";
 import { randomUUID } from "node:crypto";
@@ -698,7 +698,13 @@ function sessionList(): SessionInfo[] {
   const liveIds = new Set(list.map((s) => s.id));
   for (const rec of store.all()) {
     if (liveIds.has(rec.id) || rec.sideOf) continue;   // 侧问分身只活在抽屉里，不进常规列表
-    if (!liveIds.has(rec.id)) list.push(savedInfo(rec));
+    if (!liveIds.has(rec.id)) {
+      // hello 瘦身：saved 条目不带 configOptions（模型选项清单约 20KB/条，几百条存档重复占大头；
+      // 打开/恢复会话时 session 广播会带全量补齐，活会话不受影响）
+      const info = savedInfo(rec);
+      delete info.configOptions;
+      list.push(info);
+    }
   }
   // 收藏的会话置顶，其余按最近活动倒序
   return list.sort((a, b) =>
@@ -1162,11 +1168,26 @@ function helloPayload(): ServerMsg {
     skills: skillsSnapshot(),
     sessions: sessionList(),
     defaultCwd,
-    rooms: rooms.list(),
+    rooms: rooms.list().map(roomSummary),
     ...mindwtrPayloadSync(),
     schedules,
     sentinel: sentinel.status(),
   };
+}
+
+/** hello / rooms 列表瘦身：圆桌的完整发言稿（turns、topics.turns、crew 任务正文）不进连接初始包——
+ *  历史房间台账会累计到 MB 级，塞满每次连接的 hello 在公网链路（frp）上要传十几秒，插件直接超时连不上。
+ *  摘要保留计数/成员/状态；完整数据打开房间时经 room-get 按需拉取。 */
+function roomSummary(r: Room): Room {
+  const { turns, topics, crew, ...rest } = r;
+  return {
+    ...rest,
+    turnCount: turns?.length ?? 0,
+    topics: topics?.map(({ turns: tTurns, ...t }) => ({ ...t, turnCount: tTurns?.length ?? 0 })),
+    crew: crew
+      ? { ...crew, tasks: (crew.tasks ?? []).map(({ spec: _sp, diff: _df, summary: _sm, ...k }) => k) }
+      : undefined,
+  } as unknown as Room;
 }
 
 /** 把版本管理信息（已装/最新/支持一键管理/可一键安装）并进 availability 下发 */
@@ -1917,6 +1938,17 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "room-get": {
+          // 摘要化配套：hello 里的房间不带发言稿，打开房间时拉全量（复用 room 消息，客户端合并逻辑现成）
+          const full = rooms.get(String(msg.id ?? ""));
+          if (!full) {
+            ws.send(JSON.stringify({ type: "error", message: "房间不存在" } satisfies ServerMsg));
+            break;
+          }
+          ws.send(JSON.stringify({ type: "room", room: full } satisfies ServerMsg));
+          break;
+        }
+
         case "room-create": {
           const room = rooms.create({
             topic: msg.topic,
@@ -1924,7 +1956,7 @@ wss.on("connection", (ws, req) => {
             rounds: msg.rounds,
             writeAllowed: msg.writeAllowed,
           });
-          ws.send(JSON.stringify({ type: "rooms", rooms: rooms.list() } satisfies ServerMsg));
+          ws.send(JSON.stringify({ type: "rooms", rooms: rooms.list().map(roomSummary) } satisfies ServerMsg));
           void rooms.run(room.id);
           break;
         }
@@ -2146,7 +2178,7 @@ wss.on("connection", (ws, req) => {
             ...members,
             ...(host && !members.includes(host.sessionId) ? [host.sessionId] : []),
           ]);
-          broadcast({ type: "rooms", rooms: rooms.list() });
+          broadcast({ type: "rooms", rooms: rooms.list().map(roomSummary) });
           void rooms.run(room.id);
           break;
         }
@@ -2165,7 +2197,7 @@ wss.on("connection", (ws, req) => {
               ws.send(JSON.stringify({ type: "error", message: "圆桌不存在" } satisfies ServerMsg));
               return;
             }
-            broadcast({ type: "rooms", rooms: rooms.list() });
+            broadcast({ type: "rooms", rooms: rooms.list().map(roomSummary) });
             void rooms.run(msg.roomId);
           } catch (err) {
             ws.send(
@@ -2186,7 +2218,7 @@ wss.on("connection", (ws, req) => {
 
         case "room-stop":
           rooms.stop(msg.roomId);
-          ws.send(JSON.stringify({ type: "rooms", rooms: rooms.list() } satisfies ServerMsg));
+          ws.send(JSON.stringify({ type: "rooms", rooms: rooms.list().map(roomSummary) } satisfies ServerMsg));
           break;
 
         case "crew-merge": {
@@ -2196,7 +2228,7 @@ wss.on("connection", (ws, req) => {
               ws.send(JSON.stringify({ type: "error", message: "圆桌不存在" } satisfies ServerMsg));
               return;
             }
-            broadcast({ type: "rooms", rooms: rooms.list() });
+            broadcast({ type: "rooms", rooms: rooms.list().map(roomSummary) });
             broadcast({ type: "room", room });
           } catch (err) {
             ws.send(
@@ -2229,7 +2261,7 @@ wss.on("connection", (ws, req) => {
               broadcast({ type: "deleted", sessionId: sid } as unknown as ServerMsg);
             }
           }
-          broadcast({ type: "rooms", rooms: rooms.list() });
+          broadcast({ type: "rooms", rooms: rooms.list().map(roomSummary) });
           ws.send(JSON.stringify(helloPayload()));
           break;
         }
@@ -3600,18 +3632,35 @@ executeGoalSpeculation = async (gid: string, purpose: string): Promise<{ ok: boo
   target.lastSpeculatedResult = {
     ok: r.ok,
     summary: r.ok ? r.report.slice(0, 500) : r.error,
-    branch: r.ok ? r.worktree?.branch : undefined
+    conclusionNote: !r.ok ? (r as any).conclusionNote : undefined,
+    patch: r.patch ? r.patch.slice(0, 2000) : undefined,
+    branch: r.worktree?.branch,
   };
   saveAndBroadcastGoals();
+
+  // 记录结论笔记至 /root/.harnessgate/speculative-notes.md 供长期沉淀与回溯
+  try {
+    const timeStr = new Date().toLocaleString();
+    const entry = r.ok
+      ? `\n## [${timeStr}] 目标推演: ${target.title} (${target.id}) - ✅ 成功\n- 分支: ${r.worktree?.branch || "无"}\n- 耗时: ${Math.round(r.elapsedMs / 1000)}s\n\n### 产出报告\n${r.report}\n\n---\n`
+      : `\n## [${timeStr}] 目标推演: ${target.title} (${target.id}) - ❌ 失败（已自动还原分支）\n- 分支: ${r.worktree?.branch || "无"}\n- 耗时: ${Math.round(r.elapsedMs / 1000)}s\n\n${(r as any).conclusionNote || r.error}\n\n---\n`;
+    appendFileSync(join(DATA_DIR, "speculative-notes.md"), entry, "utf8");
+  } catch {
+    /* 忽略落盘异常 */
+  }
+
   if (target.speculative?.notifyFeishu) {
     const notifCfg = settingsStore.get().notification;
+    const bodyContent = r.ok
+      ? `状态: ✅ 成功\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.worktree?.branch || "无"}\n触发来源: ${purpose}\n\n${r.report.slice(0, 600)}`
+      : `状态: ❌ 失败（已自动还原沙箱分支）\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.worktree?.branch || "无"}\n触发来源: ${purpose}\n\n${(r as any).conclusionNote || r.error}`;
     void sendNotification(notifCfg, {
       title: `【目标推演】${target.title}`,
-      content: `状态: ${r.ok ? "✅ 成功" : "❌ 失败"}\n耗时: ${Math.round(r.elapsedMs / 1000)}s\n分支: ${r.ok ? (r.worktree?.branch || "无") : "无"}\n触发来源: ${purpose}\n\n${r.ok ? r.report.slice(0, 600) : r.error}`,
+      content: bodyContent,
       level: r.ok ? "success" : "error",
       metadata: {
         goalId: target.id,
-        branch: r.ok ? r.worktree?.branch : undefined,
+        branch: r.worktree?.branch,
         elapsedMs: r.elapsedMs,
       }
     });

@@ -354,6 +354,7 @@ export type ClientMsg =
   | { type: "crew-merge"; roomId: string }
   /** 工作队右侧面板：自动权限决策记录 + 交付件（任务产物/分支提交/评审结论） */
   | { type: "crew-detail"; roomId: string }
+  | { type: "room-get"; id: string }
   | { type: "room-run"; roomId: string }
   | { type: "room-stop"; roomId: string }
   | { type: "goals-list" }
