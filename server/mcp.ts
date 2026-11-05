@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 
 /**
  * 受管 MCP 服务器：全局一份配置（~/.harnessgate/mcp.json），新建会话时按需勾选注入。
  * env/headers 用 [{name,value}] 行式存储（UI 好编辑）；wire() 负责转成 ACP 线格式。
+ * 读取前按文件指纹（mtimeMs:size）懒加载：脚本/编辑器直改 mcp.json 无需重启服务，
+ * 但只影响之后新建/恢复的会话，已在跑的会话不回溯变更。
  */
 export type McpServerConfig = {
   id: string;
@@ -36,34 +38,68 @@ export type McpUpsertResult = McpServerConfig | { error: string };
 export class McpStore {
   private servers: McpServerConfig[] = [];
   private timer: NodeJS.Timeout | null = null;
+  /** 上次加载的文件指纹（mtimeMs:size），外部直改后变化以触发热载 */
+  private fingerprint: string | null = null;
 
   constructor(private readonly file: string) {
     mkdirSync(dirname(file), { recursive: true });
-    if (!existsSync(file)) return;
+    this.load();
+  }
+
+  /** 热载入口：文件指纹变了就重读。所有读写路径先走这里 */
+  private sync(): void {
+    let fp: string;
     try {
-      const data = JSON.parse(readFileSync(file, "utf8")) as Partial<McpFile>;
+      const st = statSync(this.file);
+      fp = `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return; // 文件暂不可见（原子替换瞬间/被删）：保留内存现状
+    }
+    if (fp !== this.fingerprint) this.load();
+  }
+
+  private load(): void {
+    let fp: string | null = null;
+    try {
+      const st = statSync(this.file);
+      fp = `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return;
+    }
+    try {
+      const data = JSON.parse(readFileSync(this.file, "utf8")) as Partial<McpFile>;
       this.servers = (data.servers ?? []).filter((s) => s && typeof s.name === "string");
       for (const s of this.servers) s.id ||= randomUUID().slice(0, 8);
+      console.log(`[mcp] 已加载 ${this.servers.length} 个受管 MCP 服务器`);
     } catch (err) {
-      console.error(`[mcp] 读取 ${file} 失败，从空配置开始:`, err instanceof Error ? err.message : err);
+      // 半截写入/语法错误：沿用内存旧配置（指纹照常更新，避免每次调用都重试解析）
+      console.error(
+        `[mcp] 读取 ${this.file} 失败，保留内存中的 ${this.servers.length} 条配置:`,
+        err instanceof Error ? err.message : err,
+      );
     }
+    this.fingerprint = fp;
   }
 
   list(): McpServerConfig[] {
+    this.sync();
     return this.servers.map((s) => ({ ...s, env: s.env?.map((e) => ({ ...e })), headers: s.headers?.map((h) => ({ ...h })) }));
   }
 
   get(id: string): McpServerConfig | undefined {
+    this.sync();
     return this.servers.find((s) => s.id === id);
   }
 
   /** 新建会话未明确选择时的默认集合 */
   enabledIds(): string[] {
+    this.sync();
     return this.servers.filter((s) => s.enabled).map((s) => s.id);
   }
 
   /** 新建/更新：无 id 新建、有 id 覆盖。校验失败返回 {error}（不落库） */
   upsert(input: Partial<McpServerConfig>): McpUpsertResult {
+    this.sync(); // 先吸收外部直改，避免 UI 保存把脚本写入的内容冲掉
     const name = String(input.name ?? "").trim();
     if (!name) return { error: "name 不能为空" };
     if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) return { error: "name 只能包含字母/数字/._-（这是 agent 侧的服务器标识）" };
@@ -95,6 +131,7 @@ export class McpStore {
   }
 
   remove(id: string): boolean {
+    this.sync();
     const i = this.servers.findIndex((s) => s.id === id);
     if (i < 0) return false;
     this.servers.splice(i, 1);
@@ -132,6 +169,12 @@ export class McpStore {
     try {
       writeFileSync(tmp, JSON.stringify(payload, null, 1));
       renameSync(tmp, this.file);
+      try {
+        const st = statSync(this.file);
+        this.fingerprint = `${st.mtimeMs}:${st.size}`; // 自己写入的也算已加载，省一次重载
+      } catch {
+        /* stat 失败：下次 sync 会多读一次，无害 */
+      }
     } catch (err) {
       console.error(`[mcp] 写入失败:`, err instanceof Error ? err.message : err);
     }
