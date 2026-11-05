@@ -94,3 +94,81 @@ export async function worktreeStatus(info: WorktreeInfo): Promise<string> {
     return "";
   }
 }
+
+/**
+ * 为指定目标获取或维护唯一的推演工作区（单目标单分支）。
+ * 每个目标在仓库中只拥有一个固定的分支（hg/spec-${slug}）和沙箱目录。
+ */
+export async function ensureGoalWorktree(
+  baseDir: string,
+  goalId: string,
+  root = join(process.env.HOME ?? "/root", ".harnessgate", "worktrees"),
+): Promise<WorktreeInfo | null> {
+  const repo = await repoRoot(baseDir);
+  if (!repo) return null;
+  try {
+    await git(repo, ["rev-parse", "HEAD"]);
+  } catch {
+    return null;
+  }
+  const slug = goalId.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "goal";
+  const branch = `hg/spec-${slug}`;
+  const dir = join(root, `spec-${slug}`);
+
+  mkdirSync(root, { recursive: true });
+
+  // 1. 如果工作树目录已存在，检查是否有效
+  if (existsSync(dir)) {
+    try {
+      const top = await git(dir, ["rev-parse", "--show-toplevel"]);
+      if (top === dir) {
+        try {
+          await git(dir, ["checkout", branch]);
+        } catch {
+          /* 忽略 */
+        }
+        return { dir, branch, repo };
+      }
+    } catch {
+      try {
+        await run("rm", ["-rf", dir]);
+        await git(repo, ["worktree", "prune"]);
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }
+
+  // 2. 检查分支是否已存在于该仓库
+  let branchExists = false;
+  try {
+    await git(repo, ["rev-parse", "--verify", `refs/heads/${branch}`]);
+    branchExists = true;
+  } catch {
+    branchExists = false;
+  }
+
+  // 3. 创建/关联工作树
+  if (branchExists) {
+    await git(repo, ["worktree", "add", dir, branch]);
+  } else {
+    await git(repo, ["worktree", "add", "-b", branch, dir]);
+  }
+
+  return { dir, branch, repo };
+}
+
+/** 还原推演工作区：回退到指定基线 commit 并彻底清除未跟踪临时文件 */
+export async function resetWorktree(info: WorktreeInfo, baselineCommit?: string): Promise<void> {
+  try {
+    await git(info.dir, ["checkout", "-f", info.branch]);
+    await git(info.dir, ["clean", "-ffd"]);
+    if (baselineCommit) {
+      await git(info.dir, ["reset", "--hard", baselineCommit]);
+    } else {
+      await git(info.dir, ["reset", "--hard", "HEAD"]);
+    }
+  } catch {
+    /* 尽力而为 */
+  }
+}

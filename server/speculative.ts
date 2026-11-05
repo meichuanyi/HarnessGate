@@ -8,7 +8,7 @@ import type { SessionHooks } from "./session.ts";
 import type { AuditLog } from "./audit.ts";
 import type { SessionStore } from "./store.ts";
 import type { WorkspaceHub } from "./workspace.ts";
-import { createWorktree, removeWorktree, worktreeDiffStat } from "./worktree.ts";
+import { createWorktree, ensureGoalWorktree, resetWorktree, removeWorktree, worktreeDiffStat } from "./worktree.ts";
 import type { UtilityAskOptions, UtilityAskResult } from "./utility-session.ts";
 
 /**
@@ -93,6 +93,14 @@ export type SpeculativeFailure = {
   error: string;
   /** 执行 agent 已产出的部分文本（超时/校验失败时供复盘） */
   partial?: string;
+  /** 失败时沉淀的结论笔记与有价值产出 */
+  conclusionNote?: string;
+  /** 失败前产生的 patch（若有） */
+  patch?: string;
+  /** 失败前涉及的改动摘要（若有） */
+  diffStat?: string;
+  branch?: string;
+  worktree?: WorktreeInfo;
   judgement?: SpeculativeJudgement;
   elapsedMs: number;
 };
@@ -335,9 +343,41 @@ export async function runSpeculativeTask(
   let wt: WorktreeInfo | undefined;
   let sess: HarnessSession | undefined;
   let sessionId: string | undefined;
-  /** 收尾统一弃置沙箱；成功路径先把 wt 置空（沙箱保留待收编）再返回 */
-  const fail = (phase: SpeculativePhase, error: string, partial?: string): SpeculativeFailure => {
+  // 记录沙箱开始时的基线 commit，失败时用于还原分支
+  let initialCommit: string | undefined;
+
+  /** 失败处理：记录结论笔记和有价值产出，然后还原分支（不留脏改动） */
+  const fail = async (phase: SpeculativePhase, error: string, partial?: string): Promise<SpeculativeFailure> => {
     audit("speculative.failed", { phase, error: error.slice(0, 300) });
+
+    let failurePatch: string | undefined;
+    let failureDiffStat: string | undefined;
+    if (wt) {
+      try {
+        failurePatch = (await patchOf(wt.dir)) || undefined;
+        failureDiffStat = (await worktreeDiffStat(wt)) || undefined;
+      } catch {
+        /* 尽力而为 */
+      }
+    }
+
+    const reportText = (partial || "").trim();
+    const noteSections = [
+      `【推演失败结论与沉淀】`,
+      `- 目标: ${intent.goalId} (${intent.purpose})`,
+      `- 阶段: ${phase} | 失败原因: ${error}`,
+      reportText ? `### 智能体阶段产出与思考:
+${reportText}` : null,
+      failureDiffStat ? `### 失败时修改的文件摘要:
+${failureDiffStat}` : null,
+    ].filter(Boolean);
+    const conclusionNote = noteSections.join("\n\n");
+
+    // 核心契约：还原专属分支至初始干净状态，清理未跟踪文件
+    if (wt) {
+      await resetWorktree(wt, initialCommit);
+    }
+
     return {
       ok: false,
       goalId: intent.goalId,
@@ -345,6 +385,10 @@ export async function runSpeculativeTask(
       phase,
       error,
       ...(partial ? { partial } : {}),
+      conclusionNote,
+      ...(failurePatch ? { patch: failurePatch } : {}),
+      ...(failureDiffStat ? { diffStat: failureDiffStat } : {}),
+      ...(wt ? { branch: wt.branch, worktree: wt } : {}),
       ...(judgement ? { judgement } : {}),
       elapsedMs: Date.now() - t0,
     };
@@ -364,16 +408,22 @@ export async function runSpeculativeTask(
       judgement = j ?? { proceed: true, reason: "无快速动脑通道，跳过判定直接执行" };
       audit("speculative.judge", { proceed: judgement.proceed, reason: judgement.reason.slice(0, 300) });
       if (!judgement.proceed) {
-        return fail("judge", `意图判定不放行：${judgement.reason}`);
+        return await fail("judge", `意图判定不放行：${judgement.reason}`);
       }
       if (judgement.revisedPrompt) prompt = judgement.revisedPrompt;
     }
 
-    // ── 2) worktree 沙箱：切不出来不拦任务，降级原目录直跑（与 index.ts create 同款）──
+    // ── 2) worktree 沙箱：每个目标固定单分支（hg/spec-${goalId}），只在此专属分支推演 ──
     if (intent.useWorktree) {
-      const sandboxId = `spec-${slugOf(intent.purpose, 24)}-${randomUUID().slice(0, 6)}`;
       try {
-        wt = (await createWorktree(intent.cwd, sandboxId)) ?? undefined;
+        wt = (await ensureGoalWorktree(intent.cwd, intent.goalId)) ?? undefined;
+        if (wt) {
+          try {
+            initialCommit = await gitIn(wt.dir, ["rev-parse", "HEAD"]);
+          } catch {
+            /* 忽略 */
+          }
+        }
       } catch (err) {
         audit("speculative.worktree.failed", {
           error: err instanceof Error ? err.message : String(err),
@@ -385,7 +435,7 @@ export async function runSpeculativeTask(
 
     // ── 3) 起一次性 utility harness 会话执行脏活 ────────────────────────
     const spec = deps.resolveHarness(intent.harnessId);
-    if (!spec) return fail("session", "没有可用 harness");
+    if (!spec) return await fail("session", "没有可用 harness");
     const record = HarnessSession.newRecord(spec, sandbox);
     record.utility = true;
     record.title = `推演 ${intent.goalId}: ${intent.purpose}`;
@@ -426,7 +476,7 @@ export async function runSpeculativeTask(
       await sleep(400);
     }
     if (!ready) {
-      return fail("session", `执行会话未就绪（${sess?.info().status ?? "unknown"}）`);
+      return await fail("session", `执行会话未就绪（${sess?.info().status ?? "unknown"}）`);
     }
 
     // ── 4) 执行：静默看门狗只看「多久没动静」，不看总时长（长任务合法）────
@@ -434,11 +484,11 @@ export async function runSpeculativeTask(
     const done = await sess.promptAndWait(prompt, silenceMs);
     const report = (done.text || "").trim().slice(0, intent.maxReportChars ?? 8000);
     if (done.stopReason === "idle-timeout") {
-      return fail("execute", `执行静默超过 ${Math.round(silenceMs / 60_000)} 分钟，按无进展判死`, report);
+      return await fail("execute", `执行静默超过 ${Math.round(silenceMs / 60_000)} 分钟，按无进展判死`, report);
     }
-    if (done.stopReason === "refusal") return fail("execute", "执行方拒绝该任务", report);
+    if (done.stopReason === "refusal") return await fail("execute", "执行方拒绝该任务", report);
     if (done.stopReason === "error" || !report) {
-      return fail("execute", `执行无有效产出（stopReason=${done.stopReason}）`, report);
+      return await fail("execute", `执行无有效产出（stopReason=${done.stopReason}）`, report);
     }
     audit("speculative.executed", { stopReason: done.stopReason, chars: report.length });
 
@@ -453,7 +503,7 @@ export async function runSpeculativeTask(
       const v = await verifyArtifact(check, sandbox, { worktree: wt, report, deps });
       if (!v.ok) {
         audit("speculative.verify.failed", { kind: check.kind, note: v.note.slice(0, 500) });
-        return fail("verify", `成果校验未通过（${check.kind}）：${v.note}`, report);
+        return await fail("verify", `成果校验未通过（${check.kind}）：${v.note}`, report);
       }
     }
 
@@ -487,7 +537,7 @@ export async function runSpeculativeTask(
     wt = undefined;   // 成功：沙箱保留（分支待收编），收尾不再弃置
     return result;
   } catch (err) {
-    return fail("execute", err instanceof Error ? err.message : String(err));
+    return await fail("execute", err instanceof Error ? err.message : String(err));
   } finally {
     try {
       await sess?.stop();
@@ -495,8 +545,7 @@ export async function runSpeculativeTask(
       /* 尽力而为 */
     }
     if (sessionId) deps.store.remove(sessionId);
-    // 走到这里 wt 还有值 = 中途失败/异常（推测证伪）：沙箱连同分支整体弃置
-    if (wt) await discardWorktree(wt).catch(() => {});
+    // 单目标专属单分支模式：失败已由 fail() 收集笔记并 resetWorktree 还原分支，不再暴力销毁工作树
     releaseGate();
   }
 }

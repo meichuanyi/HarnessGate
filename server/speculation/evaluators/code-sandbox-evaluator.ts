@@ -17,7 +17,9 @@ export class CodeSandboxEvaluator implements SpeculativeEvaluator {
   }
 
   canEvaluate(item: SpeculativeItem): boolean {
-    return item.domain === "career" || item.domain === "skill" || item.domain === "finance";
+    // 仅当任务或上下文显式要求代码沙箱推演时才接管，严禁对所有普通职业/技能待办任务泛滥拉起沙箱
+    const ctx = item.context ?? {};
+    return Boolean(ctx.useWorktree || ctx.artifactCheckCommand || ctx.promptTemplate || (item as any).speculative?.enabled);
   }
 
   async evaluate(item: SpeculativeItem): Promise<SpeculativePrescription | null> {

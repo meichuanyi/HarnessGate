@@ -168,6 +168,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "指定会话运行模型（若 harnessId 为 zcode 且未指定，则默认使用 Flash 模型：builtin:bigmodel-coding-plan\\GLM-5.3-Flash）",
           },
+          mcpServerIds: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "新会话注入的受管 MCP 服务器列表（id 或名字均可，完整清单用 harnessgate-admin 的 mcp_list 查询）。不填则默认携带全部默认勾选（enabled）的服务器。注意：mcp_save 刚保存的服务器对已有会话不生效——只能通过本参数让新会话携带。",
+          },
         },
       },
     },
@@ -710,6 +716,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const isolate = Boolean(args.isolate);
       const promptText = typeof args.prompt === "string" ? args.prompt.trim() : undefined;
       let model = typeof args.model === "string" ? args.model.trim() : undefined;
+      const mcpServerIds = Array.isArray(args.mcpServerIds)
+        ? args.mcpServerIds.map((m: unknown) => String(m).trim()).filter(Boolean)
+        : undefined;
 
       // 若为 zcode，默认或传 flash 时自动使用 Flash 模型
       if (harnessId.toLowerCase() === "zcode") {
@@ -743,6 +752,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           harnessId,
           cwd,
           isolate,
+          ...(mcpServerIds ? { mcpServerIds } : {}),
         }),
       );
 
@@ -780,9 +790,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `已成功创建会话 ID: ${created.id} (Harness: ${created.harnessId}, Model: ${model || "默认"}, CWD: ${created.cwd})${
-              promptText ? "，并已下发初始 Prompt 任务。" : "。"
-            }`,
+            text: `已成功创建会话 ID: ${created.id} (Harness: ${created.harnessId}, Model: ${model || "默认"}, CWD: ${created.cwd}, MCP: ${
+              mcpServerIds ? `${mcpServerIds.length} 项指定` : "默认勾选集"
+            })${promptText ? "，并已下发初始 Prompt 任务。" : "。"}`,
           },
         ],
       };

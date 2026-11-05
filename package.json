@@ -13,7 +13,8 @@
     "import-registry": "node scripts/import-registry.mjs",
     "sync-history": "tsx scripts/sync-history.ts",
     "test:speculative": "tsx scripts/test-speculative.ts",
-    "backfill-changes": "node scripts/backfill-changes.mjs"
+    "backfill-changes": "node scripts/backfill-changes.mjs",
+    "build:mcp": "node scripts/build-mcp.mjs"
   },
   "license": "ISC",
   "dependencies": {
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^26.6.1",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   }

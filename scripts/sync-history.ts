@@ -9,6 +9,7 @@
  *   npm run sync-history -- --include-self  # 连本工具目录下的会话一起导（默认当调试噪音跳过）
  */
 import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HistorySync } from "../server/history.ts";
@@ -24,6 +25,17 @@ const value = (name: string) => {
 const dataDir = process.env.HG_DATA_DIR ?? join(homedir(), ".harnessgate");
 const port = process.env.HG_PORT ?? "9830";
 
+/** 服务端 HG_AUTH=on 时 POST /sync-history 需要 token：优先 HG_TOKEN env，否则读数据目录的 token 文件（与服务同源） */
+function serviceToken(): string {
+  const envTok = process.env.HG_TOKEN?.trim();
+  if (envTok) return envTok;
+  try {
+    return readFileSync(join(dataDir, "token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 // 服务在跑就让它来同步（否则我们写文件会被服务内存里的旧状态覆盖）
 async function tryViaService(): Promise<boolean> {
   try {
@@ -37,7 +49,18 @@ async function tryViaService(): Promise<boolean> {
   if (flag("--force")) q.set("force", "1");
   if (flag("--include-tmp")) q.set("includeTmp", "1");
   if (flag("--include-self")) q.set("includeSelf", "1");
+  const tok = serviceToken();
+  if (tok) q.set("token", tok);
   const res = await fetch(`http://127.0.0.1:${port}/sync-history?${q}`, { method: "POST" });
+  if (!res.ok) {
+    if (res.status === 401) {
+      console.error("服务端已开启访问认证，但本请求没带上有效 token（HG_TOKEN 未设且 token 文件读不到）。");
+      console.error(`补上 token 再跑；不要改用本地直写——服务在跑时会被内存旧状态覆盖。token 位置: ${join(dataDir, "token")}`);
+    } else {
+      console.error(`服务端同步失败（HTTP ${res.status}），不要改用本地直写——服务在跑时会被内存旧状态覆盖。`);
+    }
+    process.exit(2);
+  }
   const data = (await res.json()) as { summaries: Array<{ label: string; found: number; imported: number; updated: number; skipped: number }> };
   console.log("（通过运行中的服务同步）\n");
   console.log("harness            发现   新增   更新   跳过");

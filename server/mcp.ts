@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, watch, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 
 /**
  * 受管 MCP 服务器：全局一份配置（~/.harnessgate/mcp.json），新建会话时按需勾选注入。
@@ -40,10 +40,27 @@ export class McpStore {
   private timer: NodeJS.Timeout | null = null;
   /** 上次加载的文件指纹（mtimeMs:size），外部直改后变化以触发热载 */
   private fingerprint: string | null = null;
+  /** 外部直改（脚本/编辑器）被热载吸收后触发（仅内容成功解析时；自身 flush 不触发）。
+   *  index.ts 用它广播 mcp 消息让已连接的 web/插件刷新列表快照——否则旧快照里的死 id
+   *  在建会话时会被过滤并报「部分所选 MCP 服务器已不存在」。 */
+  onExternalChange?: () => void;
+  private watcher: ReturnType<typeof watch> | null = null;
 
   constructor(private readonly file: string) {
     mkdirSync(dirname(file), { recursive: true });
     this.load();
+    // 目录级监听：外部直改 mcp.json 立刻触发 sync（懒加载只靠读路径驱动，没人读就永远不重载、
+    // 也就永远不推送新列表）。watch 目录而不是文件——mcp.json 常被原子替换（tmp+rename），
+    // 文件级 watcher 会跟丢 inode。自身 flush 后指纹已更新，这里 sync 是空操作。
+    try {
+      const w = watch(dirname(this.file), (_event, filename) => {
+        if (filename === basename(this.file)) this.sync();
+      });
+      w.on("error", () => {}); // 监听异常（权限/溢出）：退回懒加载语义，不影响主流程
+      this.watcher = w;
+    } catch {
+      /* 平台不支持：退回懒加载 */
+    }
   }
 
   /** 热载入口：文件指纹变了就重读。所有读写路径先走这里 */
@@ -55,10 +72,10 @@ export class McpStore {
     } catch {
       return; // 文件暂不可见（原子替换瞬间/被删）：保留内存现状
     }
-    if (fp !== this.fingerprint) this.load();
+    if (fp !== this.fingerprint) this.load(true);
   }
 
-  private load(): void {
+  private load(notify = false): void {
     let fp: string | null = null;
     try {
       const st = statSync(this.file);
@@ -66,11 +83,13 @@ export class McpStore {
     } catch {
       return;
     }
+    let parsed = false;
     try {
       const data = JSON.parse(readFileSync(this.file, "utf8")) as Partial<McpFile>;
       this.servers = (data.servers ?? []).filter((s) => s && typeof s.name === "string");
       for (const s of this.servers) s.id ||= randomUUID().slice(0, 8);
       console.log(`[mcp] 已加载 ${this.servers.length} 个受管 MCP 服务器`);
+      parsed = true;
     } catch (err) {
       // 半截写入/语法错误：沿用内存旧配置（指纹照常更新，避免每次调用都重试解析）
       console.error(
@@ -78,7 +97,9 @@ export class McpStore {
         err instanceof Error ? err.message : err,
       );
     }
+    // 铁律：先记指纹再通知——通知回调会 list()→sync()，指纹没更新就会无限递归
     this.fingerprint = fp;
+    if (notify && parsed) this.onExternalChange?.();
   }
 
   list(): McpServerConfig[] {

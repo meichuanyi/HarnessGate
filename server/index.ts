@@ -378,6 +378,9 @@ registerConfigFallback((harnessId) => currentProbe()[harnessId]?.configs);
 
 // 受管 MCP 服务器（~/.harnessgate/mcp.json）：会话启动/恢复时按所选 id 解析成 ACP 线格式
 const mcpStore = new McpStore(join(DATA_DIR, "mcp.json"));
+// 外部直改 mcp.json 被热载吸收后，推一份新列表给所有已连接客户端（web 插件页/vscode 插件都监听 mcp 消息），
+// 否则它们的旧快照里可能还有已被删/改的条目，建会话时被服务端过滤就报「部分所选 MCP 服务器已不存在」
+mcpStore.onExternalChange = () => broadcast({ type: "mcp", servers: mcpStore.list() });
 registerMcpResolver((ids) => mcpStore.wire(ids));
 
 // 技能管理：主库 + 软链挂载（「装在库里」不占 token，「挂载中」才占）
@@ -450,6 +453,46 @@ function reapSideSession(sideSession: HarnessSession, reason: "manual" | "idle")
     broadcast({ type: "deleted", sessionId: sideSession.id } as unknown as ServerMsg);
     console.log(`[side] 侧问分身 ${sideSession.id} 已${reason === "idle" ? "闲置回收（问答留痕已投主会话）" : "手动销毁"}`);
   })();
+}
+
+/**
+ * 彻底销毁一个会话：协议优先（告知 agent 自行清理）+ 停进程 + 移除内存/持久化存储 + 清理 harness 本地尸体 + 审计 + 广播
+ */
+async function destroySession(sessionId: string): Promise<void> {
+  const session = live.get(sessionId);
+  const rec = session?.record() ?? store.get(sessionId);
+  let protocolDeleted = false;
+  if (session && rec?.acpSessionId) {
+    try {
+      protocolDeleted = await session.deleteAcpSession();
+    } catch {
+      // 协议通知失败不阻断后续清理
+    }
+  }
+  if (session) {
+    try {
+      await session.stop();
+    } catch {
+      // 停止失败不追
+    }
+    live.delete(sessionId);
+  }
+  store.remove(sessionId);
+  if (rec?.acpSessionId && !protocolDeleted) {
+    try {
+      const local = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
+      if (local > 0) {
+        audit.append({ session: sessionId, harness: rec.harnessId, op: "session.delete-local", deleted: local, localId: rec.acpSessionId });
+      }
+    } catch {
+      // 本地存储清理失败不影响主流程
+    }
+  }
+  audit.append({ session: sessionId, op: "session.delete" });
+  broadcast({
+    type: "deleted",
+    sessionId,
+  } as unknown as ServerMsg);
 }
 
 /** 往任意会话写一条无打扰留痕：在线走台账实例；离线写持久台账窗口（恢复后可见）+ 全量归档，不唤醒进程 */
@@ -807,7 +850,12 @@ const http = createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/sync-history" && req.method === "POST") {
-    // 让 CLI 与外部工具通过服务同步，避免直接改文件被服务内存覆盖
+    if (!authorized(req)) {
+      res.writeHead(401, { "content-type": "text/plain; charset=utf-8" }); // HTTP 状态码必须 3 位以内——4401 只能用于 WS close，写进 writeHead 会抛 ERR_HTTP_INVALID_STATUS_CODE 直接砸进程
+      res.end("unauthorized");
+      return;
+    }
+    // 让 CLI 与外部工具通过服务同步，避免直接改文件被服务内存覆盖（CLI 调用方 scripts/sync-history.ts 会带 token）
     const summaries = history.run({
       harnessId: url.searchParams.get("harnessId") ?? undefined,
       force: url.searchParams.get("force") === "1",
@@ -837,7 +885,7 @@ const http = createServer(async (req, res) => {
   // APP 诊断日志上报：POST /applog?device=<设备名>（Bearer token 鉴权）
   if (url.pathname === "/applog" && req.method === "POST") {
     if (!authorized(req)) {
-      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.writeHead(401, { "content-type": "text/plain; charset=utf-8" }); // HTTP 状态码必须 3 位以内——4401 只能用于 WS close，写进 writeHead 会抛 ERR_HTTP_INVALID_STATUS_CODE 直接砸进程
       res.end("unauthorized");
       return;
     }
@@ -955,7 +1003,7 @@ const http = createServer(async (req, res) => {
 
   if (url.pathname === "/download") {
     if (!authorized(req)) {
-      res.writeHead(4401, { "content-type": "text/plain; charset=utf-8" });
+      res.writeHead(401, { "content-type": "text/plain; charset=utf-8" }); // HTTP 状态码必须 3 位以内——4401 只能用于 WS close，写进 writeHead 会抛 ERR_HTTP_INVALID_STATUS_CODE 直接砸进程
       res.end("unauthorized");
       return;
     }
@@ -1258,16 +1306,19 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: `MCP 保存失败: ${r.error}` } satisfies ServerMsg));
             break;
           }
+          audit.append({ op: "mcp.save", mcp: r.name, id: r.id, type: r.type, enabled: r.enabled });
           broadcast({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg);
           break;
         }
 
         case "mcp-delete": {
           // 已存档会话记录里可能还留着它的 id：wire() 会静默跳过，不阻塞恢复，无需清理
+          const gone = mcpStore.get(String(msg.id));
           if (!mcpStore.remove(String(msg.id))) {
             ws.send(JSON.stringify({ type: "error", message: "MCP 服务器不存在" } satisfies ServerMsg));
             break;
           }
+          audit.append({ op: "mcp.delete", mcp: gone?.name, id: String(msg.id) });
           broadcast({ type: "mcp", servers: mcpStore.list() } satisfies ServerMsg);
           break;
         }
@@ -1282,6 +1333,7 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: `skill 保存失败: ${r.error}` } satisfies ServerMsg));
             break;
           }
+          audit.append({ op: "skill.save", skill: (msg.skill as { name?: string } | undefined)?.name });
           broadcastSkills(msg.reqId);
           break;
         }
@@ -1291,6 +1343,7 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: `skill 删除失败: ${r.error}` } satisfies ServerMsg));
             break;
           }
+          audit.append({ op: "skill.delete", skill: String(msg.name) });
           broadcastSkills(msg.reqId);
           break;
         }
@@ -1300,6 +1353,7 @@ wss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: `挂载操作失败: ${r.error}` } satisfies ServerMsg));
             break;
           }
+          audit.append({ op: "skill.mount", skill: String(msg.name), harness: String(msg.harnessId), on: msg.on !== false });
           broadcastSkills(msg.reqId);
           break;
         }
@@ -1821,13 +1875,27 @@ wss.on("connection", (ws, req) => {
           autoTagger?.applyProjectTags(record);   // 必须在构造实例前改 record（实例构造时快照 tags）
           const session = new HarnessSession(spec, record, audit, makeHooks(), hub);
           if (msg.vars) session.vars = msg.vars;
-          // MCP 注入：显式给了列表就用列表（未知 id 剔除），没给则默认全部 enabled 的
-          const knownIds = new Set(mcpStore.list().map((s) => s.id));
+          // MCP 注入：显式给了列表就用列表（兼容按 id 或按 name 匹配），没给则默认全部 enabled 的
+          const allMcpList = mcpStore.list();
+          const nameToId = new Map(allMcpList.map((s) => [s.name, s.id]));
+          const knownIds = new Set(allMcpList.map((s) => s.id));
           session.mcpServerIds = msg.mcpServerIds
-            ? msg.mcpServerIds.map(String).filter((id) => knownIds.has(id))
+            ? msg.mcpServerIds
+                .map(String)
+                .map((key) => nameToId.get(key) || key)
+                .filter((id) => knownIds.has(id))
             : mcpStore.enabledIds();
           if (msg.mcpServerIds && session.mcpServerIds.length !== msg.mcpServerIds.length) {
-            ws.send(JSON.stringify({ type: "error", message: "部分所选 MCP 服务器已不存在，已忽略" } satisfies ServerMsg));
+            // 点名被丢的条目——客户端列表快照过期（mcp.json 被外部直改过）时用户才知道该刷新哪个
+            const dropped = [...new Set(msg.mcpServerIds.map(String))].filter(
+              (key) => !knownIds.has(nameToId.get(key) || key),
+            );
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: `部分所选 MCP 服务器已不存在，已忽略：${dropped.join("、") || "存在重复项"}（列表可能已更新，请刷新页面/重连后重选）`,
+              } satisfies ServerMsg),
+            );
           }
           live.set(session.id, session);
           store.upsert(session.record());
@@ -1876,13 +1944,20 @@ wss.on("connection", (ws, req) => {
         }
 
         case "prompt": {
-          const session = live.get(msg.sessionId);
+          let session = live.get(msg.sessionId);
+          if (!session || !session.info().live) {
+            const rec = store.get(msg.sessionId);
+            if (rec && specOf(rec.harnessId)) {
+              reviveSession(msg.sessionId);
+              session = live.get(msg.sessionId);
+            }
+          }
           if (!session) {
             ws.send(
               JSON.stringify({
                 type: "error",
                 sessionId: msg.sessionId,
-                message: "会话未在运行，先「恢复」它",
+                message: "会话未在运行且无法恢复（找不到该会话或其 harness 配置）",
               } satisfies ServerMsg),
             );
             return;
@@ -2499,28 +2574,7 @@ wss.on("connection", (ws, req) => {
         }
 
         case "delete": {
-          // 彻底删除：连 harness 本地原生历史一起清（否则历史同步会把删掉的会话再导回来）。
-          // 协议优先（agent 声明 session/delete 就自清）→ 存储直清兜底；HG 侧归档按 30 天过期自行消化
-          const session = live.get(msg.sessionId);
-          const rec = session?.record() ?? store.get(msg.sessionId);
-          let protocolDeleted = false;
-          if (session && rec?.acpSessionId) protocolDeleted = await session.deleteAcpSession();   // 必须在 stop 前发
-          if (session) {
-            await session.stop();
-            live.delete(msg.sessionId);
-          }
-          store.remove(msg.sessionId);
-          if (rec?.acpSessionId && !protocolDeleted) {
-            const local = deleteHarnessLocalSessions(rec.harnessId, [rec.acpSessionId]);
-            if (local > 0) {
-              audit.append({ session: msg.sessionId, harness: rec.harnessId, op: "session.delete-local", deleted: local, localId: rec.acpSessionId });
-            }
-          }
-          audit.append({ session: msg.sessionId, op: "session.delete" });
-          broadcast({
-            type: "deleted",
-            sessionId: msg.sessionId,
-          } as unknown as ServerMsg);
+          await destroySession(msg.sessionId);
           ws.send(JSON.stringify(helloPayload()));
           break;
         }
@@ -3832,6 +3886,13 @@ async function runSchedule(s: Schedule): Promise<void> {
     } else {
       audit.append({ op: "schedule.run", schedule: s.id, status: "ok", session: session?.id, chars: okChars });
       console.log(`[schedule] ${s.name || s.id}: 完成（${okChars} 字）`);
+      // 成功策略：如果是 fresh 临时会话（非 dedicated 专属会话），执行成功后自动销毁会话，避免垃圾会话堆积
+      if (s.sessionMode !== "dedicated" && session) {
+        const sid = session.id;
+        console.log(`[schedule] ${s.name || s.id}: 任务执行成功，正在清理临时会话 ${sid}`);
+        await destroySession(sid);
+        s.state.lastSessionId = undefined;
+      }
     }
     s.state.lastStatus = "ok";
     s.state.consecutiveFailures = 0;
@@ -3848,6 +3909,28 @@ async function runSchedule(s: Schedule): Promise<void> {
     }
     audit.append({ op: "schedule.run", schedule: s.id, status: "error", error: message });
     console.error(`[schedule] ${s.name || s.id}: ${message}${extra}`);
+
+    // 定时任务出错：保留会话现场（不销毁），并发送报警通知
+    try {
+      const notifCfg = settingsStore.get().notification;
+      const targetSessionId = session?.id || s.state.lastSessionId || "无";
+      void sendNotification(notifCfg, {
+        title: `【定时任务告警】${s.name || s.id} 执行失败`,
+        content: `任务名称: ${s.name || s.id}
+执行模式: ${s.mode || "agent"}
+失败原因: ${message}${extra}
+现场会话: ${targetSessionId}
+时间: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`,
+        level: "error",
+        metadata: {
+          scheduleId: s.id,
+          sessionId: targetSessionId,
+          error: message,
+        },
+      });
+    } catch (notifErr) {
+      console.error(`[schedule] ${s.name || s.id}: 发送失败报警通知异常:`, notifErr);
+    }
   } finally {
     s.state.running = false;
     s.state.lastRunAt = new Date().toISOString();

@@ -49,6 +49,8 @@ export type Goal = {
   lastSpeculatedResult?: {
     ok: boolean;
     summary?: string;
+    conclusionNote?: string;
+    patch?: string;
     branch?: string;
   };
 };

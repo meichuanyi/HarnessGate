@@ -239,7 +239,7 @@ export class HarnessSession {
   private child?: Child;
   private ctx?: acp.ClientContext;
   private releaseConn?: () => void;
-  private readonly pendingPermissions = new Map<string, (optionId: string) => void>();
+  private readonly pendingPermissions = new Map<string, (response: acp.RequestPermissionResponse) => void>();
   /** 最近一条挂着的授权请求（界面上"待审批：xxx"就靠它；同时有多个请求时只留最后一个） */
   private pendingPerm?: { requestId: string; title: string; options: PermissionOption[] };
   private permSeq = 0;
@@ -1401,6 +1401,7 @@ export class HarnessSession {
   }
 
   private finishTurn(stopReason: string): void {
+    this.cancelPendingPermissions(stopReason === "cancelled" ? "回合被打断" : "回合结束");   // 僵尸授权清场（正常收尾时通常是空的，等价于空操作）
     this.hooks.onPersist(this.record());   // 回合收尾把 changedFiles 一并落盘
     const w = this.turnWaiter;
     this.turnWaiter = undefined;
@@ -1542,8 +1543,22 @@ export class HarnessSession {
     if (mark && mark.kind === "permission" && !mark.answered) mark.answered = optionId;
     if (this.status === "awaiting" && !this.pendingPermissions.size) this.setStatus("ready");
     else this.persist();
-    resolve(optionId);
+    resolve({ outcome: { outcome: "selected", optionId } });
     return true;
+  }
+
+  /** 回合收尾清场：还挂着的授权请求按 cancelled 应答并销账（台账打标 + 状态复位）。
+   *  不清就是僵尸——打断/出错后按钮仍可点，点「批准」resolve 也没人接（回合早没了），状态还卡 awaiting */
+  private cancelPendingPermissions(reason: string): void {
+    for (const [requestId, respond] of this.pendingPermissions) {
+      this.audit.append({ session: this.id, harness: this.harnessId, op: "permission.cancel", requestId, reason });
+      const mark = [...this.transcript].reverse().find((e) => e.kind === "permission" && e.requestId === requestId);
+      if (mark && mark.kind === "permission" && !mark.answered) mark.answered = `（${reason}，已自动取消）`;
+      respond({ outcome: { outcome: "cancelled" } });
+    }
+    this.pendingPermissions.clear();
+    this.pendingPerm = undefined;
+    if (this.status === "awaiting") this.setStatus("ready");
   }
 
   /** 自动决策：按选项语义打分挑最优（不只是 allow/deny——覆盖还是跳过这类选择题也按「行动导向」挑）。
@@ -1690,9 +1705,7 @@ export class HarnessSession {
     if (this.status === "ready") this.setStatus("awaiting");
     this.log(`请求授权: ${title}（会话挂起等答复，状态=awaiting）`);
     return new Promise<acp.RequestPermissionResponse>((resolve) => {
-      this.pendingPermissions.set(requestId, (optionId) => {
-        resolve({ outcome: { outcome: "selected", optionId } });
-      });
+      this.pendingPermissions.set(requestId, (response) => resolve(response));
       this.hooks.onPermission(this.id, requestId, title, options);
     });
   }
@@ -1736,8 +1749,7 @@ export class HarnessSession {
     this.clearIdleStopWatch();
     this.audit.append({ session: this.id, harness: this.harnessId, op: "session.stop" });
     this.ctx = undefined;
-    this.pendingPerm = undefined;
-    this.pendingPermissions.clear();
+    this.cancelPendingPermissions("会话已停止");
     this.markInTurn(false);
     this.hub.setLive(this.id, false);
     this.hub.unregister(this.id);
