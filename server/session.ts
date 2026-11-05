@@ -17,10 +17,15 @@ import type {
   TranscriptEntry,
 } from "./types.ts";
 import { AuditLog, isInside } from "./audit.ts";
+import { claudeWorkflowProgress } from "./workflow-progress.ts";
 import type { WireMcp } from "./mcp.ts";
 import type { WorkspaceHub } from "./workspace.ts";
 import type { PersistedSession } from "./store.ts";
 import type { WorktreeInfo } from "./types.ts";
+
+/** 后台工作流空闲缓刑：续检间隔与「还活着」的新鲜窗（agent 文件 mtime 距今小于此值视为在工作） */
+const WORKFLOW_GRACE_RECHECK_MIN = 2;
+const WORKFLOW_FRESH_MS = 15 * 60_000;
 
 /** 从台账推导会话标题：优先用户的第1句，其次助手的第1句 */
 export function deriveTitle(transcript: TranscriptEntry[]): string | undefined {
@@ -1243,22 +1248,51 @@ export class HarnessSession {
   }
 
   private idleStopTimer?: NodeJS.Timeout;
+  /** 缓刑提示只推一次，续检期间不刷屏 */
+  private workflowGraceLogged = false;
 
   /** 空闲自动停止：进程活着但一直没干活（空闲）超过 HG_IDLE_STOP_MIN 分钟 → 自动停进程释放内存。
    *  会话记录保留，列表「恢复」一键即可回来（agent 侧上下文也在）。房间成员会话不参与（由房间流程管理）。
-   *  注：挂死回合由各流程的静默看门狗（idle-timeout）负责，这里不做回合总时长上限——长任务合法。 */
+   *  注：挂死回合由各流程的静默看门狗（idle-timeout）负责，这里不做回合总时长上限——长任务合法。
+   *  例外：claude 后台工作流（Workflow 多 agent）在主回合结束后仍在进程内跑，ACP 线上完全无声，
+   *  纯空闲判定会把它当死闲会话杀掉、工作流全体陪葬——见 hasLiveWorkflow 缓刑逻辑。 */
   private armIdleStopWatch(): void {
     this.clearIdleStopWatch();
     if (this.assistant) return;   // 常驻助理：永不空闲回收
     const min = Number(process.env.HG_IDLE_STOP_MIN ?? 30);
     if (!min || min <= 0) return;   // 0 = 不限制
-    this.idleStopTimer = setTimeout(() => {
-      if (this.stopRequested || this.inTurnFlag || this.status !== "ready") return;
-      this.log(`⚠️ 空闲超过 ${min} 分钟，自动停止会话释放资源；列表里「恢复」一键即可继续（上下文都在）`);
-      this.push({ kind: "log", ts: now(), text: `⚠️ 空闲超过 ${min} 分钟，已自动停止会话（释放进程占用）。需要时点「恢复」，上下文无缝接续。` });
-      void this.stop();
-    }, min * 60_000);
+    this.idleStopTimer = setTimeout(() => this.idleStopCheck(min), min * 60_000);
     this.idleStopTimer.unref?.();
+  }
+
+  /** 到点检查：后台工作流还活着就缓刑 2 分钟续检，否则按空闲回收 */
+  private idleStopCheck(min: number): void {
+    if (this.stopRequested || this.inTurnFlag || this.status !== "ready") return;
+    if (this.hasLiveWorkflow()) {
+      if (!this.workflowGraceLogged) {
+        this.workflowGraceLogged = true;
+        this.push({ kind: "log", ts: now(), text: "🛡 后台工作流运行中：空闲回收自动缓刑（工作流结束后恢复常规回收）" });
+      }
+      this.idleStopTimer = setTimeout(() => this.idleStopCheck(min), WORKFLOW_GRACE_RECHECK_MIN * 60_000);
+      this.idleStopTimer.unref?.();
+      return;
+    }
+    this.log(`⚠️ 空闲超过 ${min} 分钟，自动停止会话释放资源；列表里「恢复」一键即可继续（上下文都在）`);
+    this.push({ kind: "log", ts: now(), text: `⚠️ 空闲超过 ${min} 分钟，已自动停止会话（释放进程占用）。需要时点「恢复」，上下文无缝接续。` });
+    void this.stop();
+  }
+
+  /** claude 会话是否有「未结束且近期有落盘活动」的后台工作流。
+   *  判据读转录目录的 journal/agent 文件 mtime（15 分钟新鲜窗：长工具调用期间 agent 可以很安静）。
+   *  僵尸 run（running>0 但活动早已停）不豁免——进程挂死的工作流该回收就回收。任何 IO 异常按无处理。 */
+  private hasLiveWorkflow(): boolean {
+    if (this.harnessId !== "claude" || !this.acpSessionId) return false;
+    try {
+      return claudeWorkflowProgress(this.acpSessionId, this.cwd)
+        .some((r) => r.running > 0 && Date.now() - r.updatedAt < WORKFLOW_FRESH_MS);
+    } catch {
+      return false;
+    }
   }
 
   private clearIdleStopWatch(): void {
