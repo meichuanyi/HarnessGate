@@ -304,6 +304,39 @@
      滚动定位/滚动链接会把它消费掉，整个会话页连输入框被滚上去（"会话框被拉上去"）。
      常驻 live 的助理会话状态推送最频繁，最容易触发；归档静默的普通会话无瞬态所以无感 */
   #chatWrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; contain:paint; }
+
+  /* ============ 分屏格（多会话并列）============
+     paneRoot 与 viewRoot 互斥显隐：chat 视图=格，其他视图=viewRoot。
+     格内聊天件用 hg-* 类（与旧 #stream/#chatWrap 等选择器并存，迁移完成后删旧版）。 */
+  #paneRoot { display:flex; flex:1; min-width:0; min-height:0; }
+  .pane { display:flex; flex-direction:column; flex:1 1 0; min-width:0; min-height:0; position:relative; background:var(--bg); }
+  /* 分隔拖宽条：位于两格之间（非末格后面），#sideGrip 同款交互（pointer capture + CSS 变量思路） */
+  .paneGrip { width:6px; flex:none; cursor:col-resize; position:relative; }
+  .paneGrip::after { content:""; position:absolute; left:2px; top:0; bottom:0; width:2px; background:var(--line); transition:background .15s; }
+  .paneGrip:hover::after, body.paneResizing .paneGrip::after { background:var(--accent); }
+  body.paneResizing { cursor:col-resize; user-select:none; }
+  /* 焦点态：顶线 + 格头着色 */
+  .pane.foc { box-shadow:inset 0 2px 0 var(--accent); }
+  .pane.foc .paneBar { background:var(--panel2); }
+  /* 格头条：状态点 / 标题 / 待审批徽章 / 分屏与关闭按钮 */
+  .paneBar { height:32px; flex:none; display:flex; align-items:center; gap:8px; padding:0 10px; border-bottom:1px solid var(--line); background:var(--panel); font-size:12px; color:var(--dim); }
+  .pDot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim2); }
+  .pDot.live { background:var(--ok); }
+  .pDot.turn { background:var(--accent); animation:pBreath 1.4s ease-in-out infinite; }
+  @keyframes pBreath { 0%,100%{opacity:.45} 50%{opacity:1} }
+  .pTitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg); font-weight:600; font-size:12.5px; }
+  .pBadge { background:var(--warn); color:#231a02; border-radius:8px; font-size:10.5px; padding:1px 7px; flex:none; }
+  /* 后台格来权限请求：格头轻晃两次 */
+  @keyframes pNudge { 0%,100%{background:var(--panel)} 50%{background:var(--accent-dim)} }
+  .pane.nudge .paneBar { animation:pNudge .9s ease 2; }
+  /* 格体：承担原 #chatWrap 的角色（contain:paint 保证格内滚动/溢出互不干扰） */
+  .paneBody { display:flex; flex-direction:column; height:100%; min-height:0; flex:1; position:relative; contain:paint; }
+  /* 空槽 picker：⧉ 分出的空格先选会话（VS Code split 心智） */
+  .panePick { display:flex; flex-direction:column; flex:1; min-height:0; }
+  .panePick .hg-pickInput { margin:10px 12px 6px; }
+  .panePick .hg-pickList { flex:1; overflow:auto; padding:0 8px 12px; }
+  /* 格内聊天件镜像（原 id 选择器的类版本） */
+  .hg-stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
   .chatHead { padding:10px 22px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; color:var(--dim); }
   /* 发言索引 + 搜索：贴在 chatHead 下面的一条导航栏 */
   .chatNav { display:flex; gap:6px; align-items:center; padding:6px 22px; border-bottom:1px solid var(--line); position:relative; flex-wrap:wrap; }
@@ -624,6 +657,11 @@
     .composerRow { gap:6px; }
     .composerRow textarea { min-height:40px; font-size:14px; padding:6px 8px; }
     #sendBtn, #attachBtn { height:40px; padding:0 12px; display:inline-flex; align-items:center; justify-content:center; }
+    .hg-sendBtn, .hg-attachBtn { height:40px; padding:0 12px; display:inline-flex; align-items:center; justify-content:center; }
+    /* 移动端强制单格：非焦点格藏起、拖宽条与分屏按钮消失（JS enforcePaneDeviceMode 是事实源，这里 CSS 兜底） */
+    .paneGrip { display:none; }
+    .paneBar [data-act="split"] { display:none; }
+    .pane:not(.foc) { display:none; }
 
     .rtWrap { padding:12px 10px 30px; }
     .rtCard { padding:12px 12px; }
@@ -681,6 +719,11 @@
   html.is-mobile .searchWrap { max-width:none; }
   html.is-mobile .toBottom { right:12px; bottom:118px; width:32px; height:32px; font-size:15px; }
   html.is-mobile #stream { padding:12px 8px; }
+  html.is-mobile .hg-stream { padding:12px 8px; }
+  /* 移动端强制单格（与 @media 860 同套兜底；is-mobile 判定来自 UA） */
+  html.is-mobile .paneGrip { display:none; }
+  html.is-mobile .paneBar [data-act="split"] { display:none; }
+  html.is-mobile .pane:not(.foc) { display:none; }
   html.is-mobile .msg { max-width:98%; margin-bottom:12px; }
   html.is-mobile .bubble { padding:9px 11px; font-size:13.5px; }
   html.is-mobile footer.composer { padding:8px 10px; padding-bottom:max(8px, env(safe-area-inset-bottom)); }
@@ -814,6 +857,7 @@
   </aside>
   <section id="main">
     <div id="viewRoot" class="view"></div>
+    <div id="paneRoot" hidden></div>
   </section>
 </main>
 
@@ -2729,6 +2773,163 @@ function openSession(id, push = true) {
 
 // 会话草稿：键入即存、重绘即恢复（hello→render() 会整体重建输入框，无此机制则未发送内容随重连丢失）
 const drafts = new Map();
+
+/* =====================================================================
+   分屏格核心（pane core）
+   #paneRoot 与 #viewRoot 互斥显隐：chat 视图 = 格容器，其他视图 = viewRoot。
+   格 DOM 一次挂载常驻，render() 永不重建聊天（步 2 起聊天管线逐步收编进格）。
+   不变式：state.sessionId / state.harnessId 是「焦点格」的镜像，唯一写入口
+   focusPane / openSessionInto（步 2 落地），其余代码禁写——57 处外围引用靠镜像存活。
+   ===================================================================== */
+const PANE_MAX = 3;              // 上限 3 格（性能边界：3×单格流式成本，v1 接受）
+const PANE_KEY = "hg_panes";     // 布局持久化 {v,sids,focus,widths}（跨标签页共享，同 hg_side_w 先例）
+let panes = [];                  // 格数组（顺序 = 屏幕从左到右）
+let activePane = null;           // 焦点格（panes 之一；null = 无格）
+
+/** sid → 持有它的格；未命中 null。同会话至多一格（transcript 无 reqId 配对下的路由基石） */
+function paneOf(sid) {
+  return sid ? panes.find((p) => p.sid === sid) || null : null;
+}
+
+/** 格内贴底判定（原 window.__nearBottom 的 140px 阈值原样收编；
+ *  容器隐藏时 scrollHeight/clientHeight 为 0 → 恒真 → 流式照常跟贴，回视即最新） */
+function paneNearBottom(pane) {
+  const el = pane?.els?.stream;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+}
+
+/** 格对象：台账窗口九件套 + 搜索五件套 + 附件 + transcript 串行化游标。
+ *  sid 先留空（空槽 picker 态），装载会话由步 2 的 openSessionInto 完成。 */
+function makePane() {
+  return {
+    sid: null,
+    harnessId: null,
+    els: null,                 // capturePaneEls 填充（root/bar/dot/title/badge/stream/input/chips…）
+    entries: [], nodes: [], streamingAssistant: false,
+    transcriptTotal: 0, transcriptStart: 0, loadingEarlier: false,
+    searchHits: [], searchResults: [], searchPos: -1, searchTimer: null, idxOpen: false,
+    files: [],                 // 附件每格一份（防 A 格附件随 B 格消息发出）
+    transBusy: false, transQueued: null, transKind: "full",   // 步 3：transcript 按格串行化
+    w: null,                   // 拖宽后的 px（null = 未拖，吃 flex 均分）
+  };
+}
+
+/** 建格 DOM 外壳：.pane（paneBar 头 + paneBody 体）；按钮带 data-act，委托接线在步 4 */
+function makePaneDom() {
+  const root = document.createElement("div");
+  root.className = "pane";
+  root.innerHTML = `
+    <div class="paneBar">
+      <span class="pDot" title="状态：灰=空闲 绿=运行 蓝点呼吸=回合中"></span>
+      <span class="pTitle"></span>
+      <span class="pBadge" hidden></span>
+      <button class="mini ghost" data-act="split" title="再分一格（最多 ${PANE_MAX} 格，桌面端）">⧉</button>
+      <button class="mini ghost" data-act="close" title="关闭此格">✕</button>
+    </div>
+    <div class="paneBody"></div>`;
+  return root;
+}
+
+/** 建新格并追加到 #paneRoot 末尾（grip 永远只插在两格之间）。上限拒绝 + toast。
+ *  返回新格（sid 仍空，装载由步 2 openSessionInto 接上）；失败返回 null。 */
+function mountPane() {
+  if (panes.length >= PANE_MAX) { showToast(`最多同时 ${PANE_MAX} 个分屏格`, 2000); return null; }
+  const root = $("paneRoot");
+  if (!root) return null;
+  if (panes.length) {
+    const grip = document.createElement("div");   // 原末格即将不再是末格：补 grip
+    grip.className = "paneGrip";
+    root.appendChild(grip);
+  }
+  const pane = makePane();
+  const dom = makePaneDom();
+  pane.els = { root: dom, bar: dom.querySelector(".paneBar"), body: dom.querySelector(".paneBody") };
+  root.appendChild(dom);
+  panes.push(pane);
+  capturePaneEls(pane);   // 缓存 bar 三件（stream 等格内件步 2 渲染后重捕）
+  focusPane(pane);
+  return pane;
+}
+
+/** 聚焦格：焦点顶线/格头着色 + state 镜像同步 + 树高亮 + 布局落盘。不抢输入框焦点。 */
+function focusPane(pane) {
+  activePane = pane || null;
+  for (const p of panes) { if (p.els?.root) p.els.root.classList.toggle("foc", p === activePane); }
+  const s = activePane?.sid ? sessions.get(activePane.sid) : null;
+  state.sessionId = activePane?.sid ?? null;      // 镜像唯一写入口（不变式见块头）
+  state.harnessId = s?.harnessId ?? null;
+  renderTree();
+  savePanesLayout();
+}
+
+/** 关格：清搜索 timer → 摘 DOM（含前置 grip）→ 焦点移交右邻（无则左邻）；
+ *  最后一格关闭时镜像清空并 navHome() 退总览。 */
+function closePane(pane) {
+  const i = panes.indexOf(pane);
+  if (i < 0) return;
+  if (pane.searchTimer) { clearTimeout(pane.searchTimer); pane.searchTimer = null; }
+  panes.splice(i, 1);
+  const grip = pane.els?.root?.previousElementSibling;
+  if (grip && grip.classList.contains("paneGrip")) grip.remove();
+  pane.els?.root?.remove();
+  const wasActive = activePane === pane;
+  if (wasActive) activePane = null;
+  if (panes.length) {
+    if (wasActive) focusPane(panes[Math.min(i, panes.length - 1)]);
+    else savePanesLayout();
+  } else {
+    state.sessionId = null;
+    state.harnessId = null;
+    navHome();
+  }
+}
+
+/** 缓存格内 DOM 引用（短键）：bar 三件 + 聊天件（步 2 渲染前为 null，渲染后重捕） */
+function capturePaneEls(pane) {
+  const r = pane.els?.root;
+  if (!r) return;
+  const q = (sel) => r.querySelector(sel);
+  pane.els = {
+    root: r,
+    bar: pane.els?.bar || q(".paneBar"),
+    body: pane.els?.body || q(".paneBody"),
+    dot: q(".pDot"), title: q(".pTitle"), badge: q(".pBadge"),
+    stream: q(".hg-stream"), input: q(".hg-input"), chips: q(".chips"),
+    toBottom: q(".toBottom"), chatHead: q(".chatHead"),
+    sendBtn: q(".hg-sendBtn"), stopBtn: q(".hg-stopBtn"),
+    voiceBtn: q(".hg-voiceBtn"), attachBtn: q(".hg-attachBtn"),
+    search: q(".hg-chatSearch"), searchDrop: q(".searchDrop"), idxList: q(".idxList"),
+    pickInput: q(".hg-pickInput"), pickList: q(".hg-pickList"),
+  };
+}
+
+/** 格头条刷新：状态点（灰=空闲/绿=运行/蓝呼吸=回合中）+ 标题 + 待审批徽章 */
+function renderPaneBar(pane) {
+  const els = pane.els;
+  if (!els?.dot) return;
+  const s = pane.sid ? sessions.get(pane.sid) : null;
+  els.dot.className = "pDot" + (s?.inTurn ? " turn" : s?.live ? " live" : "");
+  const title = s?.title || (pane.sid ? "（无标题会话）" : "选择要在此格打开的会话");
+  els.title.textContent = title;
+  els.title.title = `${title}${pane.sid ? `\n#${pane.sid}${s?.harnessId ? " · " + s.harnessId : ""}` : "\n空格"}`;
+  const pend = Boolean(s?.pendingPermission);
+  els.badge.hidden = !pend;
+  if (pend) els.badge.textContent = "待审批";
+}
+
+/** 格布局持久化：sids + 焦点下标 + 各格拖宽像素。localStorage 不可用时静默放弃（会话内分屏照常） */
+function savePanesLayout() {
+  try {
+    const focus = panes.indexOf(activePane);
+    localStorage.setItem(PANE_KEY, JSON.stringify({
+      v: 1,
+      sids: panes.map((p) => p.sid),
+      focus: focus < 0 ? 0 : focus,
+      widths: panes.map((p) => p.w ?? null),
+    }));
+  } catch { /* 隐私模式等：不持久化 */ }
+}
 
 function renderChat() {
   const root = $("viewRoot");
