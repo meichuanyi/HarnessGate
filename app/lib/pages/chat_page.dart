@@ -1067,12 +1067,17 @@ class _ChatPageState extends State<ChatPage> {
     for (final o in modelCfg.options) {
       if (o.value == modelCfg.currentValue) curName = o.name ?? o.value;
     }
-    final short = curName.length > 10 ? '${curName.substring(0, 10)}…' : curName;
+    // 紧凑版模型 chip：AppBar actions 最多 9 个控件，这个 chip 曾是最宽的一个（默认 padding
+    // all(8) + 10 字符文本），窄屏把标题挤没了——压 padding/字号/图标，名字截 6 字符，
+    // 完整模型名留在 tooltip（长按可见）
+    final short = curName.length > 6 ? '${curName.substring(0, 6)}…' : curName;
     return ActionChip(
       tooltip: '模型：$curName（点按切换）',
       visualDensity: VisualDensity.compact,
-      avatar: const Icon(Icons.memory, size: 14, color: Color(0xFF5B9CF8)),
-      label: Text(short, style: const TextStyle(fontSize: 11)),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      labelPadding: const EdgeInsets.symmetric(horizontal: 1),
+      avatar: const Icon(Icons.memory, size: 12, color: Color(0xFF5B9CF8)),
+      label: Text(short, style: const TextStyle(fontSize: 10.5)),
       onPressed: _openConfig,
     );
   }
