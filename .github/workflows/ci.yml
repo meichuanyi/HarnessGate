@@ -8,27 +8,53 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: dcal
     steps:
+      # dcal runner 即本机,宿主 node 22 就是构建用的那份;不再 setup-node(免外部下载,npm 缓存本就共享)
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - run: node -v && npm -v
       - run: npm ci
       - name: 类型检查
         run: npm run typecheck
       - name: 前端静态检查
         run: npm test
 
+  release:
+    # 打 v* tag 时:打包源码 tarball 并发布 Gitea Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: dcal
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          PKG_VER="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_VER" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} 与 package.json 版本 $PKG_VER 不一致"; exit 1
+          fi
+      - name: 打包 tarball（git archive，解包后 npm ci && systemctl start harnessgate）
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix=harnessgate-${GITHUB_REF_NAME}/ -o dist/harnessgate-${GITHUB_REF_NAME}.tar.gz HEAD
+      - name: 发布 Release 并附 tarball
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci-release-attach.sh dist/*.tar.gz
+
   apk:
     # 打 v* tag 时：构建 Android APK 附到 Release（APP 内自更新就是下载这个）。
     # 在 release job 之后跑：先建好 Release 再追加 APK，避免并行创建竞争。
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check, release]
-    runs-on: ubuntu-latest
+    runs-on: dcal
     permissions:
       contents: write
+    env:
+      # 同 flutter-apk.yml:dcal runner 即本机,宿主 SDK 直接用,与本地构建同工具链
+      ANDROID_HOME: /opt/android-sdk
+      ANDROID_SDK_ROOT: /opt/android-sdk
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,10 +67,11 @@ jobs:
           if [ "$PUB_VER" != "${GITHUB_REF_NAME}" ]; then
             echo "tag ${GITHUB_REF_NAME} 与 app/pubspec.yaml 版本 ${PUB_VER} 不一致：升版本号后再打 tag"; exit 1
           fi
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
+      - name: 接入宿主 flutter 工具链并自检
+        run: |
+          echo "/opt/flutter/bin" >> "$GITHUB_PATH"
+          /opt/flutter/bin/flutter --version | head -2
+          java -version 2>&1 | head -1
       - name: 依赖与分析/测试
         working-directory: app
         run: |
@@ -62,34 +89,9 @@ jobs:
         working-directory: app
         run: flutter build apk --release
       - name: 重命名并附到 Release
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
           mv app/build/app/outputs/flutter-apk/app-release.apk dist/harnessgate-${GITHUB_REF_NAME}-android.apk
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: dist/*
-
-  release:
-    # 打 v* tag 时：打包源码 tarball 并发布 GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: 校验 tag 与 package.json 版本一致
-        run: |
-          PKG_VER="v$(node -p "require('./package.json').version")"
-          if [ "$PKG_VER" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} 与 package.json 版本 $PKG_VER 不一致"; exit 1
-          fi
-      - name: 打包 tarball（git archive，解包后 npm ci && systemctl start harnessgate）
-        run: |
-          mkdir -p dist
-          git archive --format=tar.gz --prefix=harnessgate-${GITHUB_REF_NAME}/ -o dist/harnessgate-${GITHUB_REF_NAME}.tar.gz HEAD
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: dist/*.tar.gz
+          bash scripts/ci-release-attach.sh dist/*

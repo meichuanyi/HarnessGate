@@ -5,34 +5,33 @@ on:
     paths: ["app/**", ".github/workflows/flutter-apk.yml"]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   apk:
-    runs-on: ubuntu-latest
+    runs-on: dcal
+    env:
+      # dcal runner 就是本机 host 模式守护进程:直接用宿主 SDK(licenses 已接受),
+      # 不经 flutter-action 下载——免外部网络依赖,且与本地构建同一份工具链、版本一致
+      ANDROID_HOME: /opt/android-sdk
+      ANDROID_SDK_ROOT: /opt/android-sdk
     steps:
       - uses: actions/checkout@v4
         with:
           # versionCode = git 提交总数（build.gradle.kts），浅克隆会数成 1，
           # 装到手机上被 Android 判「降级」拒装——必须全量拉取
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-      - run: flutter --version
-      - name: 生成 Android 平台脚手架
+      - name: 接入宿主 flutter 工具链并自检
+        run: |
+          echo "/opt/flutter/bin" >> "$GITHUB_PATH"
+          /opt/flutter/bin/flutter --version | head -2
+          java -version 2>&1 | head -1
+          echo "ANDROID_HOME=$ANDROID_HOME ($(ls "$ANDROID_HOME/platforms" | tail -1) 顶层平台)"
+      - name: 生成 Android 平台脚手架（gradlew/wrapper jar 被 gitignore，须现生成）
         working-directory: app
         run: flutter create . --platforms android --project-name harnessgate
       - run: flutter pub get
         working-directory: app
       # 正式签名注入：CI 构建与本机同一把 harnessgate-release.jks。缺了这步 CI 会退回
-      # debug 签名（runner 每次现生成临时密钥）→ 每个 Release 签名互不相同，
+      # debug 签名(runner 每次现生成临时密钥)→ 每个 Release 签名互不相同，
       # 应用内自更新必报「与已安装的应用签名不同」（2026-10-19 踩坑）
       - name: 注入发布签名
         working-directory: app/android
@@ -41,20 +40,20 @@ jobs:
           HG_KEYSTORE_PROPERTIES: ${{ secrets.HG_KEYSTORE_PROPERTIES }}
         run: |
           echo "$HG_KEYSTORE_BASE64" | base64 -d > app/harnessgate-release.jks
-          echo "$HG_KEYSTORE_PROPERTIES" | base64 -d > app/key.properties
-      - run: flutter analyze || true
+          printf '%s' "$HG_KEYSTORE_PROPERTIES" > app/key.properties
+      - run: flutter analyze
         working-directory: app
       - run: flutter build apk --release
         working-directory: app
-      # tag 构建直接发 Release（绕开 artifact 存储配额）；main 构建保留 artifact 供排查
+      # tag 构建直接发 Release；main 构建保留 artifact 供排查
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd app/build/app/outputs/flutter-apk
           cp app-release.apk "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk"
-          gh release create "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --title "${GITHUB_REF_NAME#refs/tags/}" --notes "自动发布（CI 直出）" || gh release upload "${GITHUB_REF_NAME#refs/tags/}" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk" --clobber
+          bash "$GITHUB_WORKSPACE/scripts/ci-release-attach.sh" "harnessgate-${GITHUB_REF_NAME#refs/tags/}-android.apk"
       - uses: actions/upload-artifact@v4
         if: "!startsWith(github.ref, 'refs/tags/')"
         with:
