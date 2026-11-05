@@ -97,6 +97,8 @@ export class ChatPanel {
   private streaming = false;
   private showLog = false;
   private pendingText = "";
+  /** 刚发过 gearSave：下一次 session-gear 回包按 silent 转发（webview 更新数据但不开抽屉） */
+  private gearSaveEcho = false;
   private ready = false;
   /** 大会话（实测 800 条 / 1.2MB）全量塞 webview 会卡死在「加载中」：
       首屏只发窗口内条目，向上翻页加载；流式期间的条目更新走增量 upsert。 */
@@ -233,8 +235,13 @@ export class ChatPanel {
       return;
     }
     if (type === "session-gear" && msg.sessionId === this.sessionId) {
+      // gearSave 的回包也走这里：标成 silent，webview 只更新数据不重开抽屉
+      //（否则保存按钮刚关掉抽屉，回包一到又顶开，看起来像「没关上」）
+      const silent = this.gearSaveEcho;
+      this.gearSaveEcho = false;
       this.post({
         cmd: "gear",
+        silent,
         mcpServerIds: (msg.mcpServerIds as string[]) ?? [],
         skillIds: (msg.skillIds as string[]) ?? [],
         allMcps: (msg.allMcps as McpServerInfo[]) ?? [],
@@ -345,9 +352,12 @@ export class ChatPanel {
       const s = this.session;
       if (!s) return;
       if (!s.live) {
-        this.entries.push({ kind: "error", message: "会话未在运行：先点「恢复」" });
-        this.renderAll();
-        return;
+        if (s.resumable === false) {
+          this.entries.push({ kind: "error", message: "会话已结束且不可恢复" });
+          this.renderAll();
+          return;
+        }
+        // 未在运行但可恢复：允许直接发送，后端收到 prompt 会自动拉起会话并排队发出
       }
       this.entries.push({ kind: "user", text, attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })) });
       this.transcriptBase = this.entries.length;
@@ -450,6 +460,7 @@ export class ChatPanel {
       return;
     }
     if (cmd === "gearSave") {
+      this.gearSaveEcho = true;   // 服务端对 save 也会回 session-gear，标记后按 silent 转发
       this.client.send({
         type: "session-gear-save",
         sessionId: this.sessionId,
@@ -1132,13 +1143,14 @@ export class ChatPanel {
   window.addEventListener('message', (ev) => {
     const m = ev.data || {};
     if (m.cmd === 'gear') {
-      // 装备数据到达：开抽屉（保留上次的 Tab 选择，过滤词重开时清空）
+      // 装备数据到达：开抽屉（保留上次的 Tab 选择，过滤词重开时清空）。
+      // silent=保存回包：抽屉已随「保存装备」关闭，只吸收数据不重开（用户手动再开时才渲染）
       gear = {
         tab: (gear && gear.tab) || 'mcp', q: '',
         mcpIds: (m.mcpServerIds || []).map(String), skillIds: (m.skillIds || []).map(String),
         allMcps: m.allMcps || [], allSkills: (m.allSkills && m.allSkills.library) || [],
       };
-      gearRender();
+      if (!m.silent || document.getElementById('gearOv')) gearRender();
       return;
     }
     if (m.type === 'header') { renderHeader(m); return; }

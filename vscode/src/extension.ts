@@ -521,18 +521,25 @@ async function newSession(): Promise<void> {
   const cwd = await promptCwd(client, saved || store.defaultCwd);
   if (cwd === undefined) return;
 
-  // MCP 选择（可多选、可跳过）：只列「新建会话默认勾选」的启用项
+  // MCP 选择（可多选、可跳过）：展示全部受管 MCP，默认预先勾选 enabled 的服务
   const mcpPick = await new Promise<string[] | undefined>((resolve) => {
-    const qp = vscode.window.createQuickPick();
-    qp.title = "挂载 MCP 服务器（空格勾选 / 回车确认，Esc 跳过）";
+    const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { id: string }>();
+    qp.title = "挂载 MCP 服务器（空格增删 / 回车确认，Esc 跳过）";
+    qp.placeholder = "已默认勾选常用 MCP，直接按回车确认或空格调整";
     qp.canSelectMany = true;
     qp.matchOnDescription = true;
-    qp.items = store.mcpServers
-      .filter((x) => x.enabled !== false)
-      .map((x) => ({
-        label: x.name,
-        description: x.type === "stdio" ? [x.command, ...(x.args ?? [])].filter(Boolean).join(" ") : x.url ?? "",
-      }));
+    qp.matchOnDetail = true;
+    const items = store.mcpServers.map((x) => ({
+      label: x.name,
+      id: x.id,
+      description: x.type === "stdio" ? [x.command, ...(x.args ?? [])].filter(Boolean).join(" ") : x.url ?? "",
+      detail: x.note,
+    }));
+    qp.items = items;
+    qp.selectedItems = items.filter((item) => {
+      const s = store.mcpServers.find((x) => x.id === item.id);
+      return s ? s.enabled !== false : false;
+    });
     let done = false;
     const finish = (ids: string[] | undefined) => {
       if (done) return;
@@ -540,7 +547,7 @@ async function newSession(): Promise<void> {
       resolve(ids);
       qp.dispose();
     };
-    qp.onDidAccept(() => finish(qp.selectedItems.map((i) => (i as { id?: string }).id ?? i.label)));
+    qp.onDidAccept(() => finish(qp.selectedItems.map((i) => i.id || i.label)));
     qp.onDidHide(() => finish(undefined));
     qp.show();
   });
