@@ -19,6 +19,7 @@ import { listDirs } from "./dirs.ts";
 import { AuditLog } from "./audit.ts";
 import { HarnessSession, deriveTitle, applyChosen, registerConfigFallback, registerMcpResolver, registerArchiveDir } from "./session.ts";
 import { McpStore } from "./mcp.ts";
+import { claudeWorkflowProgress } from "./workflow-progress.ts";
 import { SkillsStore } from "./skills.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { SettingsStore, settingsFileOf, type AppSettings } from "./settings.ts";
@@ -1372,6 +1373,14 @@ wss.on("connection", (ws, req) => {
             allMcps: mcpStore.list(),
             allSkills: skillsSnapshot(),
           } satisfies ServerMsg));
+          break;
+        }
+
+        case "workflow-progress": {
+          // Claude Code 后台工作流进度：从会话转录目录只读落盘状态（ACP 线上没有子 agent 过程）
+          const rec = live.get(msg.sessionId)?.record() ?? store.get(msg.sessionId);
+          const runs = rec && rec.harnessId === "claude" ? claudeWorkflowProgress(rec.acpSessionId, rec.cwd) : [];
+          ws.send(JSON.stringify({ type: "workflow-progress", sessionId: msg.sessionId, runs } satisfies ServerMsg));
           break;
         }
 

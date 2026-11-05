@@ -413,7 +413,9 @@ export type ClientMsg =
   | { type: "skills-save"; reqId?: string; skill: { name: string; description: string; body: string; renameFrom?: string } }
   | { type: "skills-delete"; reqId?: string; name: string }
   | { type: "skills-mount"; reqId?: string; name: string; harnessId: string; on: boolean }
-  | { type: "skills-read"; reqId: string; name: string; nativeHarness?: string };
+  | { type: "skills-read"; reqId: string; name: string; nativeHarness?: string }
+  /** Claude Code 后台工作流进度拉取（可视化面板轮询用；只读转录落盘，不惊动会话） */
+  | { type: "workflow-progress"; sessionId: string };
 
 export type ServerMsg =
   | {
@@ -478,6 +480,21 @@ export type ServerMsg =
       allSkills: SkillsSnapshot;
     }
   | { type: "workspace"; reports: WorkspaceReport[] }
+  /** Claude Code 后台工作流进度（workflow-progress 的应答；runs 按进行中优先排序） */
+  | {
+      type: "workflow-progress";
+      sessionId: string;
+      runs: Array<{
+        id: string;
+        agents: Array<{ agentId: string; label: string; phase?: string; status: "running" | "done" }>;
+        running: number;
+        done: number;
+        finished: boolean;
+        /** running>0 但文件活动停超 6 分钟（进程可能已被回收）——客户端显示「失联」 */
+        stale: boolean;
+        updatedAt: number;
+      }>;
+    }
   | {
       type: "dirs";
       reqId: string;

@@ -831,6 +831,7 @@
 </div>
 <div id="crewPanel" class="drawer" hidden></div>
 <div id="gearPanel" class="drawer" hidden></div>
+<div id="wfPanel" class="drawer" hidden></div>
 <div id="mermaidModal" hidden>
   <div class="mmModal-head">
     <div style="display:flex;align-items:center;gap:8px">
@@ -1280,7 +1281,7 @@ if (sideMask) {
    正向导航 pushState 一份视图快照（URL 带 hash，刷新也能回到原视图）；
    popstate 按快照逐级恢复；总览是栈底，在总览再返回才真正离开。
    路由：#/h/<harnessId> 会话列表 · #/s/<sessionId> 对话 · #/r/<roomId> 圆桌 · #/rt 圆桌首页 · #/sched 定时 · #/goals 目标 · #/ 总览；?d= 打开中的抽屉 */
-const DRAWER_KEYS = { starPanel: "star", wsPanel: "ws", crewPanel: "crew", verPanel: "ver", gearPanel: "gear" };
+const DRAWER_KEYS = { starPanel: "star", wsPanel: "ws", crewPanel: "crew", verPanel: "ver", gearPanel: "gear", wfPanel: "wf" };
 function hashOfNav(n) {
   let h = "#/";
   if (n.view === "sessions" && n.harnessId) h = `#/h/${encodeURIComponent(n.harnessId)}`;
@@ -1314,8 +1315,9 @@ function pushNav(drawer) {
 }
 function collapseOverlays() {
   closeSide();
-  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "setPanel", "gearPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "setPanel", "gearPanel", "wfPanel"]) { const el = $(pid); if (el) el.hidden = true; }
   if (wsTimer) { clearInterval(wsTimer); wsTimer = null; }
+  if (wfTimer) { clearInterval(wfTimer); wfTimer = null; }
 }
 function applyNav(n) {
   const target = n?.view || "harnesses";
@@ -1333,6 +1335,7 @@ function applyNav(n) {
   else if (n?.drawer === "crewPanel" && sessPanelSid) openSessPanel(sessPanelSid, sessPanelMode, false);
   else if (n?.drawer === "wsPanel") openWsPanel(false);
   else if (n?.drawer === "gearPanel") openGearPanel(false);
+  else if (n?.drawer === "wfPanel") openWfPanel(false);
   if (reloadChat) { openSession(sid, false); return; }
   render();
 }
@@ -1528,6 +1531,11 @@ function handleServer(msg) {
         allSkills: msg.allSkills || { library: [], mounts: [] },
       };
       renderGearPanel();
+      break;
+    case "workflow-progress":
+      if (msg.sessionId !== state.sessionId) break;   // 切换会话后迟到的旧应答
+      wfRuns = msg.runs || [];
+      renderWfPanel();
       break;
     case "schedule-segmented": {
       // AI 精切结果替换本地段（AI 给的任务名更可读；schedulable=false 的已由服务端过滤）
@@ -2840,6 +2848,7 @@ function updateChatHeader() {
     <button class="mini ghost" id="chatStar" title="${s.starred ? "取消收藏" : "收藏会话（列表置顶）"}" style="${s.starred ? "color:#f5b942;border-color:#54481a" : ""}">${s.starred ? "★ 已收藏" : "☆ 收藏"}</button>
     <button class="mini" id="chatToSched" title="把这条会话里已验证的 prompt 冻结成定时任务">⏰ 定时</button>
     <button id="gearBtn" class="mini ghost" title="当前会话装备：配置启用的 MCP 服务与领域技能">🛠 装备</button>
+    <button id="wfBtn" class="mini ghost" title="Claude Code 后台工作流进度（输入框敲 /workflows 也行）">⚡ 工作流</button>
     <button id="chatDel" class="mini ghost" title="彻底删除该会话：服务器记录与 harness 本地历史一并移除，不可恢复">🗑 删除</button>`;
   const chatCall = $("chatCall");
   if (chatCall) chatCall.onclick = () => openCallDialog(s.id);
@@ -2853,6 +2862,12 @@ function updateChatHeader() {
   if (gearB) gearB.onclick = () => {
     const p = $("gearPanel");
     if (p.hidden) openGearPanel(state.sessionId);
+    else p.hidden = true;
+  };
+  const wfB = $("wfBtn");
+  if (wfB) wfB.onclick = () => {
+    const p = $("wfPanel");
+    if (p.hidden) openWfPanel(state.sessionId);
     else p.hidden = true;
   };
   const chatDel = $("chatDel");
@@ -2970,6 +2985,7 @@ function renderModes() {
   const sel = $("mode"), wrap = $("modeWrap");
   const s = sessions.get(state.sessionId);
   $("gearBtn").style.display = s ? "" : "none";   // 装备按钮跟着会话走（有无 modes 都可用）
+  $("wfBtn").style.display = s && s.harnessId === "claude" ? "" : "none";   // 后台工作流进度只有 claude 有（读的是 claude 转录目录）
   sel.innerHTML = "";
   if (!s?.modes?.availableModes?.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
@@ -4153,9 +4169,19 @@ function doSend() {
   const inp = $("input");
   const text = (inp?.value || "").trim();
   if (!text && !pendingFiles.length) return;
+  // HG 本地命令拦截：ACP 的 prompt 只是普通文本，CLI 内建斜杠命令透传不到 harness，
+  // 已知命令本地消化（未知 /xxx 原样发出——自定义命令仍走模型层）
+  if (/^\/(workflows|wf)\s*$/i.test(text) && !pendingFiles.length) {
+    inp.value = "";
+    openWfPanel();
+    return;
+  }
   const s = sessions.get(state.sessionId);
   if (!s) return;
-  if (!s.live) { alert("会话未在运行：先点顶部的「恢复会话」"); return; }
+  if (!s.live) {
+    if (s.resumable === false) { alert("该会话不可恢复"); return; }
+    // 未在运行但可恢复：允许直接发送，后端收到 prompt 会自动拉起会话并排队发出
+  }
   inp.value = "";
   drafts.delete(state.sessionId);
   streamingAssistant = false;
@@ -4304,6 +4330,56 @@ function renderGearPanel() {
     send({ type: "session-gear-save", sessionId: gearSid, mcpServerIds: [...gearDraft.mcpServerIds], skillIds: [...gearDraft.skillIds] });
     showToast("🛠 装备已保存", 2500);
   };
+}
+
+/* =====================================================================
+   ⚡ 后台工作流进度面板
+   Claude Code 的 Workflow 多 agent 任务在 agent 进程内后台执行（主回合早已结束），
+   进度只落盘在 claude 转录目录，服务端 workflow-progress 按需读取。
+   入口：输入框 /workflows（本地命令拦截，不出网）或头部 ⚡ 按钮；开着时 8s 轮询。
+   ===================================================================== */
+let wfRuns = [];
+let wfTimer = null;
+function openWfPanel(push = true) {
+  const p = $("wfPanel");
+  if (!p) return;
+  if (!state.sessionId) { showToast("先选一个会话", 2000); return; }
+  p.hidden = false;
+  if (push) pushNav("wfPanel");
+  wfRuns = [];
+  renderWfPanel();
+  send({ type: "workflow-progress", sessionId: state.sessionId });
+  clearInterval(wfTimer);
+  wfTimer = setInterval(() => {
+    const el = $("wfPanel");
+    if (!el || el.hidden) { clearInterval(wfTimer); wfTimer = null; return; }
+    send({ type: "workflow-progress", sessionId: state.sessionId });
+  }, 8000);
+}
+function renderWfPanel() {
+  const p = $("wfPanel");
+  if (!p || p.hidden) return;
+  const s = sessions.get(state.sessionId);
+  const hd = `<div class="hd"><b>⚡ 后台工作流</b><span class="meta2">${esc(s?.title || "")}</span><span style="flex:1"></span><button class="mini ghost" onclick="document.getElementById('wfPanel').hidden=true">关闭</button></div>`;
+  if (!wfRuns.length) {
+    p.innerHTML = `${hd}<div class="empty"><div class="big">🫧</div>没有检测到工作流运行记录<div class="meta2" style="margin-top:6px;max-width:420px">Claude Code 会话里让它「用工作流/多 agent 并行跑」后，这里实时显示各子 agent 的进度。工作流超过 30 分钟时注意：会话空闲回收可能把它杀掉。</div></div>`;
+    return;
+  }
+  p.innerHTML = hd + wfRuns.map((r) => {
+    const phases = {};
+    for (const a of r.agents) { const k = a.phase || "·"; (phases[k] = phases[k] || []).push(a); }
+    const badge = r.finished
+      ? `<span class="pill idle">已结束</span>`
+      : r.stale
+        ? `<span class="pill idle" title="running agent 的文件活动已停超 6 分钟：进程多半已被空闲回收杀掉，状态是僵尸">⚠ 失联（进程可能已被回收）</span>`
+        : (r.running ? `<span class="pill warn">${r.running} 个进行中</span>` : `<span class="pill idle">全部完成</span>`);
+    return `<div style="border:1px solid var(--bd,#333);border-radius:8px;padding:8px 10px;margin:8px 0">
+      <div style="display:flex;align-items:center;gap:8px"><b style="font-size:12.5px">${esc(r.id)}</b>${badge}<span class="meta2" style="margin-left:auto">${fmtAgo(Date.now() - r.updatedAt)}活动</span></div>
+      <div class="meta2" style="margin:4px 0 2px">✓ ${r.done} 完成 / 共 ${r.agents.length} 个 agent</div>
+      ${Object.entries(phases).map(([ph, list]) => `<div style="margin-top:5px"><div class="meta2">${esc(ph)}</div>${list.map((a) =>
+        `<div style="display:flex;gap:6px;align-items:center;font-size:12px;padding:1px 0">${a.status === "done" ? '<span style="color:#4caf50">✓</span>' : (r.stale ? '<span style="color:#888" title="无结果且无活动：可能随进程回收丢失">○</span>' : '<span style="color:#f5b942">●</span>')}<span>${esc(a.label)}</span></div>`).join("")}</div>`).join("")}
+    </div>`;
+  }).join("");
 }
 function renderWorkspace(reports) {
   const p = $("wsPanel");
