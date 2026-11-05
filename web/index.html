@@ -941,10 +941,9 @@ let sentinelSnap = null; // 神经中枢快照（hello / sentinel-status）
 let sentinelPulses = []; // 神经脉冲流水（客户端缓冲，快照历史 + 实时脉冲）
 let sentinelEdit = null; // 正在编辑的感官（null = 看板态）
 let sentinelPoll = null; // 快照自动补拉 { tries, timer }：视图先于 hello/旧后端时自愈
-let pendingFiles = [];
-let entries = [];
 /** 进程内台账缓存（对齐 APP transcript_cache）：重进会话先秒显上次内容，再拉新覆盖。
- *  LRU 上限 8 个会话；只缓存内存态，刷新页面自然失效（服务端才是唯一事实源） */
+ *  LRU 上限 8 个会话；只缓存内存态，刷新页面自然失效（服务端才是唯一事实源）
+ *  天然按 sid 键控：分屏多格共用一份，无需 per-pane 化 */
 const transcriptCache = new Map();
 const TRANSCRIPT_CACHE_MAX = 8;
 function cacheGet(sid) {
@@ -962,25 +961,9 @@ function cachePut(sid, list) {
     transcriptCache.delete(transcriptCache.keys().next().value);
   }
 }
-function cacheTouch(sid) {
-  const v = transcriptCache.get(sid);
-  if (v !== undefined) cachePut(sid, v);
-}
-let nodes = [];
-let streamingAssistant = false;
-let transcriptBase = 0;
 /** 台账窗口（对齐 APP v0.6.11）：首屏只拉最近 N 条，大会话不再整包 1.4MB 慢慢传；
-    顶部「加载更早」按 before 再拉一窗往前拼 */
+    顶部「加载更早」按 before 再拉一窗往前拼（分屏后游标 per-pane，见 makePane） */
 const TRANSCRIPT_WINDOW = 120;
-let _scrollEl = null;      // 对话滚动容器（#stream）
-let loadingEarlier = false;
-function requestEarlier() {
-  if (loadingEarlier || !state.sessionId || !entries.length) return;
-  loadingEarlier = true;
-  send({ type: "transcript", sessionId: state.sessionId, limit: TRANSCRIPT_WINDOW, before: transcriptStart });
-}
-let transcriptTotal = 0;   // 服务端台账总条数
-let transcriptStart = 0;   // 当前窗口起点（entries[0] 对应服务端下标）
 let showLog = false;
 let pendingRoomStart = false;
 let pendingCreate = false;   // 新建会话后等服务端回包，自动进入对话
@@ -1152,7 +1135,7 @@ setInterval(() => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   if (Date.now() - lastAliveAt > 45000) {   // 半开连接：判死强断（onclose 已掐掉，这里自己重连）
     const n = pendingPrompts.filter((p) => !p.confirmed).length;
-    if (n && state.view === "chat") pushEntry({ kind: "error", message: `连接已无响应，${n} 条未确认消息将在重连后自动补发` });
+    if (n && activePane) pushEntry(activePane, { kind: "error", message: `连接已无响应，${n} 条未确认消息将在重连后自动补发` });
     forceReconnect();
     return;
   }
@@ -1165,13 +1148,15 @@ function flushPending() {
   const keep = [];
   for (const p of pendingPrompts) {
     if (p.confirmed) continue;
+    // 该会话在格里的：查重读格内台账；不在格里的读缓存（sid 键控，天然多格安全）
+    const pane = paneOf(p.sid);
     if (nowMs - p.at > PROMPT_ACK_TTL) {
-      if (state.sessionId === p.sid && state.view === "chat") pushEntry({ kind: "error", message: "有一条消息始终未确认送达（已停止自动补发），请检查后手动重发" });
+      if (pane) pushEntry(pane, { kind: "error", message: "有一条消息始终未确认送达（已停止自动补发），请检查后手动重发" });
       continue;
     }
     // 台账还没到（刚重连/未打开过该会话）→ 这轮先跳过，等 transcript 触发的下一轮
-    const known = p.sid === state.sessionId ? (transcriptSeen.has(p.sid) ? entries : null) : cacheGet(p.sid);
-    if (p.sid === state.sessionId && !transcriptSeen.has(p.sid)) { keep.push(p); continue; }
+    const known = pane ? (transcriptSeen.has(p.sid) ? pane.entries : null) : cacheGet(p.sid);
+    if (pane && !transcriptSeen.has(p.sid)) { keep.push(p); continue; }
     // 查重：台账里已有同文本 user 条目（不早于发送时刻）→ 其实已送达，只是回执没见到
     if (known?.length && known.some((e) => e.kind === "user" && e.text === p.text && new Date(e.ts).getTime() >= p.at - 2000)) continue;
     send({ type: "prompt", sessionId: p.sid, text: p.text, attachments: p.attachments || [] });
@@ -1456,11 +1441,8 @@ function handleServer(msg) {
           openSession(msg.session.id);   // 新建后自动进入对话（原行为）
           break;
         }
-        if (state.view === "chat" && state.sessionId === msg.session.id) {
-          updateChatHeader();
-          renderModes();
-          renderConfig();
-        }
+        const pane = paneOf(msg.session.id);
+        if (pane) { updateChatHeader(pane); renderModes(pane); renderConfig(pane); renderPaneBar(pane); }
       }
       break;
     case "update":
@@ -1485,57 +1467,28 @@ function handleServer(msg) {
           if (out) { out.textContent = schedDistill.text; out.scrollTop = out.scrollHeight; }
         }
       }
-      if (state.view === "chat" && state.sessionId === msg.sessionId) {
-        applyUpdate(msg.update);
-      }
+      { const pane = paneOf(msg.sessionId); if (pane) applyUpdate(pane, msg.update); }
       if (state.view === "roundtable") {
         applyRoomUpdate(msg.sessionId, msg.update);
       }
       break;
     case "transcript":
       if (sideSessionId && msg.sessionId === sideSessionId) { renderSideTranscript(msg.entries || []); break; }
-      if (state.view === "chat" && state.sessionId === msg.sessionId) {
-        const incoming = msg.entries || [];
-        transcriptTotal = msg.total ?? incoming.length;
-        transcriptStart = msg.start ?? 0;
-        loadingEarlier = false;
-        if (incoming.length) cachePut(state.sessionId, incoming);
-        const isEarlierLoad = transcriptStart > 0 && entries.length && incoming.length &&
-          entries[0].ts === incoming[incoming.length - 1]?.ts;
-        if (isEarlierLoad) {
-          // 「加载更早」：往前拼，保持滚动位置大致不动
-          const near = _scrollEl?.scrollTop ?? 0;
-          const prevHeight = _scrollEl?.scrollHeight ?? 0;
-          entries = incoming.concat(entries);
-          renderAll(true);
-          if (_scrollEl) _scrollEl.scrollTop = (_scrollEl.scrollHeight - prevHeight) + near;
-        } else {
-          entries = incoming;
-          renderAll();
-          transcriptSeen.add(msg.sessionId);   // 本页已见过该会话的权威台账（空台账也可信）
-          flushSoon();   // 台账到位：查重并补发未确认消息
-        }
-      }
+      { const pane = paneOf(msg.sessionId); if (pane) paneApplyTranscript(pane, msg); }
       break;
     case "turn-end":
-      if (state.view === "chat" && state.sessionId === msg.sessionId) {
-        streamingAssistant = false;
-      }
+      { const pane = paneOf(msg.sessionId); if (pane) pane.streamingAssistant = false; }
       break;
     case "permission":
-      if (state.view === "chat" && state.sessionId === msg.sessionId) {
-        pushEntry({
+      { const pane = paneOf(msg.sessionId); if (pane) pushEntry(pane, {
           kind: "permission",
           title: msg.title,
           requestId: msg.requestId,
           options: msg.options,
-        });
-      }
+        }); }
       break;
     case "log":
-      if (state.view === "chat" && state.sessionId === msg.sessionId && showLog) {
-        pushEntry({ kind: "log", text: msg.line });
-      }
+      { const pane = paneOf(msg.sessionId); if (pane && showLog) pushEntry(pane, { kind: "log", text: msg.line }); }
       break;
     case "workspace":
       renderWorkspace(msg.reports);
@@ -1709,9 +1662,9 @@ function handleServer(msg) {
     case "history": /* 2026-09-19 服务端协议改名 sync-result→history */
       renderSyncResult(msg.summaries || []);
       break;
-    case "deleted": /* 2026-09-19 新增：会话删除广播 */
+    case "deleted": /* 会话删除广播：持有该会话的格关闭（单格时等价旧的退总览），绑定的面板一并收起 */
       sessions.delete(msg.sessionId);
-      if (state.sessionId === msg.sessionId) { state.view = "harnesses"; state.sessionId = null; }
+      { const pane = paneOf(msg.sessionId); if (pane) { pane.sid = null; closePane(pane); } }
       if (sideSessionId === msg.sessionId) {   // 在跑的侧问分身被回收（10 分钟自动/手动清空）：抽屉回到初始态
         sideSessionId = null;
         updateSideTurnBadge();
@@ -1766,11 +1719,11 @@ function handleServer(msg) {
       if (state.view === "harnesses") renderHarnessGrid();
       else if (state.view === "sessions") renderSessionList();
       break;
-    case "voice-stt-result":   // 本地识别结果：追加进输入框
+    case "voice-stt-result":   // 本地识别结果：追加进发起录音那一格的输入框（录音期间焦点/格可变）
       setVoiceUI("idle");
       if (msg.error) showToast("🎙 " + msg.error, 6000);
       else if (msg.text) {
-        const inp = $("input");
+        const inp = micPane?.els?.input;
         if (inp) { inp.value = (inp.value ? inp.value + " " : "") + msg.text; inp.focus(); inp.selectionStart = inp.selectionEnd = inp.value.length; }
       } else showToast("🎙 没听到内容，再试一次？", 3500);
       break;
@@ -1792,9 +1745,7 @@ function handleServer(msg) {
         callAgentEl = null; callAgentBuf = "";
         // 通话里用户说的话同样属于这个会话台账：同步进对话时间线，
         // 否则挂断后只剩 TA 的回复，用户发言得重进会话才看得到。
-        if (state.view === "chat" && state.sessionId === callSid) {
-          pushEntry({ kind: "user", text: msg.text, ts: new Date().toISOString() });
-        }
+        { const pane = paneOf(callSid); if (pane) pushEntry(pane, { kind: "user", text: msg.text, ts: new Date().toISOString() }); }
       }
       break;
     case "voice-live-agent-audio":
@@ -1824,9 +1775,18 @@ function handleServer(msg) {
 function render() {
   renderCrumbs();
   renderTree();
+  // chat 视图 = 分屏格容器（DOM 常驻，永不在这里重建）；其他视图 = viewRoot
+  const chatView = state.view === "chat";
+  const vr = $("viewRoot"), pr = $("paneRoot");
+  if (vr) vr.hidden = chatView;
+  if (pr) pr.hidden = !chatView;
+  if (chatView) {
+    if (!panes.length) mountPane();
+    else if (activePane) { renderPaneBar(activePane); updateChatHeader(activePane); }
+    return;
+  }
   if (state.view === "harnesses") renderHarnessGrid();
   else if (state.view === "sessions") renderSessionList();
-  else if (state.view === "chat") renderChat();
   else if (state.view === "roundtable") renderRoundtable();
   else if (state.view === "schedules") renderSchedules();
   else if (state.view === "goals") renderGoals();
@@ -2490,8 +2450,9 @@ function paintDirList() {
 
 /* ---------- 语音输入（服务端本地识别：sherpa-onnx 中英混说；浏览器只负责录音转 WAV） ---------- */
 let micRec = null, micStream = null, micChunks = [];
+let micPane = null;      // 发起录音的格（识别结果落回它的输入框；录音期间焦点/格可变，不能实时读 activePane）
 function setVoiceUI(state) {   // "idle" | "rec" | "busy"
-  const b = $("voiceBtn"), inp = $("input");
+  const b = micPane?.els?.voiceBtn, inp = micPane?.els?.input;
   if (!b) return;
   if (state === "rec") { b.textContent = "🎙"; b.style.color = "#f85149"; b.title = "结束录音并转写"; if (inp) inp.placeholder = "🎙 正在听…（再点麦克风结束）"; }
   else if (state === "busy") { b.textContent = "…"; b.style.color = ""; b.title = "转写中…"; if (inp) inp.placeholder = "🎙 识别中…"; }
@@ -2527,7 +2488,8 @@ async function blobToWav16k(blob) {
   const rendered = await off.startRendering();
   return encodeWav16k(rendered.getChannelData(0));
 }
-async function toggleVoice() {
+async function toggleVoice(pane) {
+  micPane = pane;   // 快照发起格：STT 结果与 UI 状态都对着它
   if (micRec && micRec.state === "recording") { micRec.stop(); return; }
   if (!navigator.mediaDevices?.getUserMedia) { showToast("此环境不支持录音（页面需经 HTTPS 或 localhost 访问）", 4500); return; }
   try {
@@ -2732,43 +2694,83 @@ async function endCall() {
 }
 
 /* ---------- 对话视图 ---------- */
+/** 打开会话（薄壳）：进 chat 视图 + 装进焦点格（无格先建格）。
+ *  数据装载逻辑在 openSessionInto；state.sessionId 镜像由 focusPane 维护。 */
 function openSession(id, push = true) {
-  let s = sessions.get(id);
+  state.view = "chat"; state.roomId = null;
+  if (!panes.length) mountPane();
+  openSessionInto(activePane, id);
+  render();
+  if (push) pushNav();
+}
+
+/** 装载会话进格（原 openSession 的数据装载骨架）：秒显缓存/关抽屉/拉台账/归档自动恢复 */
+function openSessionInto(pane, id) {
+  const s = sessions.get(id);
   if (!s) {
     // hash 直达早于 hello 的窗口：记下待开会话，hello 数据到位后重试（此前静默 return
-    // 表现为「点开历史会话什么都没有」）
-    if (navBoot !== null || !sessions.size) { pendingOpenOnHello = id; }
+    // 表现为「点开历史会话什么都没有」）——只记焦点格的
+    if (pane === activePane && (navBoot !== null || !sessions.size)) { pendingOpenOnHello = id; }
     return;
   }
-  state.sessionId = id; state.harnessId = s.harnessId; state.view = "chat"; state.roomId = null;
+  if (pane.sid === id && pane.els?.stream) { focusPane(pane); return; }   // 同格同会话：只聚焦不重装
+  pane.sid = id;
+  pane.harnessId = s.harnessId;
   // 秒显缓存：上次渲染过的台账先上屏（无缓存才出现空窗）
   const cached = cacheGet(id);
-  entries = cached ? [...cached] : [];
-  nodes = []; streamingAssistant = false; transcriptBase = 0;
-  transcriptTotal = 0; transcriptStart = cached ? -1 : 0;   // -1 = 有缓存待覆盖（暂不显示「加载更早」）
-  // 切换会话时关掉侧抽屉：面板内容是上一个会话的，留着只会误导。
-  // 装备面板例外：它跟着会话走，开着就自动切到新会话的装备
-  const gearWasOpen = !$("gearPanel").hidden;
-  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "gearPanel"]) { const el = $(pid); if (el) el.hidden = true; }
-  if (gearWasOpen) openGearPanel(false);
-  // 侧问抽屉是 body 级动态悬浮层，不在上面的 hidden 列表里，得单独摘：它仍绑着上一个会话的分身，
-  // 留着只会误导（在 B 的界面里打字，答的却是 A 的分身）。分身本体不受影响——重开抽屉 side-find 会找回。
+  pane.entries = cached ? [...cached] : [];
+  pane.nodes = [];
+  pane.streamingAssistant = false;
+  pane.transcriptTotal = 0;
+  pane.transcriptStart = cached ? -1 : 0;   // -1 = 有缓存待覆盖（暂不显示「加载更早」）
+  // 换会话时关掉侧抽屉与面板：内容是上一个会话的，留着只会误导。
+  // 装备面板不再「跟着焦点自动切」（分屏下跟随焦点是串台源）——要用重开即取该格 sid
+  for (const pid of ["crewPanel", "wsPanel", "starPanel", "verPanel", "gearPanel", "wfPanel"]) { const el = $(pid); if (el) el.hidden = true; }
+  if (wfTimer) { clearInterval(wfTimer); wfTimer = null; }   // ⚡ 轮询停表（面板随换会话关闭）
   const sideDrawerEl = $("sideDrawer");
   if (sideDrawerEl) { sideDrawerEl.remove(); sideSessionId = null; sideSrcId = null; }
-  render();
-  transcriptTotal = 0;
+  // 搜索/发言索引/附件态重置（顺带修存量 bug：原来切会话不重置搜索态，残留下标指向新会话）
+  if (pane.searchTimer) { clearTimeout(pane.searchTimer); pane.searchTimer = null; }
+  pane.searchHits = []; pane.searchResults = []; pane.searchPos = -1; pane.idxOpen = false;
+  pane.files = [];
+  renderPaneChat(pane);   // 建/重建格内聊天 DOM（chatHead/搜索栏/台账/composer），handler 闭包捕获 pane
   if (cached && cached.length) {
-    // 秒显缓存：立即渲染上次内容（renderAll 会滚动到底），服务端最新到达后整体覆盖
-    renderAll();
+    renderAll(pane);      // 秒显：立即渲染上次内容（滚到底），服务端最新到达后整体覆盖
   }
   send({ type: "transcript", sessionId: id, limit: TRANSCRIPT_WINDOW });
   if (!s.live && s.resumable) {
-    pushEntry({ kind: "log", text: "会话已归档，正在自动恢复…" });
+    pushEntry(pane, { kind: "log", text: "会话已归档，正在自动恢复…" });
     send({ type: "resume", sessionId: id });
   } else if (!s.live && !s.resumable) {
-    pushEntry({ kind: "log", text: "这个 harness 不支持恢复会话；想看历史可以往下翻，想继续聊请用「接续」。" });
+    pushEntry(pane, { kind: "log", text: "这个 harness 不支持恢复会话；想看历史可以往下翻，想继续聊请用「接续」。" });
   }
-  if (push) pushNav();
+  focusPane(pane);
+}
+
+/** transcript 回包 → 落格（数据面）：写游标/缓存、前拼（加载更早）或全量重建。
+ *  步 3 加 transBusy 单飞串行化；当前靠同格交互串行 + TCP 有序（与旧实现等价）。 */
+function paneApplyTranscript(pane, msg) {
+  const incoming = msg.entries || [];
+  pane.transcriptTotal = msg.total ?? incoming.length;
+  pane.transcriptStart = msg.start ?? 0;
+  pane.loadingEarlier = false;
+  if (incoming.length) cachePut(msg.sessionId, incoming);
+  const isEarlierLoad = pane.transcriptStart > 0 && pane.entries.length && incoming.length &&
+    pane.entries[0].ts === incoming[incoming.length - 1]?.ts;
+  if (isEarlierLoad) {
+    // 「加载更早」：往前拼，保持滚动位置大致不动
+    const st = pane.els?.stream;
+    const near = st?.scrollTop ?? 0;
+    const prevHeight = st?.scrollHeight ?? 0;
+    pane.entries = incoming.concat(pane.entries);
+    renderAll(pane, true);
+    if (st) st.scrollTop = (st.scrollHeight - prevHeight) + near;
+  } else {
+    pane.entries = incoming;
+    renderAll(pane);
+    transcriptSeen.add(msg.sessionId);   // 本页已见过该会话的权威台账（空台账也可信）
+    flushSoon();   // 台账到位：查重并补发未确认消息
+  }
 }
 
 // 会话草稿：键入即存、重绘即恢复（hello→render() 会整体重建输入框，无此机制则未发送内容随重连丢失）
@@ -2931,16 +2933,17 @@ function savePanesLayout() {
   } catch { /* 隐私模式等：不持久化 */ }
 }
 
-function renderChat() {
-  const root = $("viewRoot");
-  const s = sessions.get(state.sessionId);
-  if (!s) { state.view = "harnesses"; return render(); }
-  root.innerHTML = `
+/** 格内聊天视图（原 renderChat）：模板重建进 pane.els.body，全部 handler 闭包捕获 pane。
+ *  id 与 hg-* 类双标记：id 兼容零散的 $() 引用（scheduleMathMount 等），类供 capturePaneEls 分格捕获（步 4 删 id）。 */
+function renderPaneChat(pane) {
+  const body = pane.els?.body;
+  if (!body) return;
+  body.innerHTML = `
     <div id="chatWrap">
       <div class="chatHead" id="chatHead"></div>
       <div class="chatNav">
         <div class="searchWrap">
-          <input type="text" id="chatSearch" placeholder="🔍 搜索对话内容（点下拉结果跳转）…" autocomplete="off" />
+          <input type="text" id="chatSearch" class="hg-chatSearch" placeholder="🔍 搜索对话内容（点下拉结果跳转）…" autocomplete="off" />
           <button id="searchClear" class="searchClear" hidden title="清空搜索词">✕</button>
         </div>
         <div class="searchDrop" id="searchDrop" hidden></div>
@@ -2953,80 +2956,79 @@ function renderChat() {
         <button class="mini ghost" id="sessChgBtn" title="本会话改动过的文件（git 仓库按 diff，非 git 按 fs 台账；可下载）">📄 改动</button>
         <div class="idxList" id="idxList" hidden></div>
       </div>
-      <div id="stream"></div>
+      <div id="stream" class="hg-stream"></div>
       <button id="toBottom" class="toBottom" hidden title="回到底部（最新消息）">↓</button>
       <footer class="composer">
         <div class="chips" id="chips"></div>
         <div class="composerRow">
-          <textarea id="input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-          <button id="voiceBtn" class="mini ghost" title="语音输入（识别文字追加到输入框）">🎤</button>
-          <button id="attachBtn" title="添加图片或文本附件">📎</button>
-          <button id="stopBtn" class="mini" hidden title="打断当前回合（会话保持可用）">⏹ 停止</button>
-          <button id="sendBtn" class="primary">发送</button>
+          <textarea id="input" class="hg-input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button id="voiceBtn" class="hg-voiceBtn mini ghost" title="语音输入（识别文字追加到输入框）">🎤</button>
+          <button id="attachBtn" class="hg-attachBtn" title="添加图片或文本附件">📎</button>
+          <button id="stopBtn" class="hg-stopBtn mini" hidden title="打断当前回合（会话保持可用）">⏹ 停止</button>
+          <button id="sendBtn" class="hg-sendBtn primary">发送</button>
         </div>
       </footer>
     </div>`;
-  renderAll();
-  updateChatHeader();
-  renderModes(); renderConfig();
+  capturePaneEls(pane);   // 重捕全部格内引用（stream/input/chips/chatHead/…）
+  updateChatHeader(pane);
+  renderModes(pane); renderConfig(pane);
+  renderPaneBar(pane);
 
-  // 恢复该会话的未发送草稿（重连/重绘后不再丢失）
-  _scrollEl = $("stream");
-  const draft = drafts.get(state.sessionId);
-  if (draft !== undefined) {
-    $("input").value = draft;
-    drafts.delete(state.sessionId);
-  }
+  // 恢复该会话的未发送草稿（草稿以 sid 键控、发送才删——格 DOM 常驻后重建即恢复）
+  const draft = drafts.get(pane.sid);
+  if (draft !== undefined) pane.els.input.value = draft;
+  renderChips(pane);
 
-  $("attachBtn").onclick = () => $("fileInput").click();
-  $("voiceBtn").onclick = toggleVoice;
-  $("input").addEventListener("input", () => {
-    if (state.sessionId) drafts.set(state.sessionId, $("input").value);
+  pane.els.attachBtn.onclick = () => { fileInputPane = pane; $("fileInput").click(); };   // 捕获发起格：异步加载期间焦点/格可变
+  pane.els.voiceBtn.onclick = () => toggleVoice(pane);
+  pane.els.input.addEventListener("input", () => {
+    if (pane.sid) drafts.set(pane.sid, pane.els.input.value);
   });
   const callEndBtn = $("callEnd");
   if (callEndBtn) callEndBtn.onclick = () => endCall();
-  $("sendBtn").onclick = doSend;
-  $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } });
-  $("stopBtn").onclick = () => send({ type: "interrupt", sessionId: state.sessionId });
-  $("sessDecBtn").onclick = () => openSessPanel(state.sessionId, "decisions");
-  $("sessChgBtn").onclick = () => openSessPanel(state.sessionId, "changes");
-  $("idxToggle").onclick = () => setIdxOpen(!idxOpen);
-  const search = $("chatSearch");
-  const drop = $("searchDrop");
-  const clearBtn = $("searchClear");
+  pane.els.sendBtn.onclick = () => doSend(pane);
+  pane.els.input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(pane); } });
+  pane.els.stopBtn.onclick = () => send({ type: "interrupt", sessionId: pane.sid });
+  const decBtn = body.querySelector("#sessDecBtn");
+  if (decBtn) decBtn.onclick = () => openSessPanel(pane.sid, "decisions");
+  const chgBtn = body.querySelector("#sessChgBtn");
+  if (chgBtn) chgBtn.onclick = () => openSessPanel(pane.sid, "changes");
+  const idxToggle = body.querySelector("#idxToggle");
+  if (idxToggle) idxToggle.onclick = () => setIdxOpen(pane, !pane.idxOpen);
+  const search = pane.els.search;
+  const drop = pane.els.searchDrop;
+  const clearBtn = body.querySelector("#searchClear");
   search.addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => runSearch(search.value), 200);
+    clearTimeout(pane.searchTimer);
+    pane.searchTimer = setTimeout(() => runSearch(pane, search.value), 200);
     if (clearBtn) clearBtn.hidden = !search.value;
   });
-  if (clearBtn) clearBtn.onclick = () => { search.value = ""; if (clearBtn) clearBtn.hidden = true; runSearch(""); search.focus(); };
-  search.addEventListener("focus", () => { if (search.value.trim()) renderSearchDrop(); });
+  if (clearBtn) clearBtn.onclick = () => { search.value = ""; if (clearBtn) clearBtn.hidden = true; runSearch(pane, ""); search.focus(); };
+  search.addEventListener("focus", () => { if (search.value.trim()) renderSearchDrop(pane); });
   search.addEventListener("blur", () => setTimeout(() => { if (drop) drop.hidden = true; }, 150));
   search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); gotoHit(e.shiftKey ? searchPos - 1 : searchPos + 1); }
-    if (e.key === "Escape") { search.value = ""; runSearch(""); if (drop) drop.hidden = true; }
+    if (e.key === "Enter") { e.preventDefault(); gotoHit(pane, pane.searchPos + (e.shiftKey ? -1 : 1)); }
+    if (e.key === "Escape") { search.value = ""; runSearch(pane, ""); if (drop) drop.hidden = true; }
   });
-  $("searchPrev").onclick = () => gotoHit(searchPos - 1);
-  $("searchNext").onclick = () => gotoHit(searchPos + 1);
+  const prevB = body.querySelector("#searchPrev");
+  if (prevB) prevB.onclick = () => gotoHit(pane, pane.searchPos - 1);
+  const nextB = body.querySelector("#searchNext");
+  if (nextB) nextB.onclick = () => gotoHit(pane, pane.searchPos + 1);
 
-  /* 回到底部箭头：滚离底部时浮现；读历史时不被流式输出拽走 */
-  const streamEl = $("stream");
-  const toBottom = $("toBottom");
-  const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 140;
-  const syncToBottom = () => { if (toBottom && streamEl) toBottom.hidden = !(streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight > 240); };
-  if (toBottom && streamEl) {
-    toBottom.onclick = () => streamEl.scrollTo({ top: streamEl.scrollHeight, behavior: "smooth" });
-    streamEl.addEventListener("scroll", syncToBottom, { passive: true });
+  /* 回到底部箭头：滚离底部时浮现；读历史时不被流式输出拽走（贴底判定用 paneNearBottom） */
+  const syncToBottom = () => { const t = pane.els.toBottom, st = pane.els.stream; if (t && st) t.hidden = !(st.scrollHeight - st.scrollTop - st.clientHeight > 240); };
+  if (pane.els.toBottom && pane.els.stream) {
+    pane.els.toBottom.onclick = () => pane.els.stream.scrollTo({ top: pane.els.stream.scrollHeight, behavior: "smooth" });
+    pane.els.stream.addEventListener("scroll", syncToBottom, { passive: true });
     syncToBottom();
   }
-  window.__nearBottom = nearBottom;   // pushEntry/updateLast 共用
-  $("input").focus();
+  pane.els.input.focus();
 }
 
-function updateChatHeader() {
-  const head = $("chatHead");
-  if (!head) return;
-  const s = sessions.get(state.sessionId);
+function updateChatHeader(pane) {
+  const head = pane?.els?.chatHead;
+  if (!head || !pane.sid) return;
+  const s = sessions.get(pane.sid);
   if (!s) return;
   const live = s.live;
   head.innerHTML = `
@@ -3058,17 +3060,17 @@ function updateChatHeader() {
   const chatHandoff = $("chatHandoff");
   if (chatHandoff) chatHandoff.onclick = () => openHandoffDialog(s.id);   // 对话框选 harness/模型；handoff_done 到达后自动跳进新会话
   const toSched = $("chatToSched");
-  if (toSched) toSched.onclick = () => startSchedFromSession(s);
+  if (toSched) toSched.onclick = () => startSchedFromSession(pane, s);
   const gearB = $("gearBtn");
   if (gearB) gearB.onclick = () => {
     const p = $("gearPanel");
-    if (p.hidden) openGearPanel(state.sessionId);
+    if (p.hidden) openGearPanel();   // 面板内部读当前会话（单格=本格；步 3 快照化 wfSid/gearSid）
     else p.hidden = true;
   };
   const wfB = $("wfBtn");
   if (wfB) wfB.onclick = () => {
     const p = $("wfPanel");
-    if (p.hidden) openWfPanel(state.sessionId);
+    if (p.hidden) openWfPanel();
     else p.hidden = true;
   };
   const chatDel = $("chatDel");
@@ -3077,9 +3079,9 @@ function updateChatHeader() {
     if (confirm("彻底删除这条会话？（服务器记录与 harness 本地历史一并移除，不再被历史同步导回）")) send({ type: "delete", sessionId: s.id });
   };
   const modeSel = $("mode");
-  if (modeSel) modeSel.onchange = () => { if (state.sessionId) send({ type: "mode", sessionId: state.sessionId, modeId: modeSel.value }); };
-  renderModes();
-  renderConfig();
+  if (modeSel) modeSel.onchange = () => { if (pane.sid) send({ type: "mode", sessionId: pane.sid, modeId: modeSel.value }); };
+  renderModes(pane);
+  renderConfig(pane);
   const chatArchive = $("chatArchive");
   if (chatArchive) chatArchive.onclick = () => openArchiveDialog(s.id);
   const chatSide = $("chatSide");
@@ -3103,11 +3105,11 @@ function updateChatHeader() {
     const v = !s.starred;
     send({ type: "star", sessionId: s.id, starred: v });
     s.starred = v;   // 乐观更新；服务端广播到达后 updateChatHeader 会再刷一次
-    updateChatHeader();
+    updateChatHeader(pane);
   };
   const ready = s.status === "ready";
   const awaiting = s.status === "awaiting";
-  const inp = $("input"), btn = $("sendBtn");
+  const inp = pane.els.input, btn = pane.els.sendBtn;
   if (inp) {
     inp.disabled = !(ready || awaiting || s.status === "starting");
     inp.placeholder = s.status === "starting"
@@ -3124,8 +3126,8 @@ function updateChatHeader() {
       `<button class="mini" id="gotoPerm">去处理</button>`);
     const g = $("gotoPerm");
     if (g) g.onclick = () => {
-      const i = entries.findIndex((e) => e.kind === "permission" && !e.answered && e.requestId);
-      if (i >= 0 && nodes[i]) { nodes[i].scrollIntoView({ block: "center", behavior: "smooth" }); nodes[i].animate?.([{ filter:"brightness(1.9)" }, { filter:"none" }], 900); }
+      const i = pane.entries.findIndex((e) => e.kind === "permission" && !e.answered && e.requestId);
+      if (i >= 0 && pane.nodes[i]) { pane.nodes[i].scrollIntoView({ block: "center", behavior: "smooth" }); pane.nodes[i].animate?.([{ filter:"brightness(1.9)" }, { filter:"none" }], 900); }
     };
   }
   if (!live) {
@@ -3139,15 +3141,16 @@ function updateChatHeader() {
     const x = $("stopSessBtn");
     if (x) x.onclick = () => { x.disabled = true; x.textContent = "停止中…"; send({ type: "close", sessionId: s.id }); };
   }
-  const sb = $("stopBtn");
+  const sb = pane.els.stopBtn;
   if (sb) sb.hidden = !s.inTurn;
 }
 
 /* ---------- 顶栏：模型 / 模式 ---------- */
-function renderConfig() {
-  const box = $("cfg");
+function renderConfig(pane) {
+  const box = pane?.els?.chatHead?.querySelector("#cfg");
+  if (!box) return;
   box.innerHTML = "";
-  const s = sessions.get(state.sessionId);
+  const s = sessions.get(pane.sid);
   if (!s) return;
   const hasModes = Boolean(s.modes?.availableModes?.length);
   const opts = (s.configOptions || []).filter((o) => o.options?.length && !(hasModes && o.category === "mode"));
@@ -3162,7 +3165,7 @@ function renderConfig() {
       if (v.value === o.currentValue) op.selected = true;
       sel.appendChild(op);
     }
-    sel.onchange = () => send({ type: "config", sessionId: state.sessionId, configId: o.id, value: sel.value });
+    sel.onchange = () => send({ type: "config", sessionId: pane.sid, configId: o.id, value: sel.value });
     w.appendChild(l); w.appendChild(sel); box.appendChild(w);
   }
   // 自动决策档位（房间会话恒为全自动且不可改，不显示）
@@ -3177,16 +3180,20 @@ function renderConfig() {
       if ((s.autoApprove || "off") === v) op.selected = true;
       sel.appendChild(op);
     }
-    sel.onchange = () => { send({ type: "set-auto-approve", sessionId: state.sessionId, level: sel.value }); showToast(`自动决策：${LV.find((x) => x[0] === sel.value)?.[1]}`, 2500); };
+    sel.onchange = () => { send({ type: "set-auto-approve", sessionId: pane.sid, level: sel.value }); showToast(`自动决策：${LV.find((x) => x[0] === sel.value)?.[1]}`, 2500); };
     w.appendChild(l); w.appendChild(sel); box.appendChild(w);
   }
 }
 
-function renderModes() {
-  const sel = $("mode"), wrap = $("modeWrap");
-  const s = sessions.get(state.sessionId);
-  $("gearBtn").style.display = s ? "" : "none";   // 装备按钮跟着会话走（有无 modes 都可用）
-  $("wfBtn").style.display = s && s.harnessId === "claude" ? "" : "none";   // 后台工作流进度只有 claude 有（读的是 claude 转录目录）
+function renderModes(pane) {
+  const head = pane?.els?.chatHead;
+  if (!head) return;
+  const sel = head.querySelector("#mode"), wrap = head.querySelector("#modeWrap");
+  const s = sessions.get(pane.sid);
+  const gearB = head.querySelector("#gearBtn");
+  if (gearB) gearB.style.display = s ? "" : "none";   // 装备按钮跟着会话走（有无 modes 都可用）
+  const wfB = head.querySelector("#wfBtn");
+  if (wfB) wfB.style.display = s && s.harnessId === "claude" ? "" : "none";   // 后台工作流进度只有 claude 有（读的是 claude 转录目录）
   sel.innerHTML = "";
   if (!s?.modes?.availableModes?.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
@@ -3827,45 +3834,51 @@ function paint(el, e) {
   }
 }
 
-function renderAll(restoreScroll = false) {
-  const stream = $("stream");
+/** 「加载更早」：按格游标翻上一窗（before 恒用上次应答的 start，防 live 会话 total 漂移翻重/翻漏） */
+function requestEarlier(pane) {
+  if (pane.loadingEarlier || !pane.sid || !pane.entries.length) return;
+  pane.loadingEarlier = true;
+  send({ type: "transcript", sessionId: pane.sid, limit: TRANSCRIPT_WINDOW, before: pane.transcriptStart });
+}
+
+function renderAll(pane, restoreScroll = false) {
+  const stream = pane.els?.stream;
   if (!stream) return;
   stream.innerHTML = "";
-  nodes = [];
-  if (!entries.length) {
+  pane.nodes = [];
+  if (!pane.entries.length) {
     stream.innerHTML = '<div class="empty"><div class="big">💬</div>还没有对话，说点什么吧。</div>';
     return;
   }
-  nodes = entries.map((e) => { const n = entryNode(e); stream.appendChild(n); return n; });
+  pane.nodes = pane.entries.map((e) => { const n = entryNode(e); stream.appendChild(n); return n; });
   // 窗口化：前面还有更早的台账时给入口（首屏加载/新消息时不打扰当前滚动位置）
-  if (transcriptStart > 0) {
+  if (pane.transcriptStart > 0) {
     const btn = document.createElement("button");
     btn.className = "mini ghost";
     btn.style.cssText = "margin:0 auto 10px;display:block";
-    btn.textContent = `⬆ 加载更早的对话（还有 ${transcriptStart} 条）`;
+    btn.textContent = `⬆ 加载更早的对话（还有 ${pane.transcriptStart} 条）`;
     btn.onclick = () => {
       btn.disabled = true;
       btn.textContent = "加载中…";
-      requestEarlier();
+      requestEarlier(pane);
     };
     stream.insertBefore(btn, stream.firstChild);
   }
   if (!restoreScroll) stream.scrollTop = stream.scrollHeight;
-  transcriptBase = entries.length;
-  refreshNav();
+  refreshNav(pane);
 }
 
-function pushEntry(e) {
-  const stream = $("stream");
+function pushEntry(pane, e) {
+  const stream = pane.els?.stream;
   if (!stream) return;
-  if (entries.length === 0) { stream.innerHTML = ""; nodes = []; transcriptBase = 0; }
-  entries.push(e);
+  if (pane.entries.length === 0) { stream.innerHTML = ""; pane.nodes = []; }
+  pane.entries.push(e);
   const n = entryNode(e);
-  nodes.push(n);
+  pane.nodes.push(n);
   stream.appendChild(n);
   // 自己发的消息总是滚到底；agent 的流式输出只在本来就在底部附近时才跟随（读历史不被拽走）
-  if (e.kind === "user" || !window.__nearBottom || window.__nearBottom(stream)) stream.scrollTop = stream.scrollHeight;
-  refreshNav();
+  if (e.kind === "user" || paneNearBottom(pane)) stream.scrollTop = stream.scrollHeight;
+  refreshNav(pane);
   return n;
 }
 
@@ -3907,40 +3920,36 @@ function formatFrontToolTitle(u) {
   return title;
 }
 
-function updateLast() {
-  const i = entries.length - 1;
-  if (i >= 0 && nodes[i]) paint(nodes[i], entries[i]);
-  const stream = $("stream");
-  if (stream && (!window.__nearBottom || window.__nearBottom(stream))) stream.scrollTop = stream.scrollHeight;
+function updateLast(pane) {
+  const i = pane.entries.length - 1;
+  if (i >= 0 && pane.nodes[i]) paint(pane.nodes[i], pane.entries[i]);
+  const stream = pane.els?.stream;
+  if (stream && paneNearBottom(pane)) stream.scrollTop = stream.scrollHeight;
 }
 
-/* ---------- 发言索引 + 关键字搜索（chatNav） ---------- */
-let idxOpen = false;
-let searchHits = [];
-let searchPos = -1;
-let searchTimer = null;
+/* ---------- 发言索引 + 关键字搜索（chatNav；搜索态 per-pane，见 makePane） ---------- */
 
-function jumpTo(i) {
-  const n = nodes[i];
+function jumpTo(pane, i) {
+  const n = pane.nodes[i];
   if (!n) return;
   n.scrollIntoView({ block: "center", behavior: "smooth" });
   n.animate?.([{ filter: "brightness(1.9)" }, { filter: "none" }], 900);
 }
 
-function userEntryList() {
-  return entries.map((e, i) => ({ e, i })).filter((x) => x.e.kind === "user");
+function userEntryList(pane) {
+  return pane.entries.map((e, i) => ({ e, i })).filter((x) => x.e.kind === "user");
 }
 
-function refreshNav() {
-  const cnt = $("idxCount");
-  if (cnt) cnt.textContent = userEntryList().length;
-  if (idxOpen) renderIdxList();
+function refreshNav(pane) {
+  const cnt = pane.els?.root?.querySelector("#idxCount");
+  if (cnt) cnt.textContent = userEntryList(pane).length;
+  if (pane.idxOpen) renderIdxList(pane);
 }
 
-function renderIdxList() {
-  const list = $("idxList");
+function renderIdxList(pane) {
+  const list = pane.els?.idxList;
   if (!list) return;
-  const us = userEntryList();
+  const us = userEntryList(pane);
   list.innerHTML =
     us
       .map((x, n) => {
@@ -3954,19 +3963,19 @@ function renderIdxList() {
       .join("") || '<div class="meta2" style="padding:9px 12px">还没有你的发言</div>';
   list.querySelectorAll(".idxItem").forEach((el) => {
     el.onclick = () => {
-      jumpTo(Number(el.dataset.i));
-      setIdxOpen(false);
+      jumpTo(pane, Number(el.dataset.i));
+      setIdxOpen(pane, false);
     };
   });
 }
 
-function setIdxOpen(open) {
-  idxOpen = open;
-  const list = $("idxList");
+function setIdxOpen(pane, open) {
+  pane.idxOpen = open;
+  const list = pane.els?.idxList;
   if (list) list.hidden = !open;
-  const arrow = $("idxArrow");
+  const arrow = pane.els?.root?.querySelector("#idxArrow");
   if (arrow) arrow.textContent = open ? "▴" : "▾";
-  if (open) renderIdxList();
+  if (open) renderIdxList(pane);
 }
 
 function entrySearchText(e) {
@@ -3978,8 +3987,9 @@ function entrySearchText(e) {
 
 /* 正文关键词标黄：直接在 DOM 文本节点上包 <mark>，不干扰 markdown 渲染；
    重渲染（流式更新）会冲掉标黄，下次搜索会重新标——可接受 */
-function clearKwMarks() {
-  document.querySelectorAll("mark.kw").forEach((m) => {
+/** 清本格的关键词标黄（scope 到格根：多格并存时不能冲掉别格的标黄） */
+function clearKwMarks(pane) {
+  (pane.els?.root || document).querySelectorAll("mark.kw").forEach((m) => {
     const parent = m.parentNode;
     if (!parent) return;
     parent.replaceChild(document.createTextNode(m.textContent ?? ""), m);
@@ -4010,15 +4020,15 @@ function markKeywordsIn(node, needle) {
   }
 }
 
-/* 搜索结果面板：像 VS Code 搜索那样，把每条命中行列成下拉，点击跳到那条消息 */
-let searchResults = [];   // [{ i: entries 下标, line: 命中行文本 }]
+/* 搜索结果面板：像 VS Code 搜索那样，把每条命中行列成下拉，点击跳到那条消息。
+   搜索态五件套（hits/results/pos/timer/idxOpen）已 per-pane（见 makePane）。 */
 
-function speakerOf(e) {
+function speakerOf(pane, e) {
   if (e.kind === "user") return "你";
   if (e.kind === "thought") return "思考";
   if (e.kind === "tool") return "工具";
   if (e.kind === "permission") return "授权";
-  return sessions.get(state.sessionId)?.harnessLabel ?? "AI";
+  return sessions.get(pane.sid)?.harnessLabel ?? "AI";   // 读本格 harness 名（不是焦点格的）
 }
 
 /** 从一段文本里抠出命中行；超长行截成「…前文 + 命中 + 后文…」 */
@@ -4047,28 +4057,28 @@ function escWithKw(s, needle) {
   return parts.join("");
 }
 
-function renderSearchDrop() {
-  const box = $("searchDrop");
-  const input = $("chatSearch");
+function renderSearchDrop(pane) {
+  const box = pane.els?.searchDrop;
+  const input = pane.els?.search;
   if (!box || !input) return;
   const q = input.value.trim().toLowerCase();
   if (!q) { box.hidden = true; box.innerHTML = ""; return; }
-  if (!searchResults.length) {
+  if (!pane.searchResults.length) {
     box.innerHTML = '<div class="dropEmpty">无匹配</div>';
     box.hidden = false;
     return;
   }
-  box.innerHTML = searchResults
+  box.innerHTML = pane.searchResults
     .slice(0, 60)
-    .map((r, n) => `<div class="dropItem${r.i === searchHits[searchPos] ? " on" : ""}" data-i="${r.i}" data-n="${n}">
-      <span class="who">${esc(speakerOf(entries[r.i]))}</span>
+    .map((r, n) => `<div class="dropItem${r.i === pane.searchHits[pane.searchPos] ? " on" : ""}" data-i="${r.i}" data-n="${n}">
+      <span class="who">${esc(speakerOf(pane, pane.entries[r.i]))}</span>
       <span class="ln">${escWithKw(r.line, q)}</span>
     </div>`)
-    .join("") + (searchResults.length > 60 ? '<div class="dropEmpty">… 仅显示前 60 条命中行</div>' : "");
+    .join("") + (pane.searchResults.length > 60 ? '<div class="dropEmpty">… 仅显示前 60 条命中行</div>' : "");
   box.querySelectorAll(".dropItem").forEach((el) => {
     el.onmousedown = (ev) => {   // mousedown 抢在 blur 之前
       ev.preventDefault();
-      gotoEntry(Number(el.dataset.i));
+      gotoEntry(pane, Number(el.dataset.i));
     };
   });
   const on = box.querySelector(".dropItem.on");
@@ -4076,33 +4086,33 @@ function renderSearchDrop() {
   box.hidden = false;
 }
 
-function gotoEntry(i) {
-  const pos = searchHits.indexOf(i);
-  if (pos >= 0) gotoHit(pos);
-  else { nodes[i]?.classList.add("cur"); jumpTo(i); }
+function gotoEntry(pane, i) {
+  const pos = pane.searchHits.indexOf(i);
+  if (pos >= 0) gotoHit(pane, pos);
+  else { pane.nodes[i]?.classList.add("cur"); jumpTo(pane, i); }
 }
 
-function runSearch(q) {
-  document.querySelectorAll(".msg.hit, .msg.cur").forEach((el) => el.classList.remove("hit", "cur"));
-  clearKwMarks();
-  searchHits = [];
-  searchResults = [];
-  searchPos = -1;
-  const cnt = $("searchCount");
+function runSearch(pane, q) {
+  pane.els?.root.querySelectorAll(".msg.hit, .msg.cur").forEach((el) => el.classList.remove("hit", "cur"));   // scope 本格（跨格串台点）
+  clearKwMarks(pane);
+  pane.searchHits = [];
+  pane.searchResults = [];
+  pane.searchPos = -1;
+  const cnt = pane.els?.root?.querySelector("#searchCount");
   const needle = q.trim().toLowerCase();
-  if (!needle) { if (cnt) cnt.textContent = ""; renderSearchDrop(); return; }
-  entries.forEach((e, i) => {
+  if (!needle) { if (cnt) cnt.textContent = ""; renderSearchDrop(pane); return; }
+  pane.entries.forEach((e, i) => {
     const text = entrySearchText(e);
     if (!text.toLowerCase().includes(needle)) return;
-    searchHits.push(i);
-    nodes[i]?.classList.add("hit");
-    markKeywordsIn(nodes[i], needle);
-    for (const line of matchLines(text, needle)) searchResults.push({ i, line });
+    pane.searchHits.push(i);
+    pane.nodes[i]?.classList.add("hit");
+    markKeywordsIn(pane.nodes[i], needle);
+    for (const line of matchLines(text, needle)) pane.searchResults.push({ i, line });
   });
   if (!cnt) return;
-  if (!searchHits.length) { cnt.textContent = "无匹配"; renderSearchDrop(); return; }
-  cnt.textContent = `${searchHits.length} 处`;
-  renderSearchDrop();   // 只列结果，不跳转——跳转由点结果 / Enter / ▲▼ 触发
+  if (!pane.searchHits.length) { cnt.textContent = "无匹配"; renderSearchDrop(pane); return; }
+  cnt.textContent = `${pane.searchHits.length} 处`;
+  renderSearchDrop(pane);   // 只列结果，不跳转——跳转由点结果 / Enter / ▲▼ 触发
 }
 
 let sideSessionId = null;   // 当前侧问分身
@@ -4257,29 +4267,29 @@ function renderArchiveContent(msg) {
   out.textContent = head + (msg.lines.join("\n") || "（无匹配）");
 }
 
-function gotoHit(k) {
-  if (!searchHits.length) return;
-  searchPos = ((k % searchHits.length) + searchHits.length) % searchHits.length;
-  document.querySelectorAll(".msg.cur").forEach((el) => el.classList.remove("cur"));
-  const i = searchHits[searchPos];
-  nodes[i]?.classList.add("cur");
-  jumpTo(i);
-  const cnt = $("searchCount");
-  if (cnt) cnt.textContent = `${searchPos + 1}/${searchHits.length}`;
-  renderSearchDrop();   // 同步下拉里的当前项
+function gotoHit(pane, k) {
+  if (!pane.searchHits.length) return;
+  pane.searchPos = ((k % pane.searchHits.length) + pane.searchHits.length) % pane.searchHits.length;
+  pane.els?.root.querySelectorAll(".msg.cur").forEach((el) => el.classList.remove("cur"));
+  const i = pane.searchHits[pane.searchPos];
+  pane.nodes[i]?.classList.add("cur");
+  jumpTo(pane, i);
+  const cnt = pane.els?.root?.querySelector("#searchCount");
+  if (cnt) cnt.textContent = `${pane.searchPos + 1}/${pane.searchHits.length}`;
+  renderSearchDrop(pane);   // 同步下拉里的当前项
 }
 
-function applyUpdate(u) {
+function applyUpdate(pane, u) {
   if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") {
-    const last = entries[entries.length - 1];
-    if (last?.kind === "assistant" && streamingAssistant) { last.text += u.content.text; updateLast(); }
-    else { streamingAssistant = true; pushEntry({ kind:"assistant", text: u.content.text }); }
+    const last = pane.entries[pane.entries.length - 1];
+    if (last?.kind === "assistant" && pane.streamingAssistant) { last.text += u.content.text; updateLast(pane); }
+    else { pane.streamingAssistant = true; pushEntry(pane, { kind:"assistant", text: u.content.text }); }
   } else if (u.sessionUpdate === "agent_thought_chunk" && u.content?.type === "text") {
-    const last = entries[entries.length - 1];
-    if (last?.kind === "thought") { last.text += u.content.text; updateLast(); }
-    else pushEntry({ kind:"thought", text: u.content.text });
+    const last = pane.entries[pane.entries.length - 1];
+    if (last?.kind === "thought") { last.text += u.content.text; updateLast(pane); }
+    else pushEntry(pane, { kind:"thought", text: u.content.text });
   } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
-    streamingAssistant = false;
+    pane.streamingAssistant = false;
     const id = String(u.toolCallId ?? u.id ?? "");
     const title = formatFrontToolTitle(u);
     const rawInp = u.rawInput ?? u.input;
@@ -4287,7 +4297,7 @@ function applyUpdate(u) {
     const inpStr = rawInp ? textOfUpdate(rawInp) : "";
     const outStr = rawOut ? textOfUpdate(rawOut) : "";
 
-    const found = entries.find((e) => e.kind === "tool" && (e.toolCallId === id || (!id && e === entries[entries.length - 1])));
+    const found = pane.entries.find((e) => e.kind === "tool" && (e.toolCallId === id || (!id && e === pane.entries[pane.entries.length - 1])));
     if (found) {
       if (u.status) found.status = String(u.status);
       if (title && title !== "tool") found.title = title;
@@ -4296,10 +4306,10 @@ function applyUpdate(u) {
         if (!found.output) found.output = outStr;
         else if (!found.output.endsWith(outStr)) found.output = (found.output + "\n" + outStr).slice(-4000);
       }
-      const i = entries.indexOf(found);
-      if (nodes[i]) paint(nodes[i], found);
+      const i = pane.entries.indexOf(found);
+      if (pane.nodes[i]) paint(pane.nodes[i], found);
     } else {
-      pushEntry({
+      pushEntry(pane, {
         kind: "tool",
         toolCallId: id,
         title,
@@ -4309,30 +4319,30 @@ function applyUpdate(u) {
       });
     }
   } else if (u.sessionUpdate === "hg_noop_turn") {
-    const el = pushEntry({ kind: "error", message: u.message });
+    const el = pushEntry(pane, { kind: "error", message: u.message });
     if (el) {
       const btn = document.createElement("button");
       btn.className = "mini primary";
       btn.style.marginTop = "9px";
       btn.textContent = "在新会话里接续";
-      btn.onclick = () => openHandoffDialog(state.sessionId);
+      btn.onclick = () => openHandoffDialog(pane.sid);   // 发起格的会话（不是焦点格的）
       el.querySelector(".bubble").appendChild(document.createElement("br"));
       el.querySelector(".bubble").appendChild(btn);
     }
   } else if (u.sessionUpdate === "hg_queued") {
-    pushEntry({ kind:"log", text:`⏳ 会话启动中，这条消息已排队（第 ${u.queueLength ?? "?"} 条），就绪后自动发送` });
+    pushEntry(pane, { kind:"log", text:`⏳ 会话启动中，这条消息已排队（第 ${u.queueLength ?? "?"} 条），就绪后自动发送` });
   } else if (u.sessionUpdate === "hg_error") {
     const isProvider = /provider|upstream|rate limit|quota|APIError/i.test(String(u.message || ""));
-    const el = pushEntry({ kind:"error", message: u.message + (isProvider ? "\n\n（看起来是模型供应商侧的故障：可以在顶栏 Model 换个模型重试，或稍后再发一次）" : "") });
+    const el = pushEntry(pane, { kind:"error", message: u.message + (isProvider ? "\n\n（看起来是模型供应商侧的故障：可以在顶栏 Model 换个模型重试，或稍后再发一次）" : "") });
     if (isProvider && el) {
       const btn = document.createElement("button");
       btn.className = "mini"; btn.style.marginTop = "8px"; btn.textContent = "换个模型重试";
-      btn.onclick = () => { const s2 = $("cfg"); const sel = s2 && s2.querySelector("select"); if (sel) { const opts = [...sel.options].map(o => o.value).filter(v => v !== sel.value); if (opts.length) { sel.value = opts[0]; sel.onchange(); pushEntry({kind:"log", text:"已切到模型 " + opts[0] + "，重新发送即可"}); return; } } pushEntry({ kind:"log", text:"请在顶栏 Model 下拉里换个模型" }); };
+      btn.onclick = () => { const s2 = pane.els?.root?.querySelector("#cfg"); const sel = s2 && s2.querySelector("select"); if (sel) { const opts = [...sel.options].map(o => o.value).filter(v => v !== sel.value); if (opts.length) { sel.value = opts[0]; sel.onchange(); pushEntry(pane, {kind:"log", text:"已切到模型 " + opts[0] + "，重新发送即可"}); return; } } pushEntry(pane, { kind:"log", text:"请在顶栏 Model 下拉里换个模型" }); };
       el.querySelector(".bubble").appendChild(document.createElement("br"));
       el.querySelector(".bubble").appendChild(btn);
     }
   } else if (showLog) {
-    pushEntry({ kind:"log", text: `[${u.sessionUpdate}] ${JSON.stringify(u).slice(0, 300)}` });
+    pushEntry(pane, { kind:"log", text: `[${u.sessionUpdate}] ${JSON.stringify(u).slice(0, 300)}` });
   }
 }
 
@@ -4340,61 +4350,65 @@ function applyUpdate(u) {
    发送 / 附件
    ===================================================================== */
 const MAX_ATTACH = 5 * 1024 * 1024;
-function renderChips() {
-  const box = $("chips");
+let fileInputPane = null;   // #fileInput 是全局隐藏 input：点击附件按钮时记录发起格，onchange 异步期间焦点/格可变
+function renderChips(pane) {
+  const box = pane.els?.chips;
   if (!box) return;
   box.innerHTML = "";
-  pendingFiles.forEach((f, i) => {
+  pane.files.forEach((f, i) => {
     const el = document.createElement("span");
     el.className = "chip";
     el.innerHTML = (f.mimeType.startsWith("image/") ? `<img src="data:${f.mimeType};base64,${f.data}" alt="">` : "") + `<span>${esc(f.name)}</span>`;
     const x = document.createElement("button"); x.textContent = "✕"; x.className = "ghost"; x.style.border = "none"; x.style.padding = "0 2px";
-    x.onclick = () => { pendingFiles.splice(i, 1); renderChips(); };
+    x.onclick = () => { pane.files.splice(i, 1); renderChips(pane); };
     el.appendChild(x); box.appendChild(el);
   });
 }
 $("fileInput").onchange = async (ev) => {
+  const pane = fileInputPane;   // 发起格快照：base64 异步循环期间焦点/格可变，绝不能实时读 activePane
+  if (!pane) { ev.target.value = ""; return; }
   for (const file of ev.target.files || []) {
     if (file.size > MAX_ATTACH) { alert(`${file.name} 超过 5MB，暂不支持`); continue; }
     const ok = file.type.startsWith("image/") || file.type.startsWith("text/") || file.type === "application/json";
     if (!ok) { alert(`${file.name}: 目前只支持图片与文本附件`); continue; }
     const buf = new Uint8Array(await file.arrayBuffer());
     let bin = ""; for (const b of buf) bin += String.fromCharCode(b);
-    pendingFiles.push({ name: file.name, mimeType: file.type || "application/octet-stream", data: btoa(bin) });
+    pane.files.push({ name: file.name, mimeType: file.type || "application/octet-stream", data: btoa(bin) });
   }
   ev.target.value = "";
-  renderChips();
+  renderChips(pane);
 };
 
-function doSend() {
-  const inp = $("input");
+function doSend(pane) {
+  const inp = pane.els?.input;
   const text = (inp?.value || "").trim();
-  if (!text && !pendingFiles.length) return;
+  if (!text && !pane.files.length) return;
   // HG 本地命令拦截：ACP 的 prompt 只是普通文本，CLI 内建斜杠命令透传不到 harness，
   // 已知命令本地消化（未知 /xxx 原样发出——自定义命令仍走模型层）
-  if (/^\/(workflows|wf)\s*$/i.test(text) && !pendingFiles.length) {
+  if (/^\/(workflows|wf)\s*$/i.test(text) && !pane.files.length) {
     inp.value = "";
     openWfPanel();
     return;
   }
-  const s = sessions.get(state.sessionId);
+  const s = sessions.get(pane.sid);
   if (!s) return;
   if (!s.live) {
     if (s.resumable === false) { alert("该会话不可恢复"); return; }
     // 未在运行但可恢复：允许直接发送，后端收到 prompt 会自动拉起会话并排队发出
   }
   inp.value = "";
-  drafts.delete(state.sessionId);
-  streamingAssistant = false;
-  const atts = pendingFiles.slice();
+  drafts.delete(pane.sid);
+  pane.streamingAssistant = false;
+  const atts = pane.files.slice();
   if (!s.title) { s.title = text.slice(0, 40); renderTree(); }
-  pushEntry({ kind:"user", text, attachments: atts.map((a) => ({ name:a.name, mimeType:a.mimeType })) });
-  const sentOk = send({ type:"prompt", sessionId: state.sessionId, text, attachments: atts });
-  trackPrompt(state.sessionId, text, atts, sentOk);   // 送达确认：pong 回来才移出待确认
+  pushEntry(pane, { kind:"user", text, attachments: atts.map((a) => ({ name:a.name, mimeType:a.mimeType })) });
+  const sentOk = send({ type:"prompt", sessionId: pane.sid, text, attachments: atts });
+  trackPrompt(pane.sid, text, atts, sentOk);   // 送达确认：pong 回来才移出待确认
   if (!sentOk) {
-    pushEntry({ kind:"error", message:"连接断开，这条消息已排队，重连后自动补发" });
+    pushEntry(pane, { kind:"error", message:"连接断开，这条消息已排队，重连后自动补发" });
   }
-  pendingFiles = []; renderChips();
+  pane.files = [];
+  renderChips(pane);
 }
 
 /* =====================================================================
@@ -5214,8 +5228,8 @@ function segmentSession(ents) {
   return segs.filter((g) => g.turns >= 2 || g.head.length >= 30 || g.taskish).slice(-4).reverse();
 }
 
-function startSchedFromSession(s) {
-  const segs = segmentSession(entries);
+function startSchedFromSession(pane, s) {
+  const segs = segmentSession(pane.entries);
   if (!segs.length) {
     // 本地规则切不出段：会话在运行就自动交给 AI 精切兜底，别硬拒绝
     if (s.live) {
