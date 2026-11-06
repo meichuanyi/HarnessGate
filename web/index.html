@@ -340,6 +340,11 @@
   .pickRow:hover { border-color:var(--acc, #4f8cc9); background:rgba(79,140,201,.08); }
   .pickRow .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
   .pickRow .m { color:var(--dim); font-size:11px; flex-shrink:0; }
+  /* 树行 hover 出 ⧉（在分屏格打开，桌面端） */
+  .sRow .rowSplit { opacity:0; border:none; background:none; color:var(--dim); cursor:pointer; padding:0 3px; font-size:12px; flex:none; }
+  .sRow:hover .rowSplit { opacity:.75; }
+  .sRow .rowSplit:hover { color:var(--accent); opacity:1; }
+  html.is-mobile .sRow .rowSplit { display:none; }
   /* 格内聊天件镜像（原 id 选择器的类版本） */
   .hg-stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
   .chatHead { padding:10px 22px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; color:var(--dim); }
@@ -1912,6 +1917,7 @@ function renderTree() {
         <span class="tag" title="${esc(harnesses.get(s.harnessId)?.label || s.harnessId)}" style="opacity:.75">${esc(s.harnessId)}</span>
         ${(s.tags || []).slice(0, 2).map((t) => `<span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}
         <span class="t" title="${esc(s.cwd)}">${esc(s.title || (s.cwd || "").split("/").pop() || "#" + s.id)}</span>
+        <button class="rowSplit" data-split="${s.id}" title="在分屏格打开（桌面端）">⧉</button>
       </div>`;
     const byCwd = new Map();
     for (const s of sessions.values()) {
@@ -2014,6 +2020,7 @@ function renderTree() {
                   ${s.starred ? '<span style="color:#f5b942" title="已收藏">★</span>' : ""}
                   ${(s.tags || []).slice(0, 2).map((t) => `<span class="tag" data-tag="${esc(t)}" title="点按筛选此标签">${esc(t)}</span>`).join("")}
                   <span class="t" title="${esc(s.cwd)}">${esc(s.title || s.cwd.split("/").pop() || "#" + s.id)}</span>
+                  <button class="rowSplit" data-split="${s.id}" title="在分屏格打开（桌面端）">⧉</button>
                 </div>`;
             }).join("")}
           </div>` : ""}
@@ -2072,7 +2079,9 @@ function renderTree() {
     };
   });
   tree.querySelectorAll(".sRow").forEach((el) => {
-    el.onclick = () => {
+    el.onclick = (ev) => {
+      const sp = ev.target.closest?.("[data-split]");
+      if (sp) { ev.stopPropagation(); openInPane(sp.dataset.split); return; }   // ⧉ 在分屏格打开
       openSession(el.dataset.sid);
       closeSide();
     };
@@ -2311,6 +2320,8 @@ function renderSessionList() {
       };
     });
     el.onclick = (ev) => {
+      const sp = ev.target.closest?.("[data-split]");
+      if (sp) { ev.stopPropagation(); openInPane(sp.dataset.split); return; }   // ⧉ 在分屏格打开
       const tagEl = ev.target.closest?.(".tag");
       if (tagEl) {
         ev.stopPropagation();
@@ -2854,6 +2865,7 @@ function makePaneDom() {
 /** 建新格并追加到 #paneRoot 末尾（grip 永远只插在两格之间）。上限拒绝 + toast。
  *  返回新格（sid 仍空，装载由步 2 openSessionInto 接上）；失败返回 null。 */
 function mountPane() {
+  if (document.documentElement.classList.contains("is-mobile")) { showToast("移动端为单格模式", 2000); return null; }   // 步 6：JS 事实源（CSS 只是兜底）
   if (panes.length >= PANE_MAX) { showToast(`最多同时 ${PANE_MAX} 个分屏格`, 2000); return null; }
   const root = $("paneRoot");
   if (!root) return null;
@@ -3002,6 +3014,23 @@ function restorePanesLayout() {
   // 焦点：hash 直达的格优先（用户显式意图，mountPane/openSessionInto 已聚焦），否则恢复保存的焦点
   const f = paneOf(saved.sids[Math.min(saved.focus || 0, saved.sids.length - 1)]);
   if (f && (!activePane || !activePane.sid)) focusPane(f);
+}
+
+/** 步 6：在分屏格打开（树行 ⧉ / picker 外的入口）——已有空槽优先复用，否则满员前补新格。
+ *  同会话已在某格 → 跳过去聚焦；焦点格正开着会话则不动它（VS Code split 心智）。 */
+function openInPane(sid) {
+  const ex = paneOf(sid);
+  if (ex) { focusPane(ex); state.view = "chat"; state.roomId = null; render(); return; }
+  if (!sessions.get(sid)) { showToast("会话不存在或已被删除", 2000); return; }
+  let target = panes.find((p) => !p.sid) || null;   // 空槽优先
+  if (!target) {
+    if (panes.length >= PANE_MAX) { showToast(`最多同时 ${PANE_MAX} 个分屏格`, 2000); return; }
+    target = mountPane();
+  }
+  if (!target) return;
+  openSessionInto(target, sid);
+  state.view = "chat"; state.roomId = null;
+  render();
 }
 
 /** 格头条刷新：状态点（灰=空闲/绿=运行/蓝呼吸=回合中）+ 标题 + 待审批徽章 */
