@@ -335,6 +335,11 @@
   .panePick { display:flex; flex-direction:column; flex:1; min-height:0; }
   .panePick .hg-pickInput { margin:10px 12px 6px; }
   .panePick .hg-pickList { flex:1; overflow:auto; padding:0 8px 12px; }
+  .pickRow { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--line);
+    border-radius:8px; margin-bottom:6px; cursor:pointer; }
+  .pickRow:hover { border-color:var(--acc, #4f8cc9); background:rgba(79,140,201,.08); }
+  .pickRow .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+  .pickRow .m { color:var(--dim); font-size:11px; flex-shrink:0; }
   /* 格内聊天件镜像（原 id 选择器的类版本） */
   .hg-stream { flex:1; overflow:auto; padding:18px 22px; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
   .chatHead { padding:10px 22px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; color:var(--dim); }
@@ -1167,6 +1172,7 @@ function flushPending() {
   savePending();
 }
 connect();
+bindPaneRoot();   // 步 4：格头 ⧉/✕ 按钮委托（paneRoot 挂一次，格增删都走它）
 
 
 /* =====================================================================
@@ -1530,7 +1536,7 @@ function handleServer(msg) {
       renderGearPanel();
       break;
     case "workflow-progress":
-      if (msg.sessionId !== state.sessionId) break;   // 切换会话后迟到的旧应答
+      if (!wfSid || msg.sessionId !== wfSid) break;   // 快照归属之外的迟到应答（面板没开或已换会话）
       wfRuns = msg.runs || [];
       renderWfPanel();
       break;
@@ -2698,6 +2704,8 @@ async function endCall() {
  *  数据装载逻辑在 openSessionInto；state.sessionId 镜像由 focusPane 维护。 */
 function openSession(id, push = true) {
   state.view = "chat"; state.roomId = null;
+  const existing = paneOf(id);   // 步 4：同会话至多一格——已在别的格开着就跳过去聚焦，不重开
+  if (existing) { focusPane(existing); render(); if (push) pushNav(); return; }
   if (!panes.length) mountPane();
   openSessionInto(activePane, id);
   render();
@@ -2737,7 +2745,7 @@ function openSessionInto(pane, id) {
   if (cached && cached.length) {
     renderAll(pane);      // 秒显：立即渲染上次内容（滚到底），服务端最新到达后整体覆盖
   }
-  send({ type: "transcript", sessionId: id, limit: TRANSCRIPT_WINDOW });
+  paneSendTranscript(pane, { sessionId: id, limit: TRANSCRIPT_WINDOW });
   if (!s.live && s.resumable) {
     pushEntry(pane, { kind: "log", text: "会话已归档，正在自动恢复…" });
     send({ type: "resume", sessionId: id });
@@ -2750,6 +2758,9 @@ function openSessionInto(pane, id) {
 /** transcript 回包 → 落格（数据面）：写游标/缓存、前拼（加载更早）或全量重建。
  *  步 3 加 transBusy 单飞串行化；当前靠同格交互串行 + TCP 有序（与旧实现等价）。 */
 function paneApplyTranscript(pane, msg) {
+  // 步 3：切会话后的迟到回包直接丢弃（不写缓存不清 loadingEarlier 状态——那属于新会话的格状态）
+  if (msg.sessionId !== pane.sid) { pane.transBusy = false; return; }
+  pane.transBusy = false;
   const incoming = msg.entries || [];
   pane.transcriptTotal = msg.total ?? incoming.length;
   pane.transcriptStart = msg.start ?? 0;
@@ -2770,6 +2781,12 @@ function paneApplyTranscript(pane, msg) {
     renderAll(pane);
     transcriptSeen.add(msg.sessionId);   // 本页已见过该会话的权威台账（空台账也可信）
     flushSoon();   // 台账到位：查重并补发未确认消息
+  }
+  // 排队的下一个请求（同格串行：只留最新一份）
+  if (pane.transQueued) {
+    const q = pane.transQueued;
+    pane.transQueued = null;
+    paneSendTranscript(pane, q);
   }
 }
 
@@ -2851,6 +2868,8 @@ function mountPane() {
   panes.push(pane);
   capturePaneEls(pane);   // 缓存 bar 三件（stream 等格内件步 2 渲染后重捕）
   focusPane(pane);
+  renderPaneChat(pane);   // 空槽 → picker 分支（openSession 路径随后装载会覆盖，毫秒级无害）
+  renderPaneBar(pane);
   return pane;
 }
 
@@ -2906,6 +2925,21 @@ function capturePaneEls(pane) {
   };
 }
 
+/** 步 4：格头按钮事件委托（⧉ 再分一格 / ✕ 关此格）——makePaneDom 的 data-act 在此接线。
+ *  委托挂 paneRoot 一次，格 DOM 常驻增删都走它，无需逐格绑。 */
+function bindPaneRoot() {
+  const root = $("paneRoot");
+  if (!root) return;
+  root.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-act]");
+    if (!btn) return;
+    const pane = panes.find((p) => p.els?.root === btn.closest(".pane"));
+    if (!pane) return;
+    if (btn.dataset.act === "close") closePane(pane);
+    else if (btn.dataset.act === "split") mountPane();   // 新格为空槽，picker 接力选会话
+  });
+}
+
 /** 格头条刷新：状态点（灰=空闲/绿=运行/蓝呼吸=回合中）+ 标题 + 待审批徽章 */
 function renderPaneBar(pane) {
   const els = pane.els;
@@ -2938,6 +2972,45 @@ function savePanesLayout() {
 function renderPaneChat(pane) {
   const body = pane.els?.body;
   if (!body) return;
+  // 步 4：空槽 picker——⧉ 分出的空格先选会话（VS Code split 心智）；选完走 openSessionInto 正常装载
+  if (!pane.sid) {
+    body.innerHTML = `
+    <div class="panePick">
+      <input type="text" class="hg-pickInput" placeholder="🔍 过滤会话（标题 / harness / 目录 / 标签）…" autocomplete="off" />
+      <div class="hg-pickList"></div>
+      <div class="meta2" style="margin:6px 12px 10px">选中即装载到本格；或从左侧会话树点击（装载到焦点格）</div>
+    </div>`;
+    const input = body.querySelector(".hg-pickInput");
+    const list = body.querySelector(".hg-pickList");
+    const renderPick = () => {
+      const q = (input.value || "").trim().toLowerCase();
+      const items = [...sessions.values()]
+        .filter((s) => !q || [s.title, s.harnessLabel, s.cwd, ...(s.tags || [])]
+          .some((x) => String(x ?? "").toLowerCase().includes(q)))
+        .sort((a, b) => String(b.lastActiveAt ?? "").localeCompare(String(a.lastActiveAt ?? "")))
+        .slice(0, 30);
+      list.innerHTML = items.length
+        ? items.map((s) => `
+          <div class="pickRow" data-sid="${esc(s.id)}">
+            <span class="dot ${s.inTurn ? "turn" : s.live ? "on" : ""}"></span>
+            <span class="t">${esc(s.title || "(无标题会话)")}</span>
+            <span class="m">${esc(s.harnessLabel || s.harnessId || "")}</span>
+          </div>`).join("")
+        : `<div class="empty" style="padding:24px">${q ? `没有匹配「${esc(q)}」的会话` : "还没有会话"}</div>`;
+    };
+    input.oninput = renderPick;
+    list.onclick = (ev) => {
+      const row = ev.target.closest("[data-sid]");
+      if (!row) return;
+      const sid = row.dataset.sid;
+      const owner = paneOf(sid);   // 同会话至多一格：已被他格持有就跳过去
+      if (owner && owner !== pane) { focusPane(owner); showToast("该会话已在另一个分屏格中", 2000); return; }
+      openSessionInto(pane, sid);
+    };
+    renderPick();
+    setTimeout(() => input.focus(), 60);
+    return;
+  }
   body.innerHTML = `
     <div id="chatWrap">
       <div class="chatHead" id="chatHead"></div>
@@ -3838,7 +3911,17 @@ function paint(el, e) {
 function requestEarlier(pane) {
   if (pane.loadingEarlier || !pane.sid || !pane.entries.length) return;
   pane.loadingEarlier = true;
-  send({ type: "transcript", sessionId: pane.sid, limit: TRANSCRIPT_WINDOW, before: pane.transcriptStart });
+  paneSendTranscript(pane, { sessionId: pane.sid, limit: TRANSCRIPT_WINDOW, before: pane.transcriptStart });
+}
+
+/** transcript 按格单飞（步 3）：同格同时至多一个在途请求，期间新请求排队只留最新；
+ *  回包无 reqId，多请求在途无法配对——串行化后回包即唯一在途者，另以 sid 失配丢弃兜底
+ *  （切会话后旧会话的迟到回包不得污染新格内容）。 */
+function paneSendTranscript(pane, req) {
+  if (pane.transBusy) { pane.transQueued = req; return; }
+  pane.transBusy = true;
+  pane.transKind = req.before != null ? "earlier" : "full";
+  send({ type: "transcript", ...req });
 }
 
 function renderAll(pane, restoreScroll = false) {
@@ -4555,26 +4638,28 @@ function renderGearPanel() {
    ===================================================================== */
 let wfRuns = [];
 let wfTimer = null;
+let wfSid = null;        // 步 3 快照化：面板绑定打开时的会话——多格下切焦点格不改变面板归属（与 gearSid 同款）
 function openWfPanel(push = true) {
   const p = $("wfPanel");
   if (!p) return;
   if (!state.sessionId) { showToast("先选一个会话", 2000); return; }
   p.hidden = false;
   if (push) pushNav("wfPanel");
+  wfSid = state.sessionId;   // 快照：面板此后只属于这个会话，切焦点格/关格都不漂移
   wfRuns = [];
   renderWfPanel();
-  send({ type: "workflow-progress", sessionId: state.sessionId });
+  send({ type: "workflow-progress", sessionId: wfSid });
   clearInterval(wfTimer);
   wfTimer = setInterval(() => {
     const el = $("wfPanel");
     if (!el || el.hidden) { clearInterval(wfTimer); wfTimer = null; return; }
-    send({ type: "workflow-progress", sessionId: state.sessionId });
+    send({ type: "workflow-progress", sessionId: wfSid });
   }, 8000);
 }
 function renderWfPanel() {
   const p = $("wfPanel");
   if (!p || p.hidden) return;
-  const s = sessions.get(state.sessionId);
+  const s = sessions.get(wfSid);
   const hd = `<div class="hd"><b>⚡ 后台工作流</b><span class="meta2">${esc(s?.title || "")}</span><span style="flex:1"></span><button class="mini ghost" onclick="document.getElementById('wfPanel').hidden=true">关闭</button></div>`;
   if (!wfRuns.length) {
     p.innerHTML = `${hd}<div class="empty"><div class="big">🫧</div>没有检测到工作流运行记录<div class="meta2" style="margin-top:6px;max-width:420px">Claude Code 会话里让它「用工作流/多 agent 并行跑」后，这里实时显示各子 agent 的进度。工作流超过 30 分钟时注意：会话空闲回收可能把它杀掉。</div></div>`;
