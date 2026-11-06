@@ -697,11 +697,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const allSessions = (client.hello.sessions as Array<Record<string, unknown>>) || [];
       const meta = allSessions.find((s) => s.id === sid);
 
-      const transcript = (result.transcript as Array<Record<string, unknown>>) || [];
+      // 服务端 transcript 响应字段是 entries（index.ts case "transcript"），条目用 kind/ts
+      // （types.ts TranscriptEntry）；这里做字段兼容，别再读不存在的 result.transcript。
+      const transcript = ((result.entries ?? result.transcript) as Array<Record<string, unknown>>) || [];
       const slicedTranscript = transcript.slice(-tailLines).map((t) => ({
-        role: t.role,
+        kind: t.kind ?? t.role,
         text: typeof t.text === "string" ? t.text.slice(0, 1000) : t.text,
-        timestamp: t.timestamp,
+        timestamp: t.ts ?? t.timestamp,
         toolCalls: t.toolCalls,
       }));
 
