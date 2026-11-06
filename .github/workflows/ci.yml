@@ -20,7 +20,12 @@ jobs:
         run: npm test
 
   release:
-    # 打 v* tag 时:打包源码 tarball 并发布 Gitea Release
+    # 打 v* tag 时:打包源码 tarball 并发布 Gitea Release。
+    # 发版分工（2026-11-06 收敛）：源码 tarball 只在这里发、APK 只在 flutter-apk.yml 发——
+    # 此前 ci.yml 的 apk job 与 flutter-apk.yml 的 tag 路径是两条并行发 APK 的路，同一 Release
+    # 有创建竞争；且 APP 节奏独立于 server 后 tag 匹配 pubspec 而非 package.json 会让本 job 硬失败。
+    # 现在：tag==package.json → 同步发版（发 tarball）；tag==pubspec → APP-only 发版（跳过 tarball，
+    # APK 由 flutter-apk.yml 发）；都不匹配 → 失败（乱打的 tag）。
     if: startsWith(github.ref, 'refs/tags/v')
     needs: check
     runs-on: dcal
@@ -28,70 +33,29 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: 校验 tag 与 package.json 版本一致
+      - name: 判定发版类型
+        id: kind
         run: |
           PKG_VER="v$(node -p "require('./package.json').version")"
-          if [ "$PKG_VER" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} 与 package.json 版本 $PKG_VER 不一致"; exit 1
+          if [ "$PKG_VER" = "${GITHUB_REF_NAME}" ]; then
+            echo "kind=full" >> "$GITHUB_OUTPUT"
+            echo "同步发版: ${GITHUB_REF_NAME}（源码 tarball + APK[flutter-apk.yml]）"
+          else
+            PUB_VER="v$(sed -n 's/^version:[[:space:]]*//p' app/pubspec.yaml | head -1 | cut -d+ -f1)"
+            if [ "$PUB_VER" = "${GITHUB_REF_NAME}" ]; then
+              echo "::notice::APP-only 发版（tag 匹配 pubspec=${PUB_VER}，package.json=${PKG_VER}）——跳过源码 tarball"
+              echo "kind=app-only" >> "$GITHUB_OUTPUT"
+            else
+              echo "tag ${GITHUB_REF_NAME} 与 package.json(${PKG_VER})、pubspec(${PUB_VER}) 都不一致"; exit 1
+            fi
           fi
       - name: 打包 tarball（git archive，解包后 npm ci && systemctl start harnessgate）
+        if: steps.kind.outputs.kind == 'full'
         run: |
           mkdir -p dist
           git archive --format=tar.gz --prefix=harnessgate-${GITHUB_REF_NAME}/ -o dist/harnessgate-${GITHUB_REF_NAME}.tar.gz HEAD
       - name: 发布 Release 并附 tarball
+        if: steps.kind.outputs.kind == 'full'
         env:
           RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/ci-release-attach.sh dist/*.tar.gz
-
-  apk:
-    # 打 v* tag 时：构建 Android APK 附到 Release（APP 内自更新就是下载这个）。
-    # 在 release job 之后跑：先建好 Release 再追加 APK，避免并行创建竞争。
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, release]
-    runs-on: dcal
-    permissions:
-      contents: write
-    env:
-      # 同 flutter-apk.yml:dcal runner 即本机,宿主 SDK 直接用,与本地构建同工具链
-      ANDROID_HOME: /opt/android-sdk
-      ANDROID_SDK_ROOT: /opt/android-sdk
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # versionCode = git 提交数，必须全量历史
-      - name: 校验 tag 与 app/pubspec.yaml 版本一致
-        # APP 自更新拿 Release tag 和 APK 的 versionName（来自 pubspec）比较；
-        # 二者不一致会「下载 N、装完仍是 N-1」→ 永远提示有更新（v0.6.29 / v0.6.31 踩过）。
-        run: |
-          PUB_VER="v$(sed -n 's/^version:[[:space:]]*//p' app/pubspec.yaml | head -1 | cut -d+ -f1)"
-          if [ "$PUB_VER" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} 与 app/pubspec.yaml 版本 ${PUB_VER} 不一致：升版本号后再打 tag"; exit 1
-          fi
-      - name: 接入宿主 flutter 工具链并自检
-        run: |
-          echo "/opt/flutter/bin" >> "$GITHUB_PATH"
-          /opt/flutter/bin/flutter --version | head -2
-          java -version 2>&1 | head -1
-      - name: 依赖与分析/测试
-        working-directory: app
-        run: |
-          flutter pub get
-          flutter analyze
-          flutter test
-      - name: 注入固定签名密钥（与本地同一份，保证版本间签名一致可覆盖安装）
-        env:
-          HG_KEYSTORE_BASE64: ${{ secrets.HG_KEYSTORE_BASE64 }}
-          HG_KEYSTORE_PROPERTIES: ${{ secrets.HG_KEYSTORE_PROPERTIES }}
-        run: |
-          echo "$HG_KEYSTORE_BASE64" | base64 -d > app/android/app/harnessgate-release.jks
-          printf '%s' "$HG_KEYSTORE_PROPERTIES" > app/android/app/key.properties
-      - name: 构建 Release APK
-        working-directory: app
-        run: flutter build apk --release
-      - name: 重命名并附到 Release
-        env:
-          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p dist
-          mv app/build/app/outputs/flutter-apk/app-release.apk dist/harnessgate-${GITHUB_REF_NAME}-android.apk
-          bash scripts/ci-release-attach.sh dist/*

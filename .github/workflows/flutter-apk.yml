@@ -43,6 +43,9 @@ jobs:
           printf '%s' "$HG_KEYSTORE_PROPERTIES" > app/key.properties
       - run: flutter analyze
         working-directory: app
+      # test 原在 ci.yml 的 apk job（2026-11-06 发版分工收敛时移除），随 APK 构建线走
+      - run: flutter test
+        working-directory: app
       - run: flutter build apk --release
         working-directory: app
       # tag 构建直接发 Release；main 构建保留 artifact 供排查
