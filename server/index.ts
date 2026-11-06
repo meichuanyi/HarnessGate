@@ -189,11 +189,115 @@ setTimeout(() => void (async () => {
   console.log(`[release-vscode] 预取${ok ? "完成" : "失败"}: ${info.name}`);
 })(), 90_000).unref?.();
 
-/* ---------- APP 更新中转：手机直连 GitHub 慢，服务器（gh 有网络）下载一次并缓存 ----------
-   GET /release-apk[?tag=vX.Y.Z]（默认 latest）→ 找 Release 里的 *-android.apk */
+/* ---------- APP 更新中转：更新源已迁 NAS alist（2026-11-06），GitHub gh 降为兜底 ----------
+   GET /release-apk[?tag=vX.Y.Z]（默认 latest）→ APK 落缓存后发给手机。
+   背景：meichuanyi GitHub 账号 2026-10-24 被风控（匿名全 404），gh 凭证通道成了单点。
+   镜像 engram/anka 的模式：alist /shares/harnessgate/latest.json 清单
+   （{version,apk,sha256,size,notes}，guest 可读）+ APK 同目录；服务器取清单、
+   下载（断点续传）→ size+sha256 校验 → 落缓存。alist 不可达或请求老 tag 时回退 gh
+   （GitHub 解封后自动恢复，历史 tag 也只有 gh 有）。HG_ALIST_URL 缺省本机 NAS，置 off 关闭。 */
 const APK_CACHE_DIR = join(DATA_DIR, "apk-cache");
 mkdirSync(APK_CACHE_DIR, { recursive: true });
 const apkDlLocks = new Map<string, Promise<boolean>>();
+
+const ALIST_BASE = (() => {
+  const u = (process.env.HG_ALIST_URL ?? "http://192.168.6.108:5244").trim().replace(/\/+$/, "");
+  return !u || u === "off" ? "" : u;
+})();
+const ALIST_APK_DIR = (process.env.HG_ALIST_APK_DIR ?? "/shares/harnessgate").replace(/\/+$/, "");
+
+/** 统一形状：alist 与 gh 两条源都归一到这里。 */
+type ApkRelease = {
+  tag: string;
+  apkName: string;
+  apkSize: number;
+  notes?: string;
+  source: "alist" | "gh";
+  alistSha256?: string; // alist 清单校验和（缓存命中/下载落盘前都验）
+  ghAssetId?: number;   // gh 路径的资产 id（认证下载用）
+};
+
+function sha256File(p: string): string {
+  return createHash("sha256").update(readFileSync(p)).digest("hex");
+}
+
+/** alist 清单：GET /p<dir>/latest.json（/p 代理流，guest 可读免签名）。失败返回 null 交调用方回退 gh。 */
+function alistManifest(): Promise<{ version: string; apk: string; sha256?: string; size?: number; notes?: string } | null> {
+  if (!ALIST_BASE) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const child = spawn("curl", ["-sSLf", "-m", "30", `${ALIST_BASE}/p${ALIST_APK_DIR}/latest.json`]);
+    let out = "";
+    child.stdout.on("data", (c) => { out += c; });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) { resolve(null); return; }
+      try {
+        const m = JSON.parse(out) as { version?: string; apk?: string; sha256?: string; size?: number; notes?: string };
+        resolve(m.version && m.apk ? { version: m.version, apk: m.apk, sha256: m.sha256, size: m.size, notes: m.notes } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function fromManifest(m: NonNullable<Awaited<ReturnType<typeof alistManifest>>>): ApkRelease {
+  const version = m.version.replace(/^v/, "");
+  return {
+    tag: `v${version}`,
+    apkName: m.apk,
+    apkSize: m.size ?? 0,
+    notes: m.notes,
+    source: "alist",
+    alistSha256: m.sha256,
+  };
+}
+
+/** 最新 APP Release：alist 清单优先；缺失/没升级过清单时回退 gh。
+ *  gh 路径不取 GitHub「Latest」标记：vscode-* Release 曾占据 Latest，导致 APP 检查更新误判
+ *  「已是最新」、中转发错 APK——按 tag 前缀 ^v数字 过滤兜底（插件发布务必标 prerelease）。 */
+function latestAppRelease(): Promise<ApkRelease | null> {
+  return (async () => {
+    const m = await alistManifest();
+    if (m) return fromManifest(m);
+    const gh = await ghLatestAppRelease();
+    return gh ? { tag: gh.tag, apkName: gh.apkName, apkSize: gh.apkSize, source: "gh", ghAssetId: gh.apkId } : null;
+  })();
+}
+
+/** 指定 tag：alist 只有 latest 清单——tag 与清单一致才走 alist，否则回退 gh（老 tag 只有 gh 有）。 */
+function releaseApkByTag(tag: string): Promise<ApkRelease | null> {
+  return (async () => {
+    if (!tag) return latestAppRelease();
+    const m = await alistManifest();
+    if (m && `v${m.version.replace(/^v/, "")}` === tag) return fromManifest(m);
+    const gh = await ghReleaseApk(tag);
+    return gh ? { tag: gh.tag, apkName: gh.apkName, apkSize: gh.apkSize, source: "gh", ghAssetId: gh.apkId } : null;
+  })();
+}
+
+/** 缓存命中校验（size + alist 路径加验 sha256）；不命中则按源路由下载（并发共用一次下载）。 */
+async function ensureApkCached(info: ApkRelease): Promise<boolean> {
+  const file = join(APK_CACHE_DIR, info.apkName);
+  const valid = (p: string): boolean => {
+    try {
+      if (!existsSync(p)) return false;
+      if (info.apkSize && statSync(p).size !== info.apkSize) return false;
+      if (info.source === "alist" && info.alistSha256 && sha256File(p) !== info.alistSha256) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (valid(file)) return true;
+  const job = apkDlLocks.get(info.tag) ?? (info.source === "alist"
+    ? alistDownloadApk(info.apkName, info.alistSha256 ?? "", info.apkSize)
+    : ghDownloadApk(info.ghAssetId ?? 0, info.apkName));
+  apkDlLocks.set(info.tag, job);
+  const ok = await job;
+  apkDlLocks.delete(info.tag);
+  return ok && valid(file);
+}
 
 /** 最新 APP Release（tag 以 v+数字 开头，排除 vscode-* 等插件发布），含 -android.apk 产物。
  *  不取 GitHub「Latest」标记：vscode-* Release 曾占据 Latest，导致 APP 检查更新误判「已是最新」、
@@ -259,19 +363,14 @@ function ghReleaseApk(tag: string): Promise<{ tag: string; apkName: string; apkS
 }
 
 /** 后台预取 latest APK 到缓存：新版本发布后用户点「更新」大概率直接命中缓存，
- *  不用现场等服务器从 GitHub 拉（首次可能很慢）。启动后错峰预取 + check-update 发现有更新时预取。 */
+ *  不用现场等服务器从 alist/gh 拉（首次可能很慢）。启动后错峰预取。 */
 function prefetchLatestApk(): void {
   void (async () => {
-    const info = await ghReleaseApk("");
+    const info = await releaseApkByTag("");
     if (!info) return;
-    const file = join(APK_CACHE_DIR, info.apkName);
-    if (existsSync(file) && statSync(file).size === info.apkSize) return; // 已缓存
-    console.log(`[release-apk] 预取 ${info.apkName}（后台下载进缓存）`);
-    const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.apkId, info.apkName);
-    apkDlLocks.set(info.tag, job);
-    const ok = await job;
-    apkDlLocks.delete(info.tag);
-    console.log(`[release-apk] 预取${ok ? "完成" : "失败"}: ${info.apkName}`);
+    const ok = await ensureApkCached(info); // 已缓存则静默返回；否则内部完成下载
+    if (ok) return;
+    console.log(`[release-apk] 预取失败: ${info.apkName}（源=${info.source}）`);
   })();
 }
 setTimeout(() => prefetchLatestApk(), 60_000).unref?.();
@@ -318,6 +417,58 @@ async function ghDownloadApk(assetId: number, name: string): Promise<boolean> {
   return run(true).then((ok) => {
     if (ok) return true;
     console.log(`[release-apk] 续传失败，清 .tmp 从头重试: ${name}`);
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {}
+    return run(false);
+  });
+}
+
+/** alist 下载：/d<dir>/<name> 302 直链（guest 可读，实测 Range 206 支持续传），内网 NAS 秒拉。
+ *  落缓存前 size+sha256 双校验（清单会随新版本刷新，防同名旧文件/半截文件冒充新版本）。 */
+function alistDownloadApk(name: string, expectSha: string, expectSize: number): Promise<boolean> {
+  const dest = join(APK_CACHE_DIR, name);
+  const tmp = `${dest}.tmp`;
+  const url = `${ALIST_BASE}/d${ALIST_APK_DIR}/${encodeURIComponent(name)}`;
+  const run = (resume: boolean): Promise<boolean> =>
+    new Promise((resolve) => {
+      const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
+      if (resume) args.unshift("-C", "-");
+      const child = spawn("curl", args);
+      let err = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 3_600_000);
+      child.stderr.on("data", (c) => { err += c; });
+      child.on("error", () => { clearTimeout(timer); resolve(false); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.log(`[release-apk] alist curl 下载失败(resume=${resume}): ${err.slice(0, 200)}`);
+          resolve(false);
+          return;
+        }
+        try {
+          const size = statSync(tmp).size;
+          if (expectSize && size !== expectSize) {
+            console.log(`[release-apk] alist 大小不符（${size} ≠ ${expectSize}），弃用`);
+            resolve(false);
+            return;
+          }
+          if (expectSha && sha256File(tmp) !== expectSha) {
+            console.log("[release-apk] alist sha256 校验不符，弃用并清 .tmp");
+            try { unlinkSync(tmp); } catch {}
+            resolve(false);
+            return;
+          }
+          renameSync(tmp, dest);
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+  return run(true).then((ok) => {
+    if (ok) return true;
+    console.log(`[release-apk] alist 续传失败，清 .tmp 从头重试: ${name}`);
     try {
       if (existsSync(tmp)) unlinkSync(tmp);
     } catch {}
@@ -912,17 +1063,17 @@ const http = createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/release-apk-meta") {
-    // APP 检查更新的中转元数据端点（update.dart 回退通道）。私有仓库时代 APP 侧就设计好了，
-    // 服务端一直漏实现 → 手机直连 GitHub 失败时回退必 404。公开分发通道：永不鉴权。
+    // APP 检查更新的中转端点（update.dart 主通道）。更新源已迁 alist（清单在 NAS，
+    // 服务器代读——手机不必在局域网）；alist 缺失时回退 gh。公开分发通道：永不鉴权。
     void (async () => {
-      const info = await ghLatestAppRelease();
+      const info = await latestAppRelease();
       if (!info) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
         res.end("没有找到带 Android APK 产物的 APP Release");
         return;
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify({ tag: info.tag, apkName: info.apkName, size: info.apkSize }));
+      res.end(JSON.stringify({ tag: info.tag, apkName: info.apkName, size: info.apkSize, notes: info.notes }));
     })();
     return;
   }
@@ -931,33 +1082,25 @@ const http = createServer(async (req, res) => {
     // 公开分发通道：设计上不鉴权（无论 HG_AUTH 开关），token 可有可无
     void (async () => {
       const tag = url.searchParams.get("tag") ?? "";
-      const info = await ghReleaseApk(tag);
+      const info = await releaseApkByTag(tag);
       if (!info) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
         res.end(tag ? `release ${tag} 没有找到 Android APK` : "没有找到带 Android APK 的 APP Release");
         return;
       }
-      const file = join(APK_CACHE_DIR, info.apkName);
-      let size = existsSync(file) ? statSync(file).size : 0;
-      if (size !== info.apkSize) {
-        // 缓存缺失/大小不符：经服务器下载（并发请求共用一次下载）
-        const job = apkDlLocks.get(info.tag) ?? ghDownloadApk(info.apkId, info.apkName);
-        apkDlLocks.set(info.tag, job);
-        const okDl = await job;
-        apkDlLocks.delete(info.tag);
-        if (!okDl || !existsSync(file) || statSync(file).size !== info.apkSize) {
-          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-          res.end("APK 下载失败（服务器无法访问 GitHub？稍后再试）");
-          return;
-        }
-        size = statSync(file).size;
+      const ok = await ensureApkCached(info);
+      if (!ok || !existsSync(join(APK_CACHE_DIR, info.apkName))) {
+        res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+        res.end("APK 下载失败（alist 与 GitHub 均不可达或校验未过？稍后再试）");
+        return;
       }
+      const size = statSync(join(APK_CACHE_DIR, info.apkName));
       res.writeHead(200, {
         "content-type": "application/vnd.android.package-archive",
-        "content-length": size,
+        "content-length": size.size,
         "content-disposition": `attachment; filename="${info.apkName}"`,
       });
-      createReadStream(file).pipe(res);
+      createReadStream(join(APK_CACHE_DIR, info.apkName)).pipe(res);
     })();
     return;
   }

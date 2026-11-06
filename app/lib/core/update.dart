@@ -6,10 +6,13 @@ import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 应用内自更新：查 GitHub 最新 Release → 与本地版本比较 → 下载 APK → 调起系统安装。
+/// 应用内自更新：查最新版本清单 → 与本地版本比较 → 下载 APK → 调起系统安装。
 ///
-/// 版本即 git tag（v0.3.0 ↔ pubspec 0.3.0），CI 打 tag 时构建 APK 附到 Release。
-/// 匿名调 GitHub API（公开仓库，限流 60 次/h/IP，启动静默检查一次 + 手动检查足够）。
+/// 版本即 git tag（v0.3.0 ↔ pubspec 0.3.0）。更新源两级（2026-11-06 迁移）：
+/// 主 = HG 服务器 /release-apk-meta（服务器读 NAS alist /shares/harnessgate/latest.json，
+/// APK 经 /release-apk 中转下载，服务器 sha256 校验后落缓存）；兜底 = GitHub Release
+/// 匿名 API（meichuanyi 账号风控期间 404，解封后恢复）。发布：APK + latest.json 传 NAS
+/// /root/shares/harnessgate（即 alist /shares/harnessgate）。
 class AppUpdate {
   static const repo = 'meichuanyi/HarnessGate';
 
@@ -42,8 +45,9 @@ class AppUpdate {
 
   /// 检查更新：有新版本返回 update；已是最新/失败/无 APK 时 update 为空，
   /// [manual] = true 时把原因放进 message（弹窗展示），静默检查则全部无声。
-  /// GitHub 匿名 API 对私有仓库 404 → 提供 [relayBaseUrl]+[token] 时回退服务器
-  /// 元数据端点 /release-apk-meta（owner 鉴权），私有仓库时代的主通道。
+  /// 更新源已迁 alist（2026-11-06）：主通道经 HG 服务器中转 /release-apk-meta
+  /// （服务器读 NAS alist 清单，公网手机也够得着，清单带更新日志）；GitHub
+  /// 匿名直连降为兜底——meichuanyi 账号 2026-10-24 被风控期间匿名 API 必 404。
   static Future<({AppUpdate? update, String? message})> check(
       {bool manual = false, String? relayBaseUrl, String? token}) async {
     String? current;
@@ -51,6 +55,11 @@ class AppUpdate {
       current = (await PackageInfo.fromPlatform()).version;
     } catch (_) {/* 取不到本地版本：按无更新处理 */}
 
+    // 主通道：经 HG 服务器中转（服务器读 alist 清单）
+    final relay = await _checkViaRelay(relayBaseUrl, token, current, manual);
+    if (relay != null) return relay;
+
+    // 兜底：GitHub 匿名直连（未配服务器时唯一通道；风控期间匿名必 404，解封后恢复）
     http.Response res;
     try {
       res = await http.get(
@@ -58,13 +67,9 @@ class AppUpdate {
         headers: {'Accept': 'application/vnd.github+json'},
       ).timeout(const Duration(seconds: 15));
     } catch (e) {
-      final fb = await _checkViaRelay(relayBaseUrl, token, current, manual);
-      if (fb != null) return fb;
-      return (update: null, message: manual ? '连不上 GitHub（$e）' : null);
+      return (update: null, message: manual ? '连不上更新服务器，GitHub 也不可达（$e）' : null);
     }
     if (res.statusCode != 200) {
-      final fb = await _checkViaRelay(relayBaseUrl, token, current, manual);
-      if (fb != null) return fb;
       return (
         update: null,
         message: manual ? 'GitHub API ${res.statusCode}（限流？稍后再试）' : null
@@ -125,7 +130,8 @@ class AppUpdate {
     );
   }
 
-  /// 经服务器查最新 Release 元数据（/release-apk-meta）。失败返回 null，调用方维持原失败文案。
+  /// 主通道：经服务器查最新版本（/release-apk-meta，服务器读 alist 清单）。
+  /// 失败返回 null，调用方走 GitHub 兜底。
   static Future<({AppUpdate? update, String? message})?> _checkViaRelay(
       String? relayBase, String? token, String? current, bool manual) async {
     if (relayBase == null || relayBase.isEmpty) return null;
@@ -144,7 +150,7 @@ class AppUpdate {
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final tag = j['tag'] as String?;
       if (tag == null) {
-        return (update: null, message: manual ? '服务器上还没有 Release' : null);
+        return (update: null, message: manual ? '服务器上还没有发布版本' : null);
       }
       final latest = tag.replaceFirst('v', '');
       if (current != null && compareVersions(latest, current) <= 0) {
@@ -159,8 +165,8 @@ class AppUpdate {
         update: AppUpdate(
           tag: tag,
           name: j['apkName'] as String? ?? tag,
-          notes: '（经服务器中转检查：私有仓库）',
-          // 下载走中转并带上 token（中转需要鉴权；直连 GitHub 对私有仓库已不可行）
+          notes: (j['notes'] as String?) ?? '（经服务器中转检查）',
+          // 下载走中转并带上 token（中转需要鉴权；alist 只在服务器所在内网可达）
           apkUrl: Uri.parse(
               '$base/release-apk?tag=$tag${tq.isEmpty ? '' : '&$tq'}'),
           sizeBytes: (j['size'] as num?)?.toInt() ?? 0,
@@ -168,7 +174,7 @@ class AppUpdate {
         message: null,
       );
     } catch (_) {
-      return null;   // 回退也失败：交回原失败文案
+      return null;   // 中转失败：走 GitHub 兜底
     }
   }
 
