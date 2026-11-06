@@ -12,6 +12,7 @@ import '../core/client.dart';
 import 'chat_extras.dart';
 import '../core/md_style.dart';
 import '../core/math_markdown.dart';
+import '../core/mermaid.dart';
 import '../core/protocol.dart';
 import 'call_page.dart';
 
@@ -1180,6 +1181,16 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
+          if (s?.harnessId == 'claude')
+            IconButton(
+              tooltip: '⚡ 后台工作流进度（多 agent 并行任务的实时面板）',
+              icon: const Icon(Icons.bolt, size: 20, color: Color(0xFFD29922)),
+              onPressed: () => showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                builder: (_) => WorkflowSheet(client: widget.client, sessionId: widget.sessionId),
+              ),
+            ),
           if (s?.live == true)
             IconButton(
               tooltip: '实时语音通话（可插话；挂断自动还原模型）',
@@ -1449,35 +1460,46 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                MarkdownBody(
-                  data: e.text ?? "",
-                  selectable: true,
-                  styleSheet: hgMarkdownStyle(context),
-                  inlineSyntaxes: [BlockMathSyntax(), InlineMathSyntax()],
-                  builders: {
-                    "latex_inline": MathElementBuilder(baseStyle: const TextStyle(fontSize: 14)),
-                    "latex_block": MathElementBuilder(baseStyle: const TextStyle(fontSize: 15), isBlock: true),
-                  },
-                ),
-                if ((e.text ?? '').trim().isNotEmpty)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: () => widget.client.voice.speak(e.text ?? ''),
-                      icon: const Icon(Icons.volume_up, size: 14),
-                      label: const Text('朗读', style: TextStyle(fontSize: 12)),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        foregroundColor: Colors.grey[500],
+                Builder(builder: (_) {
+                  // mermaid 块剥出正文（图附消息尾部，与 web 端可视化分工一致）
+                  final ext = extractMermaid(e.text ?? "");
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      MarkdownBody(
+                        data: ext.text,
+                        selectable: true,
+                        styleSheet: hgMarkdownStyle(context),
+                        inlineSyntaxes: [BlockMathSyntax(), InlineMathSyntax()],
+                        builders: {
+                          "latex_inline": MathElementBuilder(baseStyle: const TextStyle(fontSize: 14)),
+                          "latex_block": MathElementBuilder(baseStyle: const TextStyle(fontSize: 15), isBlock: true),
+                        },
                       ),
-                    ),
-                  ),
+                      for (final code in ext.blocks)
+                        MermaidView(code: code),
+                      if ((e.text ?? '').trim().isNotEmpty)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () => widget.client.voice.speak(e.text ?? ''),
+                            icon: const Icon(Icons.volume_up, size: 14),
+                            label: const Text('朗读', style: TextStyle(fontSize: 12)),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              foregroundColor: Colors.grey[500],
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                }),
               ],
             ),
           ),
-          margin: const EdgeInsets.only(bottom: 12, right: 16),
         );
       case 'thought':
         // 正在思考：实时展开流式内容（对齐 web）；结束后转折叠块省空间

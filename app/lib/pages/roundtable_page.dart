@@ -23,6 +23,49 @@ class _RoundtablePageState extends State<RoundtablePage> {
     widget.client.send(msgList()); // 触发 hello 刷新，rooms 随之更新
   }
 
+  /// 滑动删除圆桌：可选连带删掉圆桌自动建的成员/主持人会话（手动挂进的不删）。
+  /// 列表刷新由服务端 rooms 全表广播驱动，本地不先删行（请求失败时行不该消失）。
+  Future<bool> _confirmDelete(String id, String topic, bool running) async {
+    final delSessions = ValueNotifier<bool>(false);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          title: const Text('删除圆桌'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('删除「${topic.isEmpty ? id : topic}」？房间的讨论记录将一并移除。'),
+            if (running)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text('⚠ 圆桌仍在讨论中，删除会同时停掉它。', style: TextStyle(color: Color(0xFFD29922), fontSize: 12.5)),
+              ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('连带删除成员会话', style: TextStyle(fontSize: 13)),
+              subtitle: const Text('只删本圆桌自动建的会话', style: TextStyle(fontSize: 11, color: Colors.grey)),
+              value: delSessions.value,
+              onChanged: (v) => setSt(() => delSessions.value = v ?? false),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF85149)),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok == true) {
+      widget.client.send({...msgRoomDelete(id), 'deleteSessions': delSessions.value});
+    }
+    return false; // 永不本地消行——服务端 rooms 广播才是事实源
+  }
+
   Future<void> _confirmStop(String id, String topic) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -67,7 +110,18 @@ class _RoundtablePageState extends State<RoundtablePage> {
                 itemBuilder: (_, i) {
                   final r = list[i];
                   final (color, label) = r.pill;
-                  return ListTile(
+                  return Dismissible(
+                    key: ValueKey('room-${r.id}'),
+                    direction: DismissDirection.endToStart,
+                    background: Container(
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      color: const Color(0xFFF85149),
+                      child: const Icon(Icons.delete_outline, color: Colors.white),
+                    ),
+                    confirmDismiss: (_) => _confirmDelete(r.id, r.topic, r.status == 'running'),
+                    onDismissed: (_) {},   // 实际删除由服务端 rooms 全表广播驱动刷新，不本地先删（失败时行不该消失）
+                    child: ListTile(
                     leading: Container(
                       width: 10, height: 10,
                       margin: const EdgeInsets.only(left: 4, top: 6),
@@ -98,6 +152,7 @@ class _RoundtablePageState extends State<RoundtablePage> {
                         : null,
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => RoomDetailPage(client: widget.client, roomId: r.id)),
+                    ),
                     ),
                   );
                 },

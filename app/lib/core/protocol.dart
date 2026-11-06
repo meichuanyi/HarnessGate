@@ -390,6 +390,8 @@ class RoomInfo {
   /// 服务端摘要广播（hello/rooms 列表）只带计数不带发言稿——计数显示用它兜底，
   /// 且「turnCount>0 而 turns 空」= 当前是摘要态，详情页据此重发 room-get 拉全量
   final int? turnCount;
+  /// 工作队任务板（摘要态就带轻字段：title/status/assignee，spec/diff/summary 被服务端剔除）
+  final List<CrewTaskInfo> crewTasks;
 
   RoomInfo({
     required this.id,
@@ -405,6 +407,7 @@ class RoomInfo {
     this.members = const [],
     this.turns = const [],
     this.turnCount,
+    this.crewTasks = const [],
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
@@ -429,6 +432,10 @@ class RoomInfo {
             .map(RoomTurnInfo.fromJson)
             .toList(),
         turnCount: (j['turnCount'] as num?)?.toInt(),
+        crewTasks: ((j['crew'] as Map<String, dynamic>?)?['tasks'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(CrewTaskInfo.fromJson)
+            .toList(),
       );
 
   /// 状态胶囊（颜色 + 文案，对齐 web ROOM_STATUS）
@@ -528,6 +535,70 @@ Map<String, dynamic> msgSessionDetail(String sessionId) =>
 Map<String, dynamic> msgRoomStop(String roomId) =>
     {'type': 'room-stop', 'roomId': roomId};
 
+/// 删除圆桌房间（连同房间记录；成员会话保留）
+Map<String, dynamic> msgRoomDelete(String roomId) =>
+    {'type': 'room-delete', 'roomId': roomId};
+
+/// 拉取 Claude Code 后台工作流进度（runs：按进行中优先；stale=进程疑似被回收的失联态）
+Map<String, dynamic> msgWorkflowProgress(String sessionId) =>
+    {'type': 'workflow-progress', 'sessionId': sessionId};
+
+/// ⚡ 工作流进度（workflow-progress 回包的 runs 元素）
+class WorkflowRunInfo {
+  final String id;
+  final int running;
+  final int done;
+  final bool finished;
+  final bool stale;
+  final List<WorkflowAgentInfo> agents;
+  WorkflowRunInfo({
+    required this.id,
+    required this.running,
+    required this.done,
+    required this.finished,
+    required this.stale,
+    required this.agents,
+  });
+  factory WorkflowRunInfo.fromJson(Map<String, dynamic> j) => WorkflowRunInfo(
+        id: j['id'] as String? ?? '?',
+        running: (j['running'] as num?)?.toInt() ?? 0,
+        done: (j['done'] as num?)?.toInt() ?? 0,
+        finished: j['finished'] as bool? ?? false,
+        stale: j['stale'] as bool? ?? false,
+        agents: ((j['agents'] as List<dynamic>?) ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(WorkflowAgentInfo.fromJson)
+            .toList(),
+      );
+}
+
+class WorkflowAgentInfo {
+  final String label;
+  final String? phase;
+  final bool running; // status: running | done
+  WorkflowAgentInfo({required this.label, this.phase, required this.running});
+  factory WorkflowAgentInfo.fromJson(Map<String, dynamic> j) => WorkflowAgentInfo(
+        label: j['label'] as String? ?? '?',
+        phase: j['phase'] as String?,
+        running: j['status'] == 'running',
+      );
+}
+
+/// 工作队任务（RoomInfo 摘要态的 crew.tasks 轻字段）
+class CrewTaskInfo {
+  final String id;
+  final String title;
+  final String status; // pending/in_progress/done/...
+  final String? assignee;
+  CrewTaskInfo({required this.id, required this.title, required this.status, this.assignee});
+  factory CrewTaskInfo.fromJson(Map<String, dynamic> j) => CrewTaskInfo(
+        id: j['taskId'] as String? ?? j['id'] as String? ?? '?',
+        title: j['title'] as String? ?? '',
+        status: j['status'] as String? ?? 'pending',
+        assignee: j['assignee'] as String?,
+      );
+}
+
 /// 按需拉某个圆桌房间的全量（发言稿/议题/工作队详情）。hello 与 rooms 列表广播只发
 /// 摘要（turns 剔除、只带 turnCount），历史发言稿只能走这里拿——web 打开圆桌时同样先发
 /// 这条。回包复用 room 广播路径，client 侧无需额外处理。
@@ -574,6 +645,9 @@ class ScheduleInfo {
   /// agent（默认）= 驱动 harness 会话；exec = 直接 bash 跑脚本零 token，promptTemplate 为空、命令在 execCommand
   final bool isExec;
   final String execCommand;
+  /// 服务端原始 json（含 APP 未建模的字段）——启停开关回传 schedule-save 时原样带上，
+  /// 只翻 enabled，防未建模字段（cadence/window/contract 等）丢失把任务改坏
+  final Map<String, dynamic>? raw;
 
   ScheduleInfo({
     required this.id,
@@ -593,6 +667,7 @@ class ScheduleInfo {
     this.lastError,
     this.isExec = false,
     this.execCommand = '',
+    this.raw,
   });
 
   static String cadenceDescOf(Map<String, dynamic> c) {
@@ -651,6 +726,7 @@ class ScheduleInfo {
       lastError: st['lastError'] as String?,
       isExec: j['mode'] == 'exec',
       execCommand: j['execCommand'] as String? ?? '',
+      raw: j,
     );
   }
 }

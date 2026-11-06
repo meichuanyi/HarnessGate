@@ -395,6 +395,15 @@ class GateClient {
             .whereType<Map<String, dynamic>>()
             .map((j) => MapEntry((j)['id'] as String, RoomInfo.fromJson(j))));
       _roomsCtrl.add(null);
+    } else if (m['type'] == 'harnesses' && m['harnesses'] is List) {
+      // 探活状态运行时刷新（hello 只在连接时带一次；探活完成/子进程退出都会广播本消息，
+      // 不接的话新建会话页的可用性排序与标记会一直是旧快照）
+      harnesses
+        ..clear()
+        ..addEntries((m['harnesses'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map((j) => MapEntry((j)['id'] as String, HarnessInfo.fromJson(j))));
+      _sessionsCtrl.add(null);
     } else if (m['type'] == 'skills' && m['library'] is List) {
       skillLibrary = ((m['library'] as List<dynamic>?) ?? [])
           .whereType<Map<String, dynamic>>()

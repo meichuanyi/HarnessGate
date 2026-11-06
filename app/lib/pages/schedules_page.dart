@@ -28,6 +28,15 @@ class _SchedulesPageState extends State<SchedulesPage> {
     Future.delayed(const Duration(seconds: 2), () => widget.client.send(msgSchedulesList()));
   }
 
+  /// 启停切换：回传服务端原始 json 只翻 enabled（未建模字段 cadence/window/contract 原样带，
+  /// 防把任务改坏）；成功后 schedules 广播驱动刷新。停用是「连续失败自动暂停」后移动端
+  /// 最高频的处置动作（此前只能删或干看）。
+  void _toggle(ScheduleInfo s) {
+    final raw = Map<String, dynamic>.from(s.raw ?? {'id': s.id, 'name': s.name});
+    raw['enabled'] = !s.enabled;
+    widget.client.send({'type': 'schedule-save', 'schedule': raw});
+  }
+
   Future<void> _confirmDelete(ScheduleInfo s) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -121,10 +130,14 @@ class _SchedulesPageState extends State<SchedulesPage> {
                       icon: const Icon(Icons.more_vert, size: 20),
                       onSelected: (v) {
                         if (v == 'run') _run(s);
+                        if (v == 'toggle') _toggle(s);
                         if (v == 'delete') _confirmDelete(s);
                       },
                       itemBuilder: (_) => [
                         const PopupMenuItem(value: 'run', child: Text('▶ 立即运行')),
+                        PopupMenuItem(
+                            value: 'toggle',
+                            child: Text(s.enabled ? '⏸ 停用（不再触发）' : '▶ 启用', style: const TextStyle(fontSize: 14))),
                         const PopupMenuItem(value: 'delete', child: Text('删除', style: TextStyle(color: Color(0xFFF85149)))),
                       ],
                     ),

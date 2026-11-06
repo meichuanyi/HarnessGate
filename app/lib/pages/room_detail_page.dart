@@ -198,14 +198,16 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
               ),
             ),
           Expanded(
-            child: r.turns.isEmpty
-                ? Center(child: Text('还没有发言', style: TextStyle(color: Colors.grey[500])))
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                    itemCount: r.turns.length,
-                    itemBuilder: (_, i) => _turnCard(r.turns[i]),
-                  ),
+            child: r.isCrew && r.crewTasks.isNotEmpty
+                ? _crewBoard(r)
+                : r.turns.isEmpty
+                    ? Center(child: Text('还没有发言', style: TextStyle(color: Colors.grey[500])))
+                    : ListView.builder(
+                        controller: _scroll,
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                        itemCount: r.turns.length,
+                        itemBuilder: (_, i) => _turnCard(r.turns[i]),
+                      ),
           ),
           // 底部操作条：讨论圆桌=追加议题；工作队=合并到主目录（讨论进行中服务端会拒绝追加）
           const Divider(height: 1),
@@ -248,6 +250,67 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
       ),
     );
   }
+
+  /// 工作队任务板：按 status 动态分列（摘要态就带 title/status/assignee 轻字段，
+  /// 不依赖 room-get 全量）。列顺序按服务端下发顺序，任务卡显示标题+负责人。
+  Widget _crewBoard(RoomInfo r) {
+    final cols = <String, List<CrewTaskInfo>>{};
+    for (final t in r.crewTasks) {
+      cols.putIfAbsent(t.status, () => []).add(t);
+    }
+    const statusCn = {
+      'pending': '待认领', 'in_progress': '进行中', 'review': '评审中',
+      'done': '已完成', 'error': '出错', 'merged': '已合并',
+    };
+    final entries = cols.entries.toList();
+    return ListView(
+      controller: _scroll,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+      children: [
+        Text('🧰 ${r.crewTasks.length} 个任务 · 按状态分列',
+            style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+        const SizedBox(height: 8),
+        for (final e in entries) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.grey[850],
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '${statusCn[e.key] ?? e.key}（${e.value.length}）',
+              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+          for (final t in e.value)
+            Container(
+              margin: const EdgeInsets.only(left: 10, bottom: 6),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                border: Border(left: BorderSide(width: 3, color: _crewStatusColor(e.key))),
+                borderRadius: BorderRadius.circular(4),
+                color: Colors.grey[900],
+              ),
+              child: Row(children: [
+                Expanded(child: Text(t.title.isEmpty ? t.id : t.title, style: const TextStyle(fontSize: 13))),
+                if (t.assignee?.isNotEmpty == true)
+                  Text(t.assignee!, style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+              ]),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Color _crewStatusColor(String s) => switch (s) {
+        'done' => const Color(0xFF3FB950),
+        'merged' => const Color(0xFF5B9CF8),
+        'review' => const Color(0xFFD29922),
+        'in_progress' => const Color(0xFF58A6FF),
+        'error' => const Color(0xFFF85149),
+        _ => Colors.grey,
+      };
 
   Widget _turnCard(RoomTurnInfo t) {
     final isHost = t.kind == 'host';

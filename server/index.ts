@@ -1126,12 +1126,30 @@ function authorized(req: {
   headers: Record<string, string | string[] | undefined>;
 }): boolean {
   if (AUTH_OFF) return true;
+  // 失败限速（短 token 的爆破面兜底）：连续失败 ≥8 次锁 30s。不按 IP 区分——frp 链路下
+  // 公网连接与正常用户同源 IP，按 IP 封会误伤自己；全局锁窗让爆破速率降到每 30s 8 次，
+  // 正常人连续输错 8 次几乎不可能，误锁 30s 也无害。成功一次即清零连败。
+  if (Date.now() < authLockUntil) return false;
   const url = new URL(req.url ?? "/", "http://localhost");
   const qp = url.searchParams.get("token");
-  if (qp && qp === TOKEN) return true;
+  if (qp && qp === TOKEN) { authFailStreak = 0; return true; }
   const auth = req.headers["authorization"];
-  return typeof auth === "string" && auth === `Bearer ${TOKEN}`;
+  const ok = typeof auth === "string" && auth === `Bearer ${TOKEN}`;
+  if (ok) { authFailStreak = 0; return true; }
+  // 距上次失败超 60s 视为新一轮（防历史失败累积误锁）
+  if (Date.now() - lastAuthFailAt > 60_000) authFailStreak = 0;
+  lastAuthFailAt = Date.now();
+  if (++authFailStreak >= 8) {
+    authLockUntil = Date.now() + 30_000;
+    authFailStreak = 0;
+    console.warn(`[auth] 连续 ${8} 次失败，锁定 30 秒`);
+  }
+  return false;
 }
+
+let authFailStreak = 0;
+let lastAuthFailAt = 0;
+let authLockUntil = 0;
 
 /** 探活时该 harness 上报的「当前模型」（UI 下拉显示的就是它）。
  *  HG 新建会话若不显式钉模型，zcode 会落到自己的默认（GLM-5.3 max），与 UI 显示不符——

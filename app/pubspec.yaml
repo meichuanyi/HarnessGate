@@ -29,6 +29,7 @@ dependencies:
   # 7.x：5.x 的 linux 实现与 platform_interface 版本求解会打架（上游问题），直接上 7
   record: ^7.1.1
   just_audio: ^0.9.40
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:

@@ -540,3 +540,133 @@ class _GearSheetState extends State<GearSheet> {
     );
   }
 }
+
+/// ⚡ 后台工作流进度：Claude Code 的 Workflow 多 agent 在主回合结束后仍于进程内后台跑，
+/// ACP 线上看不到子 agent 过程——此面板按需拉服务端转录目录的落盘状态（只读）。
+/// 打开期间 8s 轮询；stale=running>0 但文件活动停超 6 分钟（进程多半已被回收的僵尸），
+/// 显示「⚠ 失联」而非「进行中」（对齐 web ⚡ 面板语义）。
+class WorkflowSheet extends StatefulWidget {
+  final GateClient client;
+  final String sessionId;
+  const WorkflowSheet({super.key, required this.client, required this.sessionId});
+  @override
+  State<WorkflowSheet> createState() => _WorkflowSheetState();
+}
+
+class _WorkflowSheetState extends State<WorkflowSheet> {
+  StreamSubscription? _sub;
+  Timer? _timer;
+  List<WorkflowRunInfo> _runs = [];
+  bool _loaded = false;
+
+  void _fetch() => widget.client.send(msgWorkflowProgress(widget.sessionId));
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+    _sub = widget.client.messages.listen((m) {
+      if (m['type'] != 'workflow-progress' || m['sessionId'] != widget.sessionId) return;
+      final runs = ((m['runs'] as List<dynamic>?) ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(WorkflowRunInfo.fromJson)
+          .toList();
+      if (mounted) setState(() { _runs = runs; _loaded = true; });
+    });
+    _timer = Timer.periodic(const Duration(seconds: 8), (_) => _fetch());
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.bolt, size: 18, color: Color(0xFFD29922)),
+              SizedBox(width: 6),
+              Text('后台工作流', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+            ]),
+            const SizedBox(height: 2),
+            Text('多 agent 任务在会话进程内后台执行，这里按需拉取实时进度（8s 刷新）',
+                style: TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+            const SizedBox(height: 10),
+            if (!_loaded)
+              const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
+            else if (_runs.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(child: Text('没有工作流记录', style: TextStyle(color: Colors.grey[500], fontSize: 13))),
+              )
+            else
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _runs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) => _runCard(_runs[i]),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _runCard(WorkflowRunInfo r) {
+    final stateColor = r.stale
+        ? const Color(0xFFD29922)
+        : r.finished
+            ? const Color(0xFF5B9CF8)
+            : const Color(0xFF3FB950);
+    final stateText = r.stale ? '⚠ 失联' : (r.finished ? '✓ 已完成' : '● 进行中');
+    // agents 按 phase 分行（phase 缺省归「main」行）
+    final phases = <String, List<WorkflowAgentInfo>>{};
+    for (final a in r.agents) {
+      phases.putIfAbsent(a.phase ?? 'main', () => []).add(a);
+    }
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey[700]!),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(width: 8, height: 8, decoration: BoxDecoration(color: stateColor, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Expanded(child: Text('run ${r.id}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
+            Text('$stateText · ${r.done}✓ ${r.running}●', style: TextStyle(fontSize: 11.5, color: stateColor)),
+          ]),
+          if (phases.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            for (final e in phases.entries) ...[
+              Text('— ${e.key} —', style: TextStyle(fontSize: 10.5, color: Colors.grey[500])),
+              Wrap(
+                spacing: 6, runSpacing: 4,
+                children: e.value.map((a) => Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(a.running ? '●' : '✓', style: TextStyle(fontSize: 11, color: a.running ? const Color(0xFF3FB950) : Colors.grey)),
+                  const SizedBox(width: 3),
+                  Text(a.label, style: TextStyle(fontSize: 11.5, color: a.running ? null : Colors.grey)),
+                ])).toList(),
+              ),
+              const SizedBox(height: 4),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
