@@ -1203,32 +1203,34 @@ class _ChatPageState extends State<ChatPage> {
             icon: const Icon(Icons.search, size: 20),
             onPressed: _openSearch,
           ),
-          IconButton(
-            tooltip: '📚 全量归档检索（800 条窗口之外的完整历史）',
-            icon: const Icon(Icons.inventory_2_outlined, size: 20),
-            onPressed: () => showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              builder: (_) => ArchiveDialog(client: widget.client, sessionId: widget.sessionId),
-            ),
-          ),
-          IconButton(
-            tooltip: '❓ 侧问：临时问点什么，不打断正在跑的会话',
-            icon: const Icon(Icons.help_outline, size: 20),
-            onPressed: () => showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId),
-            ),
-          ),
-          IconButton(
-            tooltip: '🛠 会话装备：本会话启用的 MCP 服务与领域技能',
-            icon: const Icon(Icons.construction_outlined, size: 20),
-            onPressed: () => showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              builder: (_) => GearSheet(client: widget.client, sessionId: widget.sessionId),
-            ),
+          // 低频入口收进溢出菜单：v0.6.48 曾因顶栏 9 控件挤压标题做过一轮瘦身，
+          // v0.6.50 加 ⚡ 后最坏又到 10 个——归档/侧问/装备三件套改走「⋯」，常态回落 6 个
+          PopupMenuButton<String>(
+            tooltip: '更多：归档检索 / 侧问 / 会话装备',
+            icon: const Icon(Icons.more_horiz, size: 20),
+            onSelected: (v) {
+              if (v == 'archive') {
+                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => ArchiveDialog(client: widget.client, sessionId: widget.sessionId));
+              } else if (v == 'side') {
+                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId));
+              } else if (v == 'gear') {
+                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => GearSheet(client: widget.client, sessionId: widget.sessionId));
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'archive', height: 44, child: Row(children: [
+                Icon(Icons.inventory_2_outlined, size: 18), SizedBox(width: 10),
+                Text('📚 全量归档检索', style: TextStyle(fontSize: 14)),
+              ])),
+              PopupMenuItem(value: 'side', height: 44, child: Row(children: [
+                Icon(Icons.help_outline, size: 18), SizedBox(width: 10),
+                Text('❓ 侧问（不打断会话）', style: TextStyle(fontSize: 14)),
+              ])),
+              PopupMenuItem(value: 'gear', height: 44, child: Row(children: [
+                Icon(Icons.construction_outlined, size: 18), SizedBox(width: 10),
+                Text('🛠 会话装备（MCP/技能）', style: TextStyle(fontSize: 14)),
+              ])),
+            ],
           ),
           if (inTurn)
             IconButton(
