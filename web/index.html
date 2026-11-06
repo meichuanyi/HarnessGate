@@ -1408,6 +1408,7 @@ function handleServer(msg) {
       render();
       if (navBoot) { const n = navBoot; navBoot = null; applyNav(n); }   // 刷新/分享链接带 #/s/<id> 等时恢复视图
       if (pendingOpenOnHello) { const pid = pendingOpenOnHello; pendingOpenOnHello = null; openSession(pid); }
+      restorePanesLayout();   // 步 5：首 hello 恢复分屏布局（hash 直达/pendingOpen 已处理后再补格）
       flushSoon();   // 重连完成：未确认的 prompt 等台账到位后补发
       break;
     case "mcp": /* 受管 MCP 服务器（设置抽屉/新建会话选择用） */
@@ -2926,7 +2927,9 @@ function capturePaneEls(pane) {
 }
 
 /** 步 4：格头按钮事件委托（⧉ 再分一格 / ✕ 关此格）——makePaneDom 的 data-act 在此接线。
- *  委托挂 paneRoot 一次，格 DOM 常驻增删都走它，无需逐格绑。 */
+ *  委托挂 paneRoot 一次，格 DOM 常驻增删都走它，无需逐格绑。
+ *  步 5：grip 拖宽也在这个委托里（pointerdown 捕获；grip 永远属于它左边的格）。 */
+const PANE_MIN_W = 280;   // 拖宽下限：再窄聊天件就不可用了
 function bindPaneRoot() {
   const root = $("paneRoot");
   if (!root) return;
@@ -2938,6 +2941,67 @@ function bindPaneRoot() {
     if (btn.dataset.act === "close") closePane(pane);
     else if (btn.dataset.act === "split") mountPane();   // 新格为空槽，picker 接力选会话
   });
+  root.addEventListener("pointerdown", (ev) => {
+    const grip = ev.target.closest(".paneGrip");
+    if (!grip) return;
+    const paneRoot = panes.find((p) => p.els?.root === grip.previousElementSibling);
+    if (!paneRoot?.els?.root) return;
+    ev.preventDefault();
+    const startX = ev.clientX;
+    const startW = paneRoot.els.root.getBoundingClientRect().width;
+    const maxW = () => Math.max(PANE_MIN_W, (root.clientWidth / panes.length) + (root.clientWidth / 2));
+    document.body.classList.add("paneResizing");
+    grip.setPointerCapture(ev.pointerId);
+    const onMove = (e) => {
+      const w = Math.min(maxW(), Math.max(PANE_MIN_W, startW + (e.clientX - startX)));
+      paneRoot.w = Math.round(w);
+      paneRoot.els.root.style.flex = "none";
+      paneRoot.els.root.style.width = `${paneRoot.w}px`;
+    };
+    const onUp = () => {
+      grip.releasePointerCapture(ev.pointerId);
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+      grip.removeEventListener("pointercancel", onUp);
+      document.body.classList.remove("paneResizing");
+      savePanesLayout();
+    };
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+    grip.addEventListener("pointercancel", onUp);
+  });
+}
+
+/** 步 5：布局恢复——首 hello（sessions 就绪）后按 hg_panes 复格复会话。
+ *  只恢复一次；移动端只恢复焦点格（CSS 强制单格，多格 DOM 白浪费）；
+ *  已被删除的会话跳过不建格；hash 直达已装的会话不重开；空槽（sid null）保留为空槽。 */
+let panesRestored = false;
+function restorePanesLayout() {
+  if (panesRestored) return;
+  panesRestored = true;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PANE_KEY) || "null"); } catch {}
+  if (!saved || saved.v !== 1 || !Array.isArray(saved.sids) || !saved.sids.length) return;
+  if (document.documentElement.classList.contains("is-mobile")) {
+    saved = { ...saved, sids: [saved.sids[Math.min(saved.focus || 0, saved.sids.length - 1)]] };
+  }
+  for (const sid of saved.sids) {
+    if (sid && !sessions.get(sid)) continue;   // 会话已删：跳过不建格
+    if (sid && paneOf(sid)) continue;          // 已在某格（hash 直达首格）：不重开
+    if (panes.length >= PANE_MAX) break;
+    mountPane();
+    const p = panes[panes.length - 1];
+    if (sid) openSessionInto(p, sid);   // 空槽：mountPane 已渲染 picker + 格头
+  }
+  // 宽度按 sid 对齐（恢复过程中跳过的格会让数组索引漂移）
+  saved.sids.forEach((sid, i) => {
+    const w = saved.widths?.[i];
+    const p = sid ? paneOf(sid) : null;
+    if (w && p?.els?.root) { p.w = w; p.els.root.style.flex = "none"; p.els.root.style.width = `${w}px`; }
+  });
+  // 焦点：hash 直达的格优先（用户显式意图，mountPane/openSessionInto 已聚焦），否则恢复保存的焦点
+  const f = paneOf(saved.sids[Math.min(saved.focus || 0, saved.sids.length - 1)]);
+  if (f && (!activePane || !activePane.sid)) focusPane(f);
 }
 
 /** 格头条刷新：状态点（灰=空闲/绿=运行/蓝呼吸=回合中）+ 标题 + 待审批徽章 */
