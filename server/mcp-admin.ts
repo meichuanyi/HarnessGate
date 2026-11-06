@@ -4,11 +4,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { wsUrlWithToken } from "./ws-auth.ts";
 
 /**
  * HarnessGate 管理面 MCP Server (stdio)：受管 MCP 服务器 + 技能库的增删改查。
@@ -30,20 +28,6 @@ import WebSocket from "ws";
  */
 
 const HG_WS_URL = process.env.HG_WS_URL || "ws://127.0.0.1:9830/ws";
-
-/** 主进程开鉴权（HG_AUTH 非 off）时带上 token；token 文件缺失/关闭鉴权时原样返回 */
-function wsUrlWithToken(base: string): string {
-  let token = process.env.HG_TOKEN ?? "";
-  if (!token) {
-    try {
-      token = readFileSync(join(homedir(), ".harnessgate", "token"), "utf8").trim();
-    } catch {
-      return base;
-    }
-  }
-  if (!token) return base;
-  return base + (base.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
-}
 
 interface WsClient {
   ws: WebSocket;

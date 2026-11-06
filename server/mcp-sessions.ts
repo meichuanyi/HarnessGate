@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import WebSocket from "ws";
+import { wsUrlWithToken } from "./ws-auth.ts";
 
 /**
  * HarnessGate 核心综合 MCP Server (stdio)：
@@ -54,7 +55,7 @@ interface WsClient {
 
 function connectWs(timeoutMs = 6000): Promise<WsClient> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(HG_WS_URL);
+    const ws = new WebSocket(wsUrlWithToken(HG_WS_URL));
     const timer = setTimeout(() => {
       try { ws.close(); } catch {}
       reject(new Error(`连接 HarnessGate WebSocket 超时 (${HG_WS_URL})`));
@@ -81,6 +82,17 @@ function connectWs(timeoutMs = 6000): Promise<WsClient> {
           });
         }
       } catch {}
+    });
+
+    ws.on("close", (code, reason) => {
+      if (helloReceived) return;
+      clearTimeout(timer);
+      // 服务端 authorized() 拒绝时 close(4401,"unauthorized")——曾经只傻等 hello 到
+      // 6s 超时，"连接超时"的文案把排查方向带偏到网络/进程，这里把真实关闭码报出来
+      const hint = code === 4401
+        ? "（认证被拒：服务端已开鉴权但连接没带上 token，检查 ~/.harnessgate/token 是否存在、HG_TOKEN/HG_AUTH 配置是否一致）"
+        : "";
+      reject(new Error(`HarnessGate WebSocket 在收到 hello 前被服务端关闭 code=${code} reason=${reason.toString()} ${hint}`));
     });
 
     ws.on("error", (err) => {
