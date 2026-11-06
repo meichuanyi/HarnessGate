@@ -66,6 +66,15 @@ npm start
 | `harnessgate.token` | 空 | 服务端开了认证时填（见 `~/.harnessgate/token`） |
 | `harnessgate.defaultCwd` | 空 | 新建会话默认目录（服务器上的路径） |
 
+## 拿安装包（不自己打包时）
+
+| 通道 | 地址 |
+|---|---|
+| HG 服务器中转（公网可用） | `http://<HG服务器>:9830/release-vscode` → 最新 `.vsix`（`?tag=vscode-v0.3.23` 取指定版） |
+| NAS alist（内网） | `http://192.168.6.108:5244/d/shares/harnessgate/harnessgate-0.3.23.vsix`（清单同目录 `latest-vscode.json`，含 sha256） |
+
+发布新版：`npm run package` 后把 `.vsix` 与重写的 `latest-vscode.json`（version/vsix/sha256/size/notes）传 NAS `/root/shares/harnessgate/`；服务器缓存命中会校验 sha256。
+
 ## 开发
 
 ```bash

@@ -88,11 +88,127 @@ function gitAsync(args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; ou
 }
 type UpdateCheckMsg = Extract<ServerMsg, { type: "update-check" }>;
 
-/* ---------- VSCode 插件中转：同 /release-apk 模式 ----------
-   GET /release-vscode[?tag=vscode-vX.Y.Z]（默认最新的 vscode-* Release）→ *.vsix
-   ⚠ 发布 vscode Release 务必 `gh release create ... --prerelease`：插件 Release 若标成
-   Latest，会遮蔽 APP Release（GitHub /releases/latest 只认非 prerelease），APP 检查更新
-   误判「已是最新」、APK 中转发错包（2026-10-19 踩坑）。服务端另有 tag 前缀过滤兜底。 */
+/* ---------- NAS alist 更新源公共设施（APP APK 与 VSIX 共用，2026-11-06 迁移） ----------
+   镜像 engram/anka 的模式：清单 JSON（version / apk|vsix / sha256 / size / notes，guest 可读）
+   与产物同目录放 NAS；服务器取清单、下载（断点续传）→ size+sha256 校验 → 落缓存。
+   背景：meichuanyi GitHub 账号 2026-10-24 被风控（匿名全 404），gh 凭证通道成了单点；
+   alist 不可达时回退 gh（解封后自动恢复，历史 tag 也只有 gh 有）。
+   HG_ALIST_URL 缺省本机 NAS，置 off 关闭（回落纯 GitHub）。 */
+const ALIST_BASE = (() => {
+  const u = (process.env.HG_ALIST_URL ?? "http://192.168.6.108:5244").trim().replace(/\/+$/, "");
+  return !u || u === "off" ? "" : u;
+})();
+const ALIST_APK_DIR = (process.env.HG_ALIST_APK_DIR ?? "/shares/harnessgate").replace(/\/+$/, "");
+
+type AlistManifest = { version: string; apk?: string; vsix?: string; sha256?: string; size?: number; notes?: string };
+
+function sha256File(p: string): string {
+  return createHash("sha256").update(readFileSync(p)).digest("hex");
+}
+
+/** alist 清单：GET /p<dir>/<file>（/p 代理流，guest 可读免签名）。失败返回 null 交调用方回退 gh。 */
+function alistManifest(file: string): Promise<AlistManifest | null> {
+  if (!ALIST_BASE) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const child = spawn("curl", ["-sSLf", "-m", "30", `${ALIST_BASE}/p${ALIST_APK_DIR}/${file}`]);
+    let out = "";
+    child.stdout.on("data", (c) => { out += c; });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) { resolve(null); return; }
+      try {
+        const m = JSON.parse(out) as AlistManifest;
+        resolve(m.version && (m.apk || m.vsix) ? m : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/** alist /d 直链（302，guest 可读，实测 Range 206 支持续传，内网 NAS 秒拉）断点续传下载，
+ *  落缓存前 size+sha256 双校验（清单会随新版本刷新，防同名旧文件/半截文件冒充新版本）。 */
+function alistDownloadArtifact(dir: string, name: string, expectSha: string, expectSize: number, destDir: string, logTag: string): Promise<boolean> {
+  const dest = join(destDir, name);
+  const tmp = `${dest}.tmp`;
+  const url = `${ALIST_BASE}/d${dir}/${encodeURIComponent(name)}`;
+  const run = (resume: boolean): Promise<boolean> =>
+    new Promise((resolve) => {
+      const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
+      if (resume) args.unshift("-C", "-");
+      const child = spawn("curl", args);
+      let err = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 3_600_000);
+      child.stderr.on("data", (c) => { err += c; });
+      child.on("error", () => { clearTimeout(timer); resolve(false); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.log(`[${logTag}] alist curl 下载失败(resume=${resume}): ${err.slice(0, 200)}`);
+          resolve(false);
+          return;
+        }
+        try {
+          const size = statSync(tmp).size;
+          if (expectSize && size !== expectSize) {
+            console.log(`[${logTag}] alist 大小不符（${size} ≠ ${expectSize}），弃用`);
+            resolve(false);
+            return;
+          }
+          if (expectSha && sha256File(tmp) !== expectSha) {
+            console.log(`[${logTag}] alist sha256 校验不符，弃用并清 .tmp`);
+            try { unlinkSync(tmp); } catch {}
+            resolve(false);
+            return;
+          }
+          renameSync(tmp, dest);
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+  return run(true).then((ok) => {
+    if (ok) return true;
+    console.log(`[${logTag}] alist 续传失败，清 .tmp 从头重试: ${name}`);
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {}
+    return run(false);
+  });
+}
+
+/** 缓存命中校验（size + alist 路径复验 sha256）；不命中按源路由下载（并发请求共用一次下载）。 */
+async function ensureCached(o: {
+  tag: string; fileName: string; size: number; source: "alist" | "gh"; alistSha256?: string;
+  cacheDir: string; locks: Map<string, Promise<boolean>>; logTag: string; download: () => Promise<boolean>;
+}): Promise<boolean> {
+  const file = join(o.cacheDir, o.fileName);
+  const valid = (p: string): boolean => {
+    try {
+      if (!existsSync(p)) return false;
+      if (o.size && statSync(p).size !== o.size) return false;
+      if (o.source === "alist" && o.alistSha256 && sha256File(p) !== o.alistSha256) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (valid(file)) return true;
+  const job = o.locks.get(o.tag) ?? o.download();
+  o.locks.set(o.tag, job);
+  const ok = await job;
+  o.locks.delete(o.tag);
+  return ok && valid(file);
+}
+
+/* ---------- VSCode 插件中转：更新源已迁 NAS alist，GitHub gh 降为兜底 ----------
+   GET /release-vscode[?tag=vscode-vX.Y.Z]（默认 latest-vscode.json）→ *.vsix
+   alist 清单 /shares/harnessgate/latest-vscode.json（{version,vsix,sha256,size,notes}）；
+   清单缺失或指定老 tag 时回退 gh 的 vscode-* Release。
+   ⚠ 兜底路径注意：发布 vscode Release 务必 `gh release create ... --prerelease`——插件
+   Release 若标成 Latest，会遮蔽 APP Release（GitHub /releases/latest 只认非 prerelease），
+   gh 兜底查 APP 更新会误判（2026-10-19 踩坑）。服务端另有 tag 前缀过滤兜底。 */
 const VSIX_CACHE_DIR = join(DATA_DIR, "vsix-cache");
 mkdirSync(VSIX_CACHE_DIR, { recursive: true });
 const vsixDlLocks = new Map<string, Promise<boolean>>();
@@ -176,35 +292,62 @@ async function ghDownloadVsix(assetId: number, name: string): Promise<boolean> {
   });
 }
 
+/** 统一形状：alist 与 gh 两条 VSIX 源都归一到这里。 */
+type VsixRelease = {
+  tag: string;
+  name: string;
+  size: number;
+  notes?: string;
+  source: "alist" | "gh";
+  alistSha256?: string;
+  vsixId?: number;
+};
+
+/** 最新 VSIX：alist 清单 latest-vscode.json 优先；清单缺失或指定老 tag 时回退 gh。
+ *  tag 归一（vscode-v0.3.23 / v0.3.23 / 0.3.23 等写法都认），与清单版本比对。 */
+function latestVscodeRelease(tag = ""): Promise<VsixRelease | null> {
+  return (async () => {
+    const want = tag.replace(/^vscode-/, "").replace(/^v/, "");
+    const m = await alistManifest("latest-vscode.json");
+    if (m?.vsix && (!tag || m.version.replace(/^v/, "") === want)) {
+      return {
+        tag: `vscode-v${m.version.replace(/^v/, "")}`,
+        name: m.vsix,
+        size: m.size ?? 0,
+        notes: m.notes,
+        source: "alist",
+        alistSha256: m.sha256,
+      };
+    }
+    const gh = await ghLatestVscodeRelease(tag);
+    return gh ? { tag: gh.tag, name: gh.name, size: gh.size, source: "gh", vsixId: gh.vsixId } : null;
+  })();
+}
+
+function ensureVsixCached(info: VsixRelease): Promise<boolean> {
+  return ensureCached({
+    tag: info.tag, fileName: info.name, size: info.size, source: info.source, alistSha256: info.alistSha256,
+    cacheDir: VSIX_CACHE_DIR, locks: vsixDlLocks, logTag: "release-vscode",
+    download: () => info.source === "alist"
+      ? alistDownloadArtifact(ALIST_APK_DIR, info.name, info.alistSha256 ?? "", info.size, VSIX_CACHE_DIR, "release-vscode")
+      : ghDownloadVsix(info.vsixId ?? 0, info.name),
+  });
+}
+
 setTimeout(() => void (async () => {
-  const info = await ghLatestVscodeRelease("");
+  const info = await latestVscodeRelease();
   if (!info) return;
-  const file = join(VSIX_CACHE_DIR, info.name);
-  if (existsSync(file) && statSync(file).size === info.size) return;
-  console.log(`[release-vscode] 预取 ${info.name}`);
-  const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.vsixId, info.name);
-  vsixDlLocks.set(info.tag, job);
-  const ok = await job;
-  vsixDlLocks.delete(info.tag);
-  console.log(`[release-vscode] 预取${ok ? "完成" : "失败"}: ${info.name}`);
+  const ok = await ensureVsixCached(info); // 已缓存则静默返回；否则内部完成下载
+  if (ok) return;
+  console.log(`[release-vscode] 预取失败: ${info.name}（源=${info.source}）`);
 })(), 90_000).unref?.();
 
 /* ---------- APP 更新中转：更新源已迁 NAS alist（2026-11-06），GitHub gh 降为兜底 ----------
-   GET /release-apk[?tag=vX.Y.Z]（默认 latest）→ APK 落缓存后发给手机。
-   背景：meichuanyi GitHub 账号 2026-10-24 被风控（匿名全 404），gh 凭证通道成了单点。
-   镜像 engram/anka 的模式：alist /shares/harnessgate/latest.json 清单
-   （{version,apk,sha256,size,notes}，guest 可读）+ APK 同目录；服务器取清单、
-   下载（断点续传）→ size+sha256 校验 → 落缓存。alist 不可达或请求老 tag 时回退 gh
-   （GitHub 解封后自动恢复，历史 tag 也只有 gh 有）。HG_ALIST_URL 缺省本机 NAS，置 off 关闭。 */
+   GET /release-apk[?tag=vX.Y.Z]（默认 latest.json）→ APK 落缓存后发给手机。
+   清单 /shares/harnessgate/latest.json；缺失或老 tag 回退 gh（见顶部公共设施注释）。 */
 const APK_CACHE_DIR = join(DATA_DIR, "apk-cache");
 mkdirSync(APK_CACHE_DIR, { recursive: true });
 const apkDlLocks = new Map<string, Promise<boolean>>();
-
-const ALIST_BASE = (() => {
-  const u = (process.env.HG_ALIST_URL ?? "http://192.168.6.108:5244").trim().replace(/\/+$/, "");
-  return !u || u === "off" ? "" : u;
-})();
-const ALIST_APK_DIR = (process.env.HG_ALIST_APK_DIR ?? "/shares/harnessgate").replace(/\/+$/, "");
 
 /** 统一形状：alist 与 gh 两条源都归一到这里。 */
 type ApkRelease = {
@@ -217,35 +360,11 @@ type ApkRelease = {
   ghAssetId?: number;   // gh 路径的资产 id（认证下载用）
 };
 
-function sha256File(p: string): string {
-  return createHash("sha256").update(readFileSync(p)).digest("hex");
-}
-
-/** alist 清单：GET /p<dir>/latest.json（/p 代理流，guest 可读免签名）。失败返回 null 交调用方回退 gh。 */
-function alistManifest(): Promise<{ version: string; apk: string; sha256?: string; size?: number; notes?: string } | null> {
-  if (!ALIST_BASE) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const child = spawn("curl", ["-sSLf", "-m", "30", `${ALIST_BASE}/p${ALIST_APK_DIR}/latest.json`]);
-    let out = "";
-    child.stdout.on("data", (c) => { out += c; });
-    child.on("error", () => resolve(null));
-    child.on("close", (code) => {
-      if (code !== 0) { resolve(null); return; }
-      try {
-        const m = JSON.parse(out) as { version?: string; apk?: string; sha256?: string; size?: number; notes?: string };
-        resolve(m.version && m.apk ? { version: m.version, apk: m.apk, sha256: m.sha256, size: m.size, notes: m.notes } : null);
-      } catch {
-        resolve(null);
-      }
-    });
-  });
-}
-
-function fromManifest(m: NonNullable<Awaited<ReturnType<typeof alistManifest>>>): ApkRelease {
+function fromManifest(m: AlistManifest): ApkRelease {
   const version = m.version.replace(/^v/, "");
   return {
     tag: `v${version}`,
-    apkName: m.apk,
+    apkName: m.apk ?? "",
     apkSize: m.size ?? 0,
     notes: m.notes,
     source: "alist",
@@ -253,13 +372,13 @@ function fromManifest(m: NonNullable<Awaited<ReturnType<typeof alistManifest>>>)
   };
 }
 
-/** 最新 APP Release：alist 清单优先；缺失/没升级过清单时回退 gh。
+/** 最新 APP Release：alist 清单 latest.json 优先；缺失时回退 gh。
  *  gh 路径不取 GitHub「Latest」标记：vscode-* Release 曾占据 Latest，导致 APP 检查更新误判
  *  「已是最新」、中转发错 APK——按 tag 前缀 ^v数字 过滤兜底（插件发布务必标 prerelease）。 */
 function latestAppRelease(): Promise<ApkRelease | null> {
   return (async () => {
-    const m = await alistManifest();
-    if (m) return fromManifest(m);
+    const m = await alistManifest("latest.json");
+    if (m?.apk) return fromManifest(m);
     const gh = await ghLatestAppRelease();
     return gh ? { tag: gh.tag, apkName: gh.apkName, apkSize: gh.apkSize, source: "gh", ghAssetId: gh.apkId } : null;
   })();
@@ -269,34 +388,21 @@ function latestAppRelease(): Promise<ApkRelease | null> {
 function releaseApkByTag(tag: string): Promise<ApkRelease | null> {
   return (async () => {
     if (!tag) return latestAppRelease();
-    const m = await alistManifest();
-    if (m && `v${m.version.replace(/^v/, "")}` === tag) return fromManifest(m);
+    const m = await alistManifest("latest.json");
+    if (m?.apk && `v${m.version.replace(/^v/, "")}` === tag) return fromManifest(m);
     const gh = await ghReleaseApk(tag);
     return gh ? { tag: gh.tag, apkName: gh.apkName, apkSize: gh.apkSize, source: "gh", ghAssetId: gh.apkId } : null;
   })();
 }
 
-/** 缓存命中校验（size + alist 路径加验 sha256）；不命中则按源路由下载（并发共用一次下载）。 */
-async function ensureApkCached(info: ApkRelease): Promise<boolean> {
-  const file = join(APK_CACHE_DIR, info.apkName);
-  const valid = (p: string): boolean => {
-    try {
-      if (!existsSync(p)) return false;
-      if (info.apkSize && statSync(p).size !== info.apkSize) return false;
-      if (info.source === "alist" && info.alistSha256 && sha256File(p) !== info.alistSha256) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (valid(file)) return true;
-  const job = apkDlLocks.get(info.tag) ?? (info.source === "alist"
-    ? alistDownloadApk(info.apkName, info.alistSha256 ?? "", info.apkSize)
-    : ghDownloadApk(info.ghAssetId ?? 0, info.apkName));
-  apkDlLocks.set(info.tag, job);
-  const ok = await job;
-  apkDlLocks.delete(info.tag);
-  return ok && valid(file);
+function ensureApkCached(info: ApkRelease): Promise<boolean> {
+  return ensureCached({
+    tag: info.tag, fileName: info.apkName, size: info.apkSize, source: info.source, alistSha256: info.alistSha256,
+    cacheDir: APK_CACHE_DIR, locks: apkDlLocks, logTag: "release-apk",
+    download: () => info.source === "alist"
+      ? alistDownloadArtifact(ALIST_APK_DIR, info.apkName, info.alistSha256 ?? "", info.apkSize, APK_CACHE_DIR, "release-apk")
+      : ghDownloadApk(info.ghAssetId ?? 0, info.apkName),
+  });
 }
 
 /** 最新 APP Release（tag 以 v+数字 开头，排除 vscode-* 等插件发布），含 -android.apk 产物。
@@ -424,57 +530,6 @@ async function ghDownloadApk(assetId: number, name: string): Promise<boolean> {
   });
 }
 
-/** alist 下载：/d<dir>/<name> 302 直链（guest 可读，实测 Range 206 支持续传），内网 NAS 秒拉。
- *  落缓存前 size+sha256 双校验（清单会随新版本刷新，防同名旧文件/半截文件冒充新版本）。 */
-function alistDownloadApk(name: string, expectSha: string, expectSize: number): Promise<boolean> {
-  const dest = join(APK_CACHE_DIR, name);
-  const tmp = `${dest}.tmp`;
-  const url = `${ALIST_BASE}/d${ALIST_APK_DIR}/${encodeURIComponent(name)}`;
-  const run = (resume: boolean): Promise<boolean> =>
-    new Promise((resolve) => {
-      const args = ["-sSLf", "-m", "3600", "-o", tmp, url];
-      if (resume) args.unshift("-C", "-");
-      const child = spawn("curl", args);
-      let err = "";
-      const timer = setTimeout(() => child.kill("SIGKILL"), 3_600_000);
-      child.stderr.on("data", (c) => { err += c; });
-      child.on("error", () => { clearTimeout(timer); resolve(false); });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code !== 0) {
-          console.log(`[release-apk] alist curl 下载失败(resume=${resume}): ${err.slice(0, 200)}`);
-          resolve(false);
-          return;
-        }
-        try {
-          const size = statSync(tmp).size;
-          if (expectSize && size !== expectSize) {
-            console.log(`[release-apk] alist 大小不符（${size} ≠ ${expectSize}），弃用`);
-            resolve(false);
-            return;
-          }
-          if (expectSha && sha256File(tmp) !== expectSha) {
-            console.log("[release-apk] alist sha256 校验不符，弃用并清 .tmp");
-            try { unlinkSync(tmp); } catch {}
-            resolve(false);
-            return;
-          }
-          renameSync(tmp, dest);
-          resolve(true);
-        } catch {
-          resolve(false);
-        }
-      });
-    });
-  return run(true).then((ok) => {
-    if (ok) return true;
-    console.log(`[release-apk] alist 续传失败，清 .tmp 从头重试: ${name}`);
-    try {
-      if (existsSync(tmp)) unlinkSync(tmp);
-    } catch {}
-    return run(false);
-  });
-}
 // UI 里按 harness 配置的运行时覆盖（代理等）：对手写与导入条目都生效，持久化在 harness.overrides.json
 const OVERRIDES_FILE = join(ROOT, "harness.overrides.json");
 // 基线代理（harness.json/registry 的原值）：UI 清除覆盖时恢复到它，而不是保留上一次设置的值
@@ -1109,31 +1164,20 @@ const http = createServer(async (req, res) => {
     // 同上：公开分发，永不鉴权
     void (async () => {
       const tag = url.searchParams.get("tag") ?? "";
-      const info = await ghLatestVscodeRelease(tag);
+      const info = await latestVscodeRelease(tag);
       if (!info) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        res.end(tag ? `release ${tag} 没有找到 .vsix` : "没有找到 vscode-* Release 的 .vsix");
+        res.end(tag ? `release ${tag} 没有找到 .vsix` : "没有找到 VSIX（alist 清单与 vscode-* Release 均无）");
         return;
       }
       const file = join(VSIX_CACHE_DIR, info.name);
-      let size = existsSync(file) ? statSync(file).size : 0;
-      if (size !== info.size) {
-        const job = vsixDlLocks.get(info.tag) ?? ghDownloadVsix(info.vsixId, info.name);
-        vsixDlLocks.set(info.tag, job);
-        const okDl = await job;
-        vsixDlLocks.delete(info.tag);
-        if (!okDl || !existsSync(file)) {
-          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-          res.end("VSIX 下载失败（服务器无法访问 GitHub？稍后再试）");
-          return;
-        }
-        size = statSync(file).size;
-        if (size !== info.size) {
-          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-          res.end(`VSIX 大小不符（${size} ≠ ${info.size}），拒绝提供疑似损坏文件`);
-          return;
-        }
+      const ok = await ensureVsixCached(info);
+      if (!ok || !existsSync(file)) {
+        res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+        res.end("VSIX 下载失败（alist 与 GitHub 均不可达或校验未过？稍后再试）");
+        return;
       }
+      const size = statSync(file).size;
       res.writeHead(200, {
         "content-type": "application/octet-stream",
         "content-length": size,
