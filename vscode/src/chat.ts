@@ -95,6 +95,8 @@ export class ChatPanel {
   private entries: Entry[] = [];
   private transcriptBase = 0;
   private streaming = false;
+  /** 流式 append 序号：webview 据此丢弃重复投递（见 appendText 注释） */
+  private appendSeq = 0;
   private showLog = false;
   private pendingText = "";
   /** 刚发过 gearSave：下一次 session-gear 回包按 silent 转发（webview 更新数据但不开抽屉） */
@@ -324,11 +326,19 @@ export class ChatPanel {
       this.streaming = true;
     }
     // 流式：只更新最后一条，避免整页重绘（带绝对索引，便于 upsert 对位）
-    this.post({ type: "append", kind, text, index: this.entries.length - 1 });
+    // seq：流式序号（每面板实例递增）。0.3.22 及之前用户实报「每个 token 渲染两遍」
+    // （TTigeriger7 7 式 token 双写），静态链路各环节均单路——webview 侧按 seq 丢弃回退
+    // 重复，任何层的双投都拦得住；dupAppend 回报用于复发时定位双投发生在哪一层。
+    this.post({ type: "append", kind, text, index: this.entries.length - 1, seq: this.appendSeq++ });
   }
 
   private onMessage(m: Record<string, unknown>): void {
     const cmd = String(m.cmd ?? "");
+    if (cmd === "dupAppend") {
+      // webview 拦到重复 append（seq 回退）——正常永远到不了这里；出现即双投存在，日志定位用
+      this.log(`⚠ 重复 append 被拦截：seq=${String(m.seq)} last=${String(m.last)}（若连续出现请反馈此日志）`);
+      return;
+    }
     if (cmd === "ready") {
       this.ready = true;
       this.log(`webview 就绪，重发渲染（当前 ${this.entries.length} 条）`);
@@ -1163,7 +1173,10 @@ export class ChatPanel {
         const collapsed = exist.classList.contains('collapsed');
         exist.className = 'msg ' + m.entry.kind + (collapsed ? ' collapsed' : '');
         exist.querySelector('.sum').textContent = summaryOf(m.entry);
-        exist.querySelector('.bubble').innerHTML = m.entry.html || '';
+        const bb = exist.querySelector('.bubble');
+        bb.innerHTML = m.entry.html || '';
+        // 全量替换时同步 raw：append 的累积源与 upsert 的渲染源保持同源，防后续 append 从旧 raw 续拼
+        if (typeof m.entry.text === 'string') bb.dataset.raw = m.entry.text;
         bindPerms();
         return;
       }
@@ -1180,8 +1193,19 @@ export class ChatPanel {
       return;
     }
     if (m.type === 'append') {
+      // seq 去重：同一 append 被投递两遍（任何层）在这里拦下——0.3.22 用户实报 token 双写
+      if (typeof m.seq === 'number') {
+        if (m.seq <= (window.__appendSeq ?? -1)) {
+          vscode.postMessage({ cmd: 'dupAppend', seq: m.seq, last: window.__appendSeq });
+          return;
+        }
+        window.__appendSeq = m.seq;
+      }
       // 流式：只更新最后一条气泡
       if (!streamingEl || streamingKind !== m.kind) {
+        // 同 index 旧元素先清：render/renderAll 已建过该条时，直接新建会出现两条同位消息
+        const dup = stream.querySelector('.msg[data-i="' + m.index + '"]');
+        if (dup) dup.remove();
         const e = { kind: m.kind, html: '' };
         streamingEl = msgEl(e, m.index);
         if (allCollapsed) streamingEl.classList.remove('collapsed');   // 正在流式输出的不折叠
