@@ -99,11 +99,14 @@ class _SchedulesPageState extends State<SchedulesPage> {
                         ),
                         if (!s.enabled)
                           const Padding(padding: EdgeInsets.only(left: 6), child: Text('已停用', style: TextStyle(fontSize: 10.5, color: Colors.grey))),
+                        if (s.isExec)
+                          const Padding(padding: EdgeInsets.only(left: 6), child: Text('脚本', style: TextStyle(fontSize: 10.5, color: Color(0xFFD29922)))),
                       ],
                     ),
                     subtitle: Text(
                       [
                         s.cadenceDesc,
+                        if (s.isExec) 'bash: ${s.execCommand.length > 60 ? '${s.execCommand.substring(0, 60)}…' : s.execCommand}',
                         if (s.nextFireAt != null) '下次 ${s.nextFireAt!.substring(5, 16).replaceFirst("T", " ")}',
                         if (s.lastRunAt != null)
                           '上次 ${s.lastStatusLabel ?? ""}',
@@ -150,7 +153,10 @@ class _SchedulesPageState extends State<SchedulesPage> {
               child: Text(
                 [
                   s.cadenceDesc,
-                  'harness: ${s.harnessId}',
+                  if (s.isExec)
+                    '脚本模式（零 token，不建会话）'
+                  else
+                    'harness: ${s.harnessId}',
                   if (s.cwd != null && s.cwd!.isNotEmpty) '目录: ${s.cwd}',
                   if (s.outputFile != null) '产物: ${s.outputFile}',
                   if (s.lastError != null) '上次错误: ${s.lastError}',
@@ -162,7 +168,10 @@ class _SchedulesPageState extends State<SchedulesPage> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Text(
-                'Prompt：${s.promptTemplate.isEmpty ? "（空）" : (s.promptTemplate.length > 300 ? "${s.promptTemplate.substring(0, 300)}…" : s.promptTemplate)}',
+                // exec 模式的「任务体」是命令不是 prompt——此前显示「Prompt：（空）」误导像配置损坏
+                s.isExec
+                    ? '命令：${s.execCommand.isEmpty ? "（空）" : (s.execCommand.length > 300 ? "${s.execCommand.substring(0, 300)}…" : s.execCommand)}'
+                    : 'Prompt：${s.promptTemplate.isEmpty ? "（空）" : (s.promptTemplate.length > 300 ? "${s.promptTemplate.substring(0, 300)}…" : s.promptTemplate)}',
                 style: const TextStyle(fontSize: 12.5),
               ),
             ),

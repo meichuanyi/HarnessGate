@@ -387,6 +387,9 @@ class RoomInfo {
   final String updatedAt;
   final List<RoomMemberInfo> members;
   final List<RoomTurnInfo> turns;
+  /// 服务端摘要广播（hello/rooms 列表）只带计数不带发言稿——计数显示用它兜底，
+  /// 且「turnCount>0 而 turns 空」= 当前是摘要态，详情页据此重发 room-get 拉全量
+  final int? turnCount;
 
   RoomInfo({
     required this.id,
@@ -401,6 +404,7 @@ class RoomInfo {
     required this.updatedAt,
     this.members = const [],
     this.turns = const [],
+    this.turnCount,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
@@ -424,6 +428,7 @@ class RoomInfo {
             .whereType<Map<String, dynamic>>()
             .map(RoomTurnInfo.fromJson)
             .toList(),
+        turnCount: (j['turnCount'] as num?)?.toInt(),
       );
 
   /// 状态胶囊（颜色 + 文案，对齐 web ROOM_STATUS）
@@ -523,6 +528,12 @@ Map<String, dynamic> msgSessionDetail(String sessionId) =>
 Map<String, dynamic> msgRoomStop(String roomId) =>
     {'type': 'room-stop', 'roomId': roomId};
 
+/// 按需拉某个圆桌房间的全量（发言稿/议题/工作队详情）。hello 与 rooms 列表广播只发
+/// 摘要（turns 剔除、只带 turnCount），历史发言稿只能走这里拿——web 打开圆桌时同样先发
+/// 这条。回包复用 room 广播路径，client 侧无需额外处理。
+Map<String, dynamic> msgRoomGet(String roomId) =>
+    {'type': 'room-get', 'id': roomId};
+
 /// 确保助理会话存在（无则创建；harnessId 与现役不同时服务端换芯重建——长期记忆与台账保留）
 Map<String, dynamic> msgAssistantEnsure({String? harnessId}) => {
       'type': 'assistant-ensure',
@@ -560,6 +571,9 @@ class ScheduleInfo {
   final String? lastSessionId;
   final int consecutiveFailures;
   final String? lastError;
+  /// agent（默认）= 驱动 harness 会话；exec = 直接 bash 跑脚本零 token，promptTemplate 为空、命令在 execCommand
+  final bool isExec;
+  final String execCommand;
 
   ScheduleInfo({
     required this.id,
@@ -577,6 +591,8 @@ class ScheduleInfo {
     this.lastSessionId,
     required this.consecutiveFailures,
     this.lastError,
+    this.isExec = false,
+    this.execCommand = '',
   });
 
   static String cadenceDescOf(Map<String, dynamic> c) {
@@ -591,6 +607,12 @@ class ScheduleInfo {
         return '每周${wd((c['days'] as List<dynamic>?) ?? [])} ${c['at']}';
       case 'cron':
         return 'cron: ${c['expr']}';
+      case 'once':
+        // 单次倒计时/指定时刻：at 是绝对时刻（save 时已由 delayMinutes 物化）；跑完自动停用
+        final d = DateTime.tryParse(c['at'] as String? ?? '');
+        if (d == null) return '单次（时间无效）';
+        return '单次 ${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+            '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
     }
     return '?';
   }
@@ -627,6 +649,8 @@ class ScheduleInfo {
       lastSessionId: st['lastSessionId'] as String?,
       consecutiveFailures: (st['consecutiveFailures'] as num?)?.toInt() ?? 0,
       lastError: st['lastError'] as String?,
+      isExec: j['mode'] == 'exec',
+      execCommand: j['execCommand'] as String? ?? '',
     );
   }
 }

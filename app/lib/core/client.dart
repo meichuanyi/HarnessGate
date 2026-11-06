@@ -334,6 +334,21 @@ class GateClient {
         _outbox.clear();
       }
       serverCommit = m['commit'] as String? ?? '';
+      // hello 附带 goals/lifeTasks 快照（服务端 mindwtrPayloadSync）——此前被丢弃，目标页
+      // 全靠主动拉 goals-list 兜底；接上后断线重连/首连目标页即时有数据
+      if (m['goals'] is List) {
+        goals = (m['goals'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map(GoalInfo.fromJson)
+            .toList();
+      }
+      if (m['lifeTasks'] is List) {
+        lifeTasks = (m['lifeTasks'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map(MindwtrTaskInfo.fromJson)
+            .toList();
+      }
+      _goalsCtrl.add(null);
       rooms
         ..clear()
         ..addEntries(((m['rooms'] as List<dynamic>?) ?? [])
@@ -345,13 +360,6 @@ class GateClient {
       final r = RoomInfo.fromJson(m['room'] as Map<String, dynamic>);
       rooms[r.id] = r;
       _roomsCtrl.add(null);
-    if (m['goals'] is List) {
-        goals = (m['goals'] as List<dynamic>)
-            .whereType<Map<String, dynamic>>()
-            .map(GoalInfo.fromJson)
-            .toList();
-        _goalsCtrl.add(null);
-      }
     } else if (m['type'] == 'goals') {
       if (m['goals'] is List) {
         goals = (m['goals'] as List<dynamic>)

@@ -22,15 +22,32 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
   final _scroll = ScrollController();
   final _topicInput = TextEditingController();
   int _topicRounds = 1;
+  DateTime _lastFetch = DateTime.fromMillisecondsSinceEpoch(0);
 
   RoomInfo? get _room => widget.client.rooms[widget.roomId];
+
+  /// 拉房间全量（hello/rooms 列表只发摘要，历史发言稿只能经 room-get 拿）。
+  /// 3s 节流：rooms 整表广播后各房间回退为摘要态，这里会被密集触发，防风暴。
+  void _fetchFull() {
+    final now = DateTime.now();
+    if (now.difference(_lastFetch).inSeconds < 3) return;
+    _lastFetch = now;
+    widget.client.send(msgRoomGet(widget.roomId));
+  }
 
   @override
   void initState() {
     super.initState();
+    // 打开详情先拉一次全量：摘要态没有发言稿，不拉的话历史圆桌恒显示「还没有发言」
+    _fetchFull();
     // 订阅广播：room 消息到达时 roomsChanged 会触发；这里再听 messages 兜底滚动到底
     _sub = widget.client.roomsChanged.listen((_) {
-      if (mounted) setState(_stickBottom);
+      if (!mounted) return;
+      // rooms 列表广播会把房间重置回摘要态（turns 空、turnCount>0）——检测到就重拉全量，
+      // 否则直播看完的发言稿会被别人建新圆桌等动作当场抹掉
+      final r = _room;
+      if (r != null && r.turns.isEmpty && (r.turnCount ?? 0) > 0) _fetchFull();
+      setState(_stickBottom);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _stickBottom());
   }

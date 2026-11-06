@@ -578,9 +578,16 @@ class _ChatPageState extends State<ChatPage> {
     final text = _input.text.trim();
     if (text.isEmpty && _pendingAtt.isEmpty) return;
     final s = _session;
-    if (s == null || !s.live) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('会话未在运行，点右上「恢复」')));
+    // 对齐 web/vscode：未运行但可恢复的会话允许直接发送——服务端收到 prompt 会自动拉起
+    // 会话并排队投递；只有真正不可恢复的才拦（web 同款文案语义）
+    if (s == null || (!s.live && !s.resumable)) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(s == null ? '会话不存在' : '会话已结束且不可恢复，请新建会话接续（handoff）')));
       return;
+    }
+    if (!s.live) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('会话未在运行，正在自动恢复并排队发送…')));
     }
     widget.client.send(msgPromptWithAttachments(
       widget.sessionId,

@@ -84,7 +84,8 @@ class _RoundtablePageState extends State<RoundtablePage> {
                       ],
                     ),
                     subtitle: Text(
-                      '$label · ${r.turns.length} 条发言 · ${r.members.length} 成员${r.error != null ? ' · ${r.error}' : ''}',
+                      // 摘要态 turns 为空，计数用服务端摘要里的 turnCount 兜底（全量广播后两者一致）
+                      '$label · ${r.turnCount ?? r.turns.length} 条发言 · ${r.members.length} 成员${r.error != null ? ' · ${r.error}' : ''}',
                       maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12),
                     ),
