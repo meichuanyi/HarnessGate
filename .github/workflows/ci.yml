@@ -8,7 +8,7 @@ on:
 
 jobs:
   check:
-    runs-on: dcal
+    runs-on: host
     steps:
       # dcal runner 即本机,宿主 node 22 就是构建用的那份;不再 setup-node(免外部下载,npm 缓存本就共享)
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
     # APK 由 flutter-apk.yml 发）；都不匹配 → 失败（乱打的 tag）。
     if: startsWith(github.ref, 'refs/tags/v')
     needs: check
-    runs-on: dcal
+    runs-on: host
     permissions:
       contents: write
     steps:

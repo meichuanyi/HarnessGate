@@ -7,7 +7,7 @@ on:
 
 jobs:
   apk:
-    runs-on: dcal
+    runs-on: host
     env:
       # dcal runner 就是本机 host 模式守护进程:直接用宿主 SDK(licenses 已接受),
       # 不经 flutter-action 下载——免外部网络依赖,且与本地构建同一份工具链、版本一致
