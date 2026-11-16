@@ -38,6 +38,7 @@ class _ChatPageState extends State<ChatPage> {
   bool _streaming = false;
   int? _highlightIndex; // 搜索/我的发言定位后的高亮条目
   Timer? _highlightTimer;
+  bool _toolsOpen = false; // 下拉工具帘展开态（v0.6.52 顶栏收敛后唯一工具入口）
 
   /// 待发送附件（选好的图片，base64）
   final _pendingAtt = <({String name, String mimeType, String base64})>[];
@@ -1133,6 +1134,90 @@ class _ChatPageState extends State<ChatPage> {
     ];
   }
 
+  /* ---------- 下拉工具帘（v0.6.52：⋯/⋮ 两菜单合并为一个可展开的分组面板） ---------- */
+
+  void _toggleTools() => setState(() => _toolsOpen = !_toolsOpen);
+
+  void _closeTools() {
+    if (_toolsOpen) setState(() => _toolsOpen = false);
+  }
+
+  /// 帘子单项：图标+文字 outline chip，点按先卷回再执行
+  Widget _toolChip(IconData icon, String label, VoidCallback onTap, {Color? color}) {
+    return ActionChip(
+      visualDensity: VisualDensity.compact,
+      backgroundColor: Colors.transparent,
+      side: BorderSide(color: Colors.grey.withValues(alpha: 0.35)),
+      avatar: Icon(icon, size: 15, color: color),
+      label: Text(label, style: TextStyle(fontSize: 12, color: color)),
+      onPressed: () {
+        _closeTools();
+        onTap();
+      },
+    );
+  }
+
+  Widget _toolSection(String title) => Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 2),
+        child: Text(title, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.grey[600])),
+      );
+
+  /// 工具帘主体：分组 Wrap 网格，条件项不满足即隐藏，整组为空连标题一起隐藏
+  Widget _toolsCurtain(SessionInfo? s) {
+    if (!_toolsOpen) return const SizedBox.shrink();
+    final live = s?.live == true;
+    final resumable = s != null && !s.live && s.resumable;
+    final claude = s?.harnessId == 'claude';
+    final running = <Widget>[
+      if (live)
+        _toolChip(Icons.phone_in_talk, '语音通话', _openCallDialog, color: const Color(0xFF3FB950)),
+      if (claude)
+        _toolChip(Icons.bolt, '工作流',
+            () => showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => WorkflowSheet(client: widget.client, sessionId: widget.sessionId)),
+            color: const Color(0xFFD29922)),
+      if (resumable)
+        _toolChip(Icons.play_circle_outline, '恢复会话', () => widget.client.send(msgResume(widget.sessionId)), color: const Color(0xFF3FB950)),
+      if (live)
+        // 与顶栏 ⏹ 打断区分：打断=停当前回合；停止=杀掉会话进程
+        _toolChip(Icons.power_settings_new, '停止进程', () => widget.client.send(msgClose(widget.sessionId)), color: const Color(0xFFF85149)),
+    ];
+    final tools = <Widget>[
+      _toolChip(Icons.inventory_2_outlined, '归档检索', () => showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => ArchiveDialog(client: widget.client, sessionId: widget.sessionId))),
+      _toolChip(Icons.help_outline, '侧问', () => showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId))),
+      _toolChip(Icons.construction_outlined, '会话装备', () => showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => GearSheet(client: widget.client, sessionId: widget.sessionId))),
+      _toolChip(Icons.chat_bubble_outline, '我的发言', _openMyMessages),
+      _toolChip(Icons.fact_check_outlined, '决策记录', () => _openDetail(decisions: true)),
+      _toolChip(Icons.description_outlined, '改动文件', () => _openDetail(decisions: false)),
+    ];
+    final manage = <Widget>[
+      _toolChip(s?.starred == true ? Icons.star : Icons.star_border, s?.starred == true ? '取消收藏' : '收藏置顶', _toggleStar),
+      _toolChip(Icons.exit_to_app, '接续新会话', () {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在把历史复制到新会话…')));
+        widget.client.send(msgHandoff(widget.sessionId));
+      }),
+      _toolChip(Icons.account_tree_outlined, '分支', _branchFromSession),
+      // 收编只对分支会话有意义（web 同规则：顶栏 ⇱ 收编仅 parentId 非空时出现）
+      if (s?.parentId != null) _toolChip(Icons.call_merge, '收编回主线', _adoptToMain),
+      _toolChip(Icons.delete_outline, '删除会话', _confirmDelete, color: const Color(0xFFF85149)),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (running.isNotEmpty) ...[
+            _toolSection('进行时'),
+            Wrap(spacing: 8, runSpacing: 4, children: running),
+          ],
+          _toolSection('工具'),
+          Wrap(spacing: 8, runSpacing: 4, children: tools),
+          _toolSection('会话管理'),
+          Wrap(spacing: 8, runSpacing: 4, children: manage),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = _session;
@@ -1181,69 +1266,12 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
-          if (s?.harnessId == 'claude')
-            IconButton(
-              tooltip: '⚡ 后台工作流进度（多 agent 并行任务的实时面板）',
-              icon: const Icon(Icons.bolt, size: 20, color: Color(0xFFD29922)),
-              onPressed: () => showModalBottomSheet(
-                context: context,
-                isScrollControlled: true,
-                builder: (_) => WorkflowSheet(client: widget.client, sessionId: widget.sessionId),
-              ),
-            ),
-          if (s?.live == true)
-            IconButton(
-              tooltip: '实时语音通话（可插话；挂断自动还原模型）',
-              icon: const Icon(Icons.phone_in_talk, size: 21, color: Color(0xFF3FB950)),
-              onPressed: _openCallDialog,
-            ),
           _modelChip(s),
           IconButton(
             tooltip: '搜索对话内容',
             icon: const Icon(Icons.search, size: 20),
             onPressed: _openSearch,
           ),
-          // 低频入口收进溢出菜单：v0.6.48 曾因顶栏 9 控件挤压标题做过一轮瘦身，
-          // v0.6.50 加 ⚡ 后最坏又到 10 个——归档/侧问/装备三件套改走「⋯」，常态回落 6 个
-          PopupMenuButton<String>(
-            tooltip: '更多：归档检索 / 侧问 / 会话装备',
-            icon: const Icon(Icons.more_horiz, size: 20),
-            onSelected: (v) {
-              if (v == 'archive') {
-                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => ArchiveDialog(client: widget.client, sessionId: widget.sessionId));
-              } else if (v == 'side') {
-                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => SideQuestionSheet(client: widget.client, srcId: widget.sessionId));
-              } else if (v == 'gear') {
-                showModalBottomSheet(context: context, isScrollControlled: true, builder: (_) => GearSheet(client: widget.client, sessionId: widget.sessionId));
-              }
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'archive', height: 44, child: Row(children: [
-                Icon(Icons.inventory_2_outlined, size: 18), SizedBox(width: 10),
-                Text('📚 全量归档检索', style: TextStyle(fontSize: 14)),
-              ])),
-              PopupMenuItem(value: 'side', height: 44, child: Row(children: [
-                Icon(Icons.help_outline, size: 18), SizedBox(width: 10),
-                Text('❓ 侧问（不打断会话）', style: TextStyle(fontSize: 14)),
-              ])),
-              PopupMenuItem(value: 'gear', height: 44, child: Row(children: [
-                Icon(Icons.construction_outlined, size: 18), SizedBox(width: 10),
-                Text('🛠 会话装备（MCP/技能）', style: TextStyle(fontSize: 14)),
-              ])),
-            ],
-          ),
-          if (inTurn)
-            IconButton(
-              tooltip: '打断当前回合',
-              icon: const Icon(Icons.stop_circle_outlined, color: Color(0xFFF85149)),
-              onPressed: () => widget.client.send(msgInterrupt(widget.sessionId)),
-            )
-          else if (s != null && !s.live && s.resumable)
-            IconButton(
-              tooltip: '恢复会话',
-              icon: const Icon(Icons.play_circle_outline, color: Color(0xFF3FB950)),
-              onPressed: () => widget.client.send(msgResume(widget.sessionId)),
-            ),
           PopupMenuButton<String>(
             onSelected: _changeAutoApprove,
             tooltip: '自动决策档位（当前：$aaLabel）',
@@ -1260,67 +1288,59 @@ class _ChatPageState extends State<ChatPage> {
               aaItem('all', '全自动'),
             ],
           ),
-          PopupMenuButton<String>(
-            onSelected: (v) {
-              switch (v) {
-                case 'star': _toggleStar(); break;
-                case 'stop': widget.client.send(msgClose(widget.sessionId)); break;
-                case 'resume': widget.client.send(msgResume(widget.sessionId)); break;
-                case 'delete': _confirmDelete(); break;
-                case 'config': _openConfig(); break;
-                case 'search': _openSearch(); break;
-                case 'mine': _openMyMessages(); break;
-                case 'decisions': _openDetail(decisions: true); break;
-                case 'changes': _openDetail(decisions: false); break;
-                case 'handoff':
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在把历史复制到新会话…')));
-                  widget.client.send(msgHandoff(widget.sessionId));
-                  break;
-                case 'branch': _branchFromSession(); break;
-                case 'adopt': _adoptToMain(); break;
-              }
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(value: 'config', child: Text('模型与配置')),
-              const PopupMenuItem(value: 'search', child: Text('搜索对话')),
-              const PopupMenuItem(value: 'mine', child: Text('我的发言')),
-              const PopupMenuItem(value: 'decisions', child: Text('🧾 决策记录')),
-              const PopupMenuItem(value: 'changes', child: Text('📄 改动文件')),
-              PopupMenuItem(value: 'star', child: Text((s?.starred ?? false) ? '★ 取消收藏' : '☆ 收藏置顶')),
-              const PopupMenuItem(value: 'handoff', child: Text('➡️ 接续到新会话')),
-              const PopupMenuItem(value: 'branch', child: Text('⎇ 分支（继承上下文）')),
-              // 收编只对分支会话有意义（web 同规则：顶栏 ⇱ 收编仅 parentId 非空时出现）
-              if (s?.parentId != null) const PopupMenuItem(value: 'adopt', child: Text('⇱ 收编回主线')),
-              if (s?.live == true) const PopupMenuItem(value: 'stop', child: Text('停止进程')),
-              if (s != null && !s.live && s.resumable) const PopupMenuItem(value: 'resume', child: Text('恢复会话')),
-              const PopupMenuItem(value: 'delete', child: Text('删除会话', style: TextStyle(color: Color(0xFFF85149)))),
-            ],
+          if (inTurn)
+            IconButton(
+              tooltip: '打断当前回合',
+              icon: const Icon(Icons.stop_circle_outlined, color: Color(0xFFF85149)),
+              onPressed: () => widget.client.send(msgInterrupt(widget.sessionId)),
+            ),
+          // v0.6.52 顶栏收敛：⚡/📞/▶ 与 ⋯/⋮ 两菜单全部并入「下拉工具帘」（_toolsCurtain）。
+          // 常态 4 控件（chip/搜索/档位/帘钮），回合中 +⏹；帘内分组 Wrap 网格可无限扩展，
+          // 新工具加进 _toolsCurtain 即可，不再挤压顶栏（v0.6.48~51 三轮拥挤史到此终结）。
+          IconButton(
+            tooltip: _toolsOpen ? '收起工具面板' : '展开工具面板',
+            icon: Icon(_toolsOpen ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 22),
+            onPressed: _toggleTools,
           ),
         ],
       ),
       body: Column(
         children: [
+          // 工具帘：AnimatedSize 卷动展开/收起；点项或滚动列表即自动卷回
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _toolsCurtain(s),
+          ),
           Expanded(
             child: Stack(
               children: [
-                ListView.builder(
-                  controller: _scroll,
-                  cacheExtent: 1500, // ignore: deprecated_member_use
-                  physics: const ClampingScrollPhysics(),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  // 转圈只在「已发出消息但还没任何输出」时出现；开始流式（思考/正文）即隐藏
-                  itemCount: (_hasEarlier ? 1 : 0) + _entries.length + (_waiting && !_streaming ? 1 : 0),
-                  itemBuilder: (_, i) {
-                    if (_hasEarlier && i == 0) return _loadEarlierRow();
-                    final idx = i - (_hasEarlier ? 1 : 0);
-                    if (idx >= _entries.length) {
-                      return const Padding(
-                        padding: EdgeInsets.all(10),
-                        child: Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
-                      );
-                    }
-                    return _bubble(_entries[idx], idx);
+                // 手指拖动消息列表即卷回帘子（程序化滚动 dragDetails 为 null，不误触发）
+                NotificationListener<ScrollUpdateNotification>(
+                  onNotification: (n) {
+                    if (_toolsOpen && n.dragDetails != null) _closeTools();
+                    return false;
                   },
+                  child: ListView.builder(
+                    controller: _scroll,
+                    cacheExtent: 1500, // ignore: deprecated_member_use
+                    physics: const ClampingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    // 转圈只在「已发出消息但还没任何输出」时出现；开始流式（思考/正文）即隐藏
+                    itemCount: (_hasEarlier ? 1 : 0) + _entries.length + (_waiting && !_streaming ? 1 : 0),
+                    itemBuilder: (_, i) {
+                      if (_hasEarlier && i == 0) return _loadEarlierRow();
+                      final idx = i - (_hasEarlier ? 1 : 0);
+                      if (idx >= _entries.length) {
+                        return const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+                        );
+                      }
+                      return _bubble(_entries[idx], idx);
+                    },
+                  ),
                 ),
                 // 局部刷新：滚动不触发整页 setState（修转场闪白/掉帧）
                 ValueListenableBuilder<bool>(
