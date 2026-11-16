@@ -696,6 +696,7 @@ export class HarnessSession {
         const mcp = mcpWireOf?.(this.mcpServerIds) ?? [];
         if (mcp.length) this.log(`注入 MCP 服务器: ${mcp.map((s) => String(s.name)).join(", ")}`);
 
+        let resumed = false;
         if (mode === "resume") {
           const tryFork = async (): Promise<boolean> => {
             try {
@@ -737,31 +738,49 @@ export class HarnessSession {
           };
           const tryLoad = async (): Promise<boolean> => {
             if (!this.canLoadSession) return false;
-            this.replaying = this.transcript.length > 0;
-            if (!this.replaying) this.log("本地台账为空，本次将采用 harness 回放的历史重建台账");
-            const r = await ctx.request(acp.methods.agent.session.load, {
-              sessionId: this.acpSessionId!,
-              cwd: this.cwd,
-              mcpServers: mcp,
-            });
-            const lr = r as { configOptions?: ConfigOption[]; modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] } };
-            if (lr.configOptions?.length) this.configOptions = lr.configOptions;
-            if (lr.modes?.availableModes?.length) this.modes = lr.modes;
-            this.log(`会话已恢复（session/load）：${this.acpSessionId}`);
-            return true;
+            try {
+              this.replaying = this.transcript.length > 0;
+              if (!this.replaying) this.log("本地台账为空，本次将采用 harness 回放的历史重建台账");
+              const r = await ctx.request(acp.methods.agent.session.load, {
+                sessionId: this.acpSessionId!,
+                cwd: this.cwd,
+                mcpServers: mcp,
+              });
+              const lr = r as { configOptions?: ConfigOption[]; modes?: { currentModeId?: string; availableModes?: { id: string; name?: string }[] } };
+              if (lr.configOptions?.length) this.configOptions = lr.configOptions;
+              if (lr.modes?.availableModes?.length) this.modes = lr.modes;
+              this.log(`会话已恢复（session/load）：${this.acpSessionId}`);
+              return true;
+            } catch (err) {
+              this.replaying = false;
+              this.log(`session/load 不可用（${err instanceof Error ? err.message : String(err)}）`);
+              return false;
+            }
           };
 
           const order = this.origin === "imported"
             ? [tryFork, tryResume, tryLoad]
             : [tryResume, tryFork, tryLoad];
-          let ok = false;
           for (const step of order) {
-            ok = await step();
-            if (ok) break;
+            resumed = await step();
+            if (resumed) break;
           }
-          if (!ok) throw new Error("session/fork、session/resume、session/load 都不可用，无法恢复会话");
-          this.log(`恢复方式完成（origin=${this.origin}）`);
-        } else {
+          if (resumed) {
+            this.log(`恢复方式完成（origin=${this.origin}）`);
+          } else {
+            // 底层对话已不可恢复（如 harness 侧记录从未落库/已被清理——2026-11 助理会话事故：zcode 首回合
+            // 才落库，assistant 会话创建后零消息，resident 空闲超时后 resume 永远 missing）。旧实现直接
+            // throw，每次 revive 都撞同一堵墙，且 failStreak 自愈永远凑不齐（revive 每次都是新对象），
+            // 会话永久卡死。降级为全新会话：本地台账保留，链路立即恢复可用。
+            this.log("⚠️ resume/fork/load 全部失败：底层对话不可恢复，自动降级为全新会话（本地台账保留）");
+            this.acpSessionId = undefined;
+            this.origin = "new";
+            this.healContext = this.recentDigest() || "（无历史记录）";   // 底层对话没了，摘要随首条消息注入接续
+            this.audit.append({ session: this.id, harness: this.harnessId, op: "session.degrade_new" });
+          }
+        }
+
+        if (!resumed) {
           const created = await ctx.request(acp.methods.agent.session.new, {
             cwd: this.cwd,
             // WireMcp 与 schema.McpServer 结构对齐；SDK 的联合类型声明式赋值过不了，按惯例断言
@@ -926,15 +945,19 @@ export class HarnessSession {
    * 不再反复撞墙——杀掉旧 harness 进程，放弃 resume/fork 老状态，全新重建会话，
    * 并把最近台账摊平成进度摘要注入下一条消息（与「接续」同款思路，但全自动）。
    */
+  /** 最近台账摊平成进度摘要（自愈/降级重建时注入下一条消息，接续中断的工作） */
+  private recentDigest(): string {
+    return this.transcript.slice(-20).map((e) => {
+      const body = (e.kind === "error" ? e.message : e.kind === "tool" ? e.title : "text" in e ? e.text : "") || "";
+      return `- [${e.kind}] ${body.replace(/\s+/g, " ").slice(0, 180)}`;
+    }).join("\n");
+  }
+
   private async selfHeal(reason: string): Promise<boolean> {
     this.healLock = true;
     try {
       this.log(`⚠️ 连续失败触发自愈（${reason}）：放弃损坏的底层对话，全新重建会话`);
-      const digest = this.transcript.slice(-20).map((e) => {
-        const body = (e.kind === "error" ? e.message : e.kind === "tool" ? e.title : "text" in e ? e.text : "") || "";
-        return `- [${e.kind}] ${body.replace(/\s+/g, " ").slice(0, 180)}`;
-      }).join("\n");
-      this.healContext = digest || "（无历史记录）";
+      this.healContext = this.recentDigest() || "（无历史记录）";
       // 杀旧进程（healLock 期间 exit 处理器不会误标 error）
       this.stopRequested = true;
       try { this.child?.kill("SIGKILL"); } catch { /* 已死 */ }
